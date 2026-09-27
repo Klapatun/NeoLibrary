@@ -1,0 +1,8 @@
+// Top-level build file.
+// Modern toolchain for Android Studio 2024.2.x: AGP 8.5.2 + Gradle 8.7 + JDK 17.
+// (The previous AGP 3.1.4 / Gradle 4.4 setup uses a Gradle 4.x runtime whose
+//  BuildCompletionListener class is incompatible with Studio 2024.x, causing the
+//  "Unable to load class org.gradle.initialization.BuildCompletionListener" error.)
+plugins {
+    id 'com.android.application' version '8.5.2' apply false
+}

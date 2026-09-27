@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Holo theme: the Material themes require API 21+, but the target device is
+         Android 4.4.4 (API 19), so we use the Holo family which exists on that platform.
+         No support/AndroidX dependency is needed. -->
+    <style name="AppTheme" parent="android:Theme.Holo.Light">
+        <item name="android:colorPrimary">@color/colorPrimary</item>
+        <item name="android:colorPrimaryDark">@color/colorPrimaryDark</item>
+        <item name="android:colorAccent">@color/colorAccent</item>
+        <item name="android:windowBackground">@color/windowBackground</item>
+    </style>
+</resources>

@@ -1,0 +1,41 @@
+plugins {
+    id 'com.android.application'
+}
+
+android {
+    namespace 'com.example.mylibrary'
+
+    // Modern SDK level required by AGP 8. minSdk stays at 19 for the Android 4.4.4 target.
+    compileSdk 34
+
+    defaultConfig {
+        applicationId 'com.example.mylibrary'
+        minSdk 19
+        targetSdk 34
+        versionCode 1
+        versionName '1.0'
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_1_8
+        targetCompatibility JavaVersion.VERSION_1_8
+    }
+
+    lint {
+        // We intentionally target API 19 and use only framework classes.
+        abortOnError false
+    }
+}
+
+dependencies {
+    // No runtime dependencies: everything is built on the Android framework and JDK
+    // classes (java.util.zip, XmlPullParser via android.util.Xml), so the app builds
+    // offline against API 19 without AndroidX or any third-party libs.
+}
