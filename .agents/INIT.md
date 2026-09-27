@@ -1,0 +1,1 @@
+Прочитай CONTEXT.md, затем для уверенности пройдись по коду из app/src/main/java/com/example/mylibrary/ (все .java), а также загляни в app/build.gradle и AndroidManifest.xml. После этого кратко перескажи мне архитектуру и подтверди, что контекст усвоен. Дальше жду задач.

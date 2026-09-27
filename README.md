@@ -55,6 +55,86 @@ title/author/publisher/description *inside the file itself*.
 - Both writers first write a `.tmp`, then swap over the original with a `.bak` backup and
   restore it on failure — the source file is never left half-written.
 
+## Architecture
+
+The app is native, no AndroidX/support libraries — built purely on the Android framework
+and JDK classes, which guarantees API 19 compatibility. Code is split into layers by
+responsibility:
+
+```
+┌────────────────────────── UI (plain Activity, Holo theme) ───────────────────────┐
+│   MainActivity        browse list · filter by format · "Recently read" · import │
+│   DetailActivity      open in Neo Reader · edit meta · remove from library      │
+│   EditMetaActivity    metadata editing form (title/author/publisher/desc)        │
+│   BookAdapter         ListView adapter                                          │
+└───────────────────────────────┬──────────────────────────────────────────────────┘
+                                 │ Book (Parcelable) — passed between activities
+┌────────────────────────── LOGIC / format-handling layers ────────────────────────┐
+│   scan/Formats          single source of truth: 15 formats + extension mapping  │
+│   scan/LibraryScanner   recursive storage scan; builds Book from each file      │
+│   meta/MetaExtractor    reads metadata from EPUB/FB2/TXT/HTML (platform XML/zip)│
+│   meta/MetaWriter       writes metadata into EPUB/FB2 (rebuild + .bak backup)   │
+│   util/Openers          MIME mapping + ACTION_VIEW intent for Neo Reader        │
+└───────────────────────────────┬──────────────────────────────────────────────────┘
+                                 │ persists via
+┌────────────────────────────── STORAGE ───────────────────────────────────────────┐
+│   db/BookDatabase        SQLite catalog (title/author/publisher/desc, last_read)│
+└──────────────────────────────────────────────────────────────────────────────────┘
+```
+
+### Two-layer metadata model (the key idea)
+
+Every book's metadata lives in **two places**:
+
+1. **In-file** — for **EPUB** (the `content.opf` OPF document) and **FB2** (the XML
+   `description` block), metadata is *also* written into the file itself, so Neo Reader
+   and any other app see the edited values.
+2. **In-catalog** — *all* formats always persist editing-capable fields in the local
+   **SQLite** catalog. This is the fallback for the other 13 formats whose binary
+   structures are not safely rewritable here (CHM/DjVu/MOBI/PDF/DOCX...).
+
+### Responsibilities per class
+
+| Class | Responsibility | Key detail |
+|---|---|---|
+| `MainActivity` | catalog screen: scan, browse, filter, recently-read, SAF import | never clears the DB on rescan → `last_read` survives |
+| `DetailActivity` | one book: open / edit / remove | open fires `ACTION_VIEW`, then `markRead` |
+| `EditMetaActivity` | metadata form | writes file for EPUB/FB2, always updates catalog |
+| `Book` | Parcelable model | `initial()`, `displayFormat()` helpers |
+| `BookDatabase.upsert` | insert-or-update by path | preserves `last_read` (rejects REPLACE) |
+| `Formats` | canonical format ids + extension map | `.fb2.zip` handled as compound extension |
+| `LibraryScanner` | recursive scan + `scanSingle()` | primary ext storage + common SD mounts |
+| `MetaExtractor` | read meta | EPUB via `container.xml`→OPF; FB2 author split |
+| `MetaWriter` | write meta | non-destructive: `.tmp` → swap → `.bak` recovery |
+| `Openers` | MIME map + `ACTION_VIEW` | `Uri.fromFile` (ok on KitKat) |
+
+## Data flows (workflows)
+
+The main user paths:
+
+- **Scan** → `MainActivity.startScan()` → `AsyncTask` → `LibraryScanner.scan()` (recursive
+  walk + `MetaExtractor`) → `onPostExecute` upserts each book into `BookDatabase` → `reload()`.
+- **Open** → list click → `DetailActivity` loads `Book` by id → button → `Openers.openFile()`
+  returns `ACTION_VIEW` → `startActivity()` → `db.markRead(id)` (feeds "Recently read").
+- **Edit** → `EditMetaActivity` form → save in `AsyncTask`: if format is EPUB/FB2 and file
+  exists → `MetaWriter.write(file, md)` (in-file); **always** → `db.upsert(book)` (catalog).
+- **Import** → `ACTION_OPEN_DOCUMENT` (SAF) → validate via `Formats.isSupported()` → copy
+  the picked file into `getExternalFilesDir("books")` → `LibraryScanner.scanSingle()` → upsert.
+
+## Invariants (do not break)
+
+- **`minSdk 19`** — the whole app must keep working on **Android 4.4.4 (API 19)**: no
+  APIs above 19, **Holo theme** (Material/AndroidX themes require API 21+).
+- **No AndroidX / no support library / no third-party runtime deps** — only Android
+  framework + JDK classes, so it builds offline against API 19.
+- **`namespace com.example.mylibrary`**, `compileSdk 34`, `targetSdk 34` (AGP 8.5.2,
+  Gradle 8.7). Manifest has **no `package` attribute** and every `<activity>` has
+  `android:exported`.
+- **Never leave a book file half-written** when editing — always `.tmp` → swap → `.bak`.
+- **`BookDatabase.upsert` must preserve `last_read`** across rescans.
+- **`Formats.ALL`** is the single source of truth — scanning, the filter spinner and the
+  per-book format badge must never diverge from it.
+
 ## Build requirements
 
 This project uses a **modern AGP 8 / Gradle 8 toolchain** so it opens and builds cleanly
