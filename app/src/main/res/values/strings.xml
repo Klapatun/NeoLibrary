@@ -26,4 +26,6 @@
     <string name="tab_last">Recently read</string>
 
     <string name="filter_all">All</string>
+    <string name="view_list">List</string>
+    <string name="view_grid">Tiles</string>
 </resources>

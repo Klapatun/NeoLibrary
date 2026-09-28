@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Tag id used by CoverLoader to track which book a cover ImageView belongs to. -->
+    <item name="cover_tag" type="id" />
+    <item name="cover_showing" type="id" />
+    <item name="view_mode" type="id" />
+</resources>

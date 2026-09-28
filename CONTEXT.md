@@ -45,7 +45,18 @@ Every book's metadata is stored in **two places**:
 | `scan/LibraryScanner` | recursive scan + `scanSingle()` |
 | `meta/MetaExtractor` | read meta: EPUB/FB2/TXT/HTML |
 | `meta/MetaWriter` | write meta EPUB/FB2, non-destructive (`.tmp`→swap→`.bak`) |
+| `meta/CoverExtractor` | cover bytes: EPUB (`content.opf`→manifest) & FB2 (`coverpage`→`<binary>`) |
+| `util/CoverLoader` | async cover bitmap + LruCache; hidden badge on success |
+| `BookAdapter` | list + grid/tile view modes (grid loads covers) |
 | `util/Openers` | MIME map + `ACTION_VIEW` intent (`Uri.fromFile`) |
+
+### List / tile view toggle
+
+`MainActivity` shows the same `BookAdapter` in both a `ListView` and a `GridView`
+(`activity_main.xml`). The toolbar button (`@+id/toggle_view`) calls `setViewMode()` which
+swaps visibility and tells the adapter which layout to inflate. In **tile** mode each
+`item_book_grid.xml` row asks `CoverLoader` for the cover; if the format doesn't carry an
+extractable cover (via `CoverExtractor.canHaveCover`) a letter badge is shown instead.
 
 ## Main workflows
 

@@ -1,0 +1,51 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Tile (grid) layout. IMPORTANT: width is wrap_content — inside a GridView a
+     match_parent item stretches to the full width and overlaps its neighbours. -->
+<RelativeLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="wrap_content"
+    android:layout_height="wrap_content"
+    android:padding="6dp">
+
+    <FrameLayout
+        android:id="@+id/cover_frame"
+        android:layout_width="match_parent"
+        android:layout_height="160dp"
+        android:background="@color/cover_bg">
+
+        <ImageView
+            android:id="@+id/book_grid_cover"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:scaleType="fitCenter"
+            android:contentDescription="Cover" />
+
+        <TextView
+            android:id="@+id/book_grid_initial"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:gravity="center"
+            android:textColor="@color/white"
+            android:textSize="40sp"
+            android:textStyle="bold" />
+    </FrameLayout>
+
+    <TextView
+        android:id="@+id/book_grid_title"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_below="@id/cover_frame"
+        android:layout_marginTop="4dp"
+        android:textColor="#202020"
+        android:textSize="14sp"
+        android:maxLines="2"
+        android:ellipsize="end" />
+
+    <TextView
+        android:id="@+id/book_grid_format"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_below="@id/book_grid_title"
+        android:textColor="@color/colorPrimary"
+        android:textSize="12sp"
+        android:maxLines="1" />
+</RelativeLayout>

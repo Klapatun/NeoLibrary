@@ -11,6 +11,8 @@ import android.view.MenuItem;
 import android.view.View;
 import android.widget.AdapterView;
 import android.widget.ArrayAdapter;
+import android.widget.Button;
+import android.widget.GridView;
 import android.widget.ListView;
 import android.widget.ProgressBar;
 import android.widget.Spinner;
@@ -40,6 +42,10 @@ public class MainActivity extends Activity {
     private Spinner filterSpinner;
     private ProgressBar progressBar;
     private TextView emptyView;
+    private ListView list;
+    private GridView grid;
+    private Button toggleView;
+    private int viewMode = BookAdapter.MODE_LIST;
 
     private List<String> filterLabels;
     private List<String> filterValues; // format ids, or "" for All, or "__recent__"
@@ -54,19 +60,60 @@ public class MainActivity extends Activity {
         progressBar = (ProgressBar) findViewById(R.id.progress);
         emptyView = (TextView) findViewById(R.id.empty_view);
 
-        ListView list = (ListView) findViewById(R.id.book_list);
+        list = (ListView) findViewById(R.id.book_list);
+        grid = (GridView) findViewById(R.id.book_grid);
+        toggleView = (Button) findViewById(R.id.toggle_view);
+
         list.setEmptyView(emptyView);
+        grid.setEmptyView(emptyView);
         adapter = new BookAdapter(this);
         list.setAdapter(adapter);
+        grid.setAdapter(adapter);
         list.setOnItemClickListener(new AdapterView.OnItemClickListener() {
             @Override public void onItemClick(AdapterView<?> p, View v, int pos, long id) {
                 Book b = adapter.getItem(pos);
                 openDetails(b.id);
             }
         });
+        grid.setOnItemClickListener(new AdapterView.OnItemClickListener() {
+            @Override public void onItemClick(AdapterView<?> p, View v, int pos, long id) {
+                Book b = adapter.getItem(pos);
+                openDetails(b.id);
+            }
+        });
+        toggleView.setOnClickListener(new View.OnClickListener() {
+            @Override public void onClick(View v) {
+                setViewMode(viewMode == BookAdapter.MODE_LIST ? BookAdapter.MODE_GRID : BookAdapter.MODE_LIST);
+            }
+        });
 
+        setViewMode(BookAdapter.MODE_LIST);
         setupFilterSpinner();
         startScan();
+    }
+
+    private void setViewMode(int mode) {
+        if (viewMode == mode) return;
+        viewMode = mode;
+        boolean grid = mode == BookAdapter.MODE_GRID;
+
+        // Fully re-attach the adapter so each widget drops its recycled view pool.
+        // Sharing one BaseAdapter between ListView and GridView means switching modes
+        // must not keep stale child views from the other layout in the pool.
+        this.grid.setAdapter(null);
+        list.setAdapter(null);
+        adapter.setMode(mode);
+
+        this.grid.setVisibility(grid ? View.VISIBLE : View.GONE);
+        list.setVisibility(grid ? View.GONE : View.VISIBLE);
+        toggleView.setText(grid ? getString(R.string.view_list) : getString(R.string.view_grid));
+
+        // Re-attach to whichever is now visible.
+        if (grid) {
+            this.grid.setAdapter(adapter);
+        } else {
+            list.setAdapter(adapter);
+        }
     }
 
     private void setupFilterSpinner() {

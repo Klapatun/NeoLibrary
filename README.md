@@ -35,6 +35,8 @@ title/author/publisher/description *inside the file itself*.
 - **Scan** — recursive walk of `Environment.getExternalStorageDirectory()` plus common
   secondary SD-card mount points, filtered to the supported extensions.
 - **Browse** — list sorted by title, with a per-format filter and a *Recently read* view.
+  Toggle between a **list** and a **tile/grid** layout (grid shows the embedded cover
+  preview for EPUB/FB2, with a letter badge for formats without a cover).
 - **Open in Neo Reader** — sends an `ACTION_VIEW` intent with the correct MIME type and a
   `file://` URI so Neo Reader (or any other viewer) opens the book; the file is marked
   as "recently read".
@@ -106,6 +108,9 @@ Every book's metadata lives in **two places**:
 | `LibraryScanner` | recursive scan + `scanSingle()` | primary ext storage + common SD mounts |
 | `MetaExtractor` | read meta | EPUB via `container.xml`→OPF; FB2 author split |
 | `MetaWriter` | write meta | non-destructive: `.tmp` → swap → `.bak` recovery |
+| `CoverExtractor` | read cover image bytes | EPUB via `content.opf`→manifest; FB2 via `coverpage`→`<binary>` |
+| `CoverLoader` | async cover bitmap + LruCache | hides letter badge once cover shows |
+| `BookAdapter` | list + grid/tile view modes | re-inflates on mode switch; grid loads covers |
 | `Openers` | MIME map + `ACTION_VIEW` | `Uri.fromFile` (ok on KitKat) |
 
 ## Data flows (workflows)
@@ -186,6 +191,8 @@ app/src/main/java/com/example/mylibrary/
 ├── scan/LibraryScanner.java # recursive storage scan
 ├── meta/MetaExtractor.java  # reads metadata (EPUB/FB2/TXT/HTML)
 ├── meta/MetaWriter.java     # writes metadata (EPUB/FB2)
+├── meta/CoverExtractor.java # reads cover image (EPUB/FB2)
+├── util/CoverLoader.java    # async cover loading + LruCache
 └── util/Openers.java        # MIME mapping + ACTION_VIEW intents
 ```
 
