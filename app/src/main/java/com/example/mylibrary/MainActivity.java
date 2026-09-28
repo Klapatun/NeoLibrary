@@ -11,8 +11,8 @@ import android.view.MenuItem;
 import android.view.View;
 import android.widget.AdapterView;
 import android.widget.ArrayAdapter;
-import android.widget.Button;
 import android.widget.GridView;
+import android.widget.ImageButton;
 import android.widget.ListView;
 import android.widget.ProgressBar;
 import android.widget.Spinner;
@@ -44,7 +44,7 @@ public class MainActivity extends Activity {
     private TextView emptyView;
     private ListView list;
     private GridView grid;
-    private Button toggleView;
+    private ImageButton toggleView;
     private int viewMode = BookAdapter.MODE_LIST;
 
     private List<String> filterLabels;
@@ -62,13 +62,13 @@ public class MainActivity extends Activity {
 
         list = (ListView) findViewById(R.id.book_list);
         grid = (GridView) findViewById(R.id.book_grid);
-        toggleView = (Button) findViewById(R.id.toggle_view);
+        toggleView = (ImageButton) findViewById(R.id.toggle_view);
 
         list.setEmptyView(emptyView);
         grid.setEmptyView(emptyView);
         adapter = new BookAdapter(this);
         list.setAdapter(adapter);
-        grid.setAdapter(adapter);
+
         list.setOnItemClickListener(new AdapterView.OnItemClickListener() {
             @Override public void onItemClick(AdapterView<?> p, View v, int pos, long id) {
                 Book b = adapter.getItem(pos);
@@ -95,24 +95,29 @@ public class MainActivity extends Activity {
     private void setViewMode(int mode) {
         if (viewMode == mode) return;
         viewMode = mode;
-        boolean grid = mode == BookAdapter.MODE_GRID;
+        boolean isGrid = mode == BookAdapter.MODE_GRID;
 
-        // Fully re-attach the adapter so each widget drops its recycled view pool.
-        // Sharing one BaseAdapter between ListView and GridView means switching modes
-        // must not keep stale child views from the other layout in the pool.
-        this.grid.setAdapter(null);
-        list.setAdapter(null);
-        adapter.setMode(mode);
+        this.adapter.setMode(mode);
 
-        this.grid.setVisibility(grid ? View.VISIBLE : View.GONE);
-        list.setVisibility(grid ? View.GONE : View.VISIBLE);
-        toggleView.setText(grid ? getString(R.string.view_list) : getString(R.string.view_grid));
+        this.grid.setVisibility(isGrid ? View.VISIBLE : View.GONE);
+        this.list.setVisibility(isGrid ? View.GONE : View.VISIBLE);
+        // Icon hints at the OTHER mode: in list show the tiles icon, in tiles show the list icon.
+        toggleView.setImageResource(isGrid ? R.drawable.ic_list : R.drawable.ic_grid);
+        toggleView.setContentDescription(getString(isGrid ? R.string.view_list : R.string.view_grid));
 
         // Re-attach to whichever is now visible.
-        if (grid) {
-            this.grid.setAdapter(adapter);
+        if (isGrid) {
+            if (this.grid.getAdapter() == null)
+                this.grid.setAdapter(adapter);
+
+            this.grid.setVisibility(View.VISIBLE);
+            this.list.setVisibility(View.GONE);
         } else {
-            list.setAdapter(adapter);
+            if (this.list.getAdapter() == null)
+                this.list.setAdapter(adapter);
+
+            this.list.setVisibility(View.VISIBLE);
+            this.grid.setVisibility(View.GONE);
         }
     }
 

@@ -30,20 +30,16 @@
                 android:paddingTop="16dp"
                 android:paddingBottom="8dp" />
 
-            <Button
+            <ImageButton
                 android:id="@+id/toggle_view"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
                 android:layout_alignParentEnd="true"
                 android:layout_centerVertical="true"
-                android:text="@string/view_grid"
-                android:minWidth="0dp"
-                android:minHeight="0dp"
-                android:paddingLeft="12dp"
-                android:paddingRight="12dp"
-                android:paddingTop="6dp"
-                android:paddingBottom="6dp"
-                android:textSize="12sp" />
+                android:src="@drawable/ic_grid"
+                android:background="?android:attr/selectableItemBackground"
+                android:contentDescription="@string/view_grid"
+                android:padding="8dp" />
         </RelativeLayout>
 
         <Spinner
@@ -85,6 +81,17 @@
 
         <TextView
             android:id="@+id/empty_view"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:gravity="center"
+            android:padding="24dp"
+            android:text="@string/no_books_message"
+            android:textColor="#808080"
+            android:textSize="15sp"
+            android:visibility="gone" />
+
+        <TextView
+            android:id="@+id/empty_view_grid"
             android:layout_width="match_parent"
             android:layout_height="match_parent"
             android:gravity="center"
