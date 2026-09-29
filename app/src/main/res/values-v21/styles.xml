@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- API 21+ override of AppTheme: the Material color attributes
+         (colorPrimary/colorPrimaryDark/colorAccent) require API 21, while the
+         project's minSdk is 19, so they live here instead of in values/
+         (NewApi). The Holo theme ignores them anyway, so on API 21+ devices
+         they are harmless extras that would matter if the theme ever moves
+         to Material. Styles are not merged across folders, so the whole
+         style is repeated here. -->
+    <style name="AppTheme" parent="android:Theme.Holo.Light">
+        <item name="android:colorPrimary">@color/colorPrimary</item>
+        <item name="android:colorPrimaryDark">@color/colorPrimaryDark</item>
+        <item name="android:colorAccent">@color/colorAccent</item>
+        <item name="android:windowBackground">@color/windowBackground</item>
+    </style>
+</resources>
