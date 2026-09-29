@@ -17,21 +17,24 @@ import java.util.zip.ZipInputStream;
 /**
  * Extracts a cover image (as raw image bytes) from a book file.
  *
- * <p>Only EPUB and FB2 have a well-defined, easily reachable cover image:
+ * <p>EPUB, FB2 and MOBI have a well-defined, easily reachable cover image:
  * <ul>
  *   <li><b>EPUB</b> — the OPF package document refers to a cover image via a
  *       {@code <meta name="cover" content="..."/>} (or the EPUB3 property form) whose
  *       id maps to a manifest item with an {@code href} inside the ZIP.</li>
  *   <li><b>FB2</b> — the {@code description} has a {@code <coverpage><image l:href="#id"/>}
  *       element pointing at a {@code <binary id="...">} entry (base64-encoded).</li>
+ *   <li><b>MOBI/AZW</b> — the EXTH block's {@code 201} record gives an offset that,
+ *       added to the header's "first image" record index, locates the cover image
+ *       record (a raw JPEG/PNG stored in a single PalmDB record).</li>
  * </ul>
  *
- * <p>The other binary formats (CHM, DjVu, MOBI, PDF, DOCX...) embed covers behind much
+ * <p>The other binary formats (CHM, DjVu, PDB, PDF, DOCX...) embed covers behind much
  * more complex structures that need dedicated libraries, so they return {@code null}
  * and the UI shows a letter placeholder instead.</p>
  *
- * <p>All parsing uses the platform {@link java.util.zip} and {@link XmlPullParser} so it
- * stays dependency-free and compatible with API 19.</p>
+ * <p>All parsing uses the platform {@link java.util.zip}, {@link XmlPullParser} and raw
+ * byte reads so it stays dependency-free and compatible with API 19.</p>
  */
 public final class CoverExtractor {
 
@@ -47,6 +50,7 @@ public final class CoverExtractor {
         try {
             if (format.equals("EPUB")) return extractEpub(file);
             if (format.equals("FB2")) return extractFb2(file);
+            if (format.equals("MOBI")) return extractMobi(file);
         } catch (Exception ignored) {
             // Any malformed file simply yields no cover.
         }
@@ -55,7 +59,7 @@ public final class CoverExtractor {
 
     /** Returns true if the format is expected to be able to carry a cover. */
     public static boolean canHaveCover(String format) {
-        return "EPUB".equals(format) || "FB2".equals(format);
+        return "EPUB".equals(format) || "FB2".equals(format) || "MOBI".equals(format);
     }
 
     // -------------------------------------------------------------------
@@ -216,6 +220,67 @@ public final class CoverExtractor {
         base64 = base64.replaceAll("\\s", "");
         if (base64.length() == 0) return null;
         return Base64.decode(base64, Base64.DEFAULT);
+    }
+
+    // -------------------------------------------------------------------
+    // MOBI / AZW
+    // -------------------------------------------------------------------
+
+    /**
+     * Locates the cover image record via the EXTH block and returns its bytes. The cover
+     * lives in a single PalmDB record whose data may extend a few bytes past the image,
+     * so JPEG payloads are trimmed at their end-of-image marker.
+     */
+    private static byte[] extractMobi(File file) throws Exception {
+        MobiParser p = new MobiParser();
+        try {
+            if (!p.open(file)) return null;
+            if (p.coverRecord < 0) return null;
+            byte[] raw = p.readRecord(p.coverRecord);
+            if (raw == null || raw.length == 0) return null;
+            return trimToImage(raw);
+        } finally {
+            p.close();
+        }
+    }
+
+    /**
+     * Returns the image bytes out of a raw MOBI cover record, or {@code null} if the bytes
+     * don't look like a decodable image. JPEG payloads are trimmed at their EOI marker so
+     * trailing record padding is not handed to the bitmap decoder.
+     */
+    private static byte[] trimToImage(byte[] raw) {
+        int b0 = raw[0] & 0xFF;
+        if (raw.length > 2 && b0 == 0xFF && (raw[1] & 0xFF) == 0xD8) {
+            // JPEG: keep everything up to and including the end-of-image (FF D9) marker.
+            int eoi = lastEoi(raw);
+            int end = (eoi >= 0) ? eoi + 2 : raw.length;
+            if (end < 2) return null;
+            byte[] out = new byte[end];
+            System.arraycopy(raw, 0, out, 0, end);
+            return out;
+        }
+        // PNG / BMP / GIF (and anything else with a recognizable signature): pass through.
+        return looksLikeImage(raw) ? raw : null;
+    }
+
+    /** Index of the last JPEG end-of-image marker (FF D9), or -1 if absent. */
+    private static int lastEoi(byte[] b) {
+        for (int i = b.length - 2; i >= 0; i--) {
+            if ((b[i] & 0xFF) == 0xFF && (b[i + 1] & 0xFF) == 0xD9) return i;
+        }
+        return -1;
+    }
+
+    /** True if the leading bytes match a common image signature. */
+    private static boolean looksLikeImage(byte[] b) {
+        if (b.length < 4) return false;
+        int b0 = b[0] & 0xFF, b1 = b[1] & 0xFF, b2 = b[2] & 0xFF, b3 = b[3] & 0xFF;
+        if (b0 == 0xFF && b1 == 0xD8) return true;                                 // JPEG
+        if (b0 == 0x89 && b1 == 'P' && b2 == 'N' && b3 == 'G') return true;        // PNG
+        if (b0 == 'B' && b1 == 'M') return true;                                   // BMP
+        if (b0 == 'G' && b1 == 'I' && b2 == 'F' && b3 == '8') return true;         // GIF
+        return false;
     }
 
     // -------------------------------------------------------------------
