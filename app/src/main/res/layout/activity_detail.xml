@@ -9,6 +9,34 @@
         android:orientation="vertical"
         android:padding="16dp">
 
+        <!-- Full-format cover for the book (no circular crop): full width, letterboxed
+             with fitCenter. The large letter badge is shown in the same frame when the
+             format carries no cover (or none could be extracted). -->
+        <FrameLayout
+            android:layout_width="match_parent"
+            android:layout_height="240dp"
+            android:layout_marginTop="8dp"
+            android:background="@color/cover_bg">
+
+            <TextView
+                android:id="@+id/detail_initial"
+                android:layout_width="96dp"
+                android:layout_height="96dp"
+                android:layout_gravity="center"
+                android:gravity="center"
+                android:textColor="@color/white"
+                android:background="@drawable/bg_circle"
+                android:textSize="40sp"
+                android:textStyle="bold" />
+
+            <ImageView
+                android:id="@+id/detail_cover"
+                android:layout_width="match_parent"
+                android:layout_height="match_parent"
+                android:scaleType="fitCenter"
+                android:contentDescription="Cover" />
+        </FrameLayout>
+
         <TextView
             android:id="@+id/detail_title"
             android:layout_width="match_parent"

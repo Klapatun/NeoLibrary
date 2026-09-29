@@ -6,11 +6,14 @@ import android.content.Intent;
 import android.os.Bundle;
 import android.view.View;
 import android.widget.Button;
+import android.widget.ImageView;
 import android.widget.TextView;
 import android.widget.Toast;
 
 import com.example.mylibrary.db.BookDatabase;
+import com.example.mylibrary.meta.CoverExtractor;
 import com.example.mylibrary.model.Book;
+import com.example.mylibrary.util.CoverLoader;
 import com.example.mylibrary.util.Openers;
 
 import java.io.File;
@@ -42,6 +45,20 @@ public class DetailActivity extends Activity {
         ((TextView) findViewById(R.id.detail_title)).setText(nz(book.title));
         ((TextView) findViewById(R.id.detail_author)).setText(nz(book.author));
         ((TextView) findViewById(R.id.detail_file)).setText(book.path);
+
+        // Full-format cover (no circular crop) with the letter badge as fallback; same
+        // mechanism as the list rows, square variant (shares the grid tile's cache entry).
+        TextView initial = (TextView) findViewById(R.id.detail_initial);
+        ImageView cover = (ImageView) findViewById(R.id.detail_cover);
+        initial.setText(book.initial());
+        if (CoverExtractor.canHaveCover(book.format)) {
+            cover.setVisibility(View.VISIBLE);
+            initial.setVisibility(View.INVISIBLE);
+            CoverLoader.load(book, cover, initial);
+        } else {
+            cover.setVisibility(View.GONE);
+            initial.setVisibility(View.VISIBLE);
+        }
 
         StringBuilder other = new StringBuilder();
         if (book.format != null) other.append("Format: ").append(book.format).append("\n");
