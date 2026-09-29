@@ -1,7 +1,7 @@
-# CI for NeoLibrary: runs the JUnit + Robolectric unit tests and builds the
-# debug APK. The "unit-tests" job is a required status check on master
-# (see Branch protection in the README), so PRs with failing tests cannot
-# be merged.
+# CI for NeoLibrary: runs the JUnit + Robolectric unit tests, Android Lint
+# (bundled with AGP — no extra dependencies), and builds the debug APK.
+# The "unit-tests" job is a required status check on master (see Branch
+# protection in the README), so PRs with failing tests cannot be merged.
 name: CI
 
 on:
@@ -50,6 +50,43 @@ jobs:
         with:
           name: unit-test-reports
           path: app/build/reports/tests
+          if-no-files-found: ignore
+
+  lint:
+    name: Android Lint
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v4
+        with:
+          packages: 'platforms;android-34 build-tools;34.0.0'
+
+      - name: Make gradlew executable
+        run: chmod +x gradlew
+
+      # Android Lint is bundled with AGP (no extra dependencies). Phase 1:
+      # report-only (abortOnError false in app/build.gradle) — the reports
+      # are uploaded below for review. Once the baseline is fixed, flip
+      # abortOnError to true and require this check on master (README,
+      # "Lint" section).
+      - name: Run Android Lint
+        run: ./gradlew --no-daemon :app:lintDebug
+
+      - name: Upload lint reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-lint-reports
+          path: app/build/reports/lint-results-*
           if-no-files-found: ignore
 
   build:
