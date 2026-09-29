@@ -38,8 +38,8 @@ import java.util.zip.ZipInputStream;
  * more complex structures that need dedicated libraries, so they return {@code null}
  * and the UI shows a letter placeholder instead.</p>
  *
- * <p>All parsing uses the platform {@link java.util.zip}, {@link XmlPullParser} and raw
- * byte reads so it stays dependency-free and compatible with API 19.</p>
+ * <p>All parsing uses the platform {@link java.util.zip}, plain string/regex matching
+ * and raw byte reads so it stays dependency-free and compatible with API 19.</p>
  */
 public final class CoverExtractor {
 
