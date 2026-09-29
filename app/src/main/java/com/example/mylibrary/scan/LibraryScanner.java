@@ -16,6 +16,12 @@ import java.util.List;
  */
 public class LibraryScanner {
 
+    /** Secondary SD-card mount points seen on many KitKat devices. */
+    private static final String[] SD_CANDIDATES = {
+            "/storage/extSdCard", "/storage/sdcard1", "/storage/external_SD",
+            "/storage/UsbDriveA", "/mnt/extSdCard", "/sdcard1"
+    };
+
     /**
      * Scans the given roots (directories) recursively for supported books.
      *
@@ -97,12 +103,7 @@ public class LibraryScanner {
             if (primary != null && primary.exists()) roots.add(primary);
         } catch (Exception ignored) {}
 
-        // Secondary SD card mount points seen on many KitKat devices.
-        String[] candidates = {
-                "/storage/extSdCard", "/storage/sdcard1", "/storage/external_SD",
-                "/storage/UsbDriveA", "/mnt/extSdCard", "/sdcard1"
-        };
-        for (String c : candidates) {
+        for (String c : SD_CANDIDATES) {
             try {
                 File f = new File(c);
                 if (f.isDirectory() && !roots.contains(f)) roots.add(f);

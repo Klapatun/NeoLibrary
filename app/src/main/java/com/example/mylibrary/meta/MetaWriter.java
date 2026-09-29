@@ -102,18 +102,19 @@ public final class MetaWriter {
     private static String setDcElement(String xml, String name, String value) {
         if (value == null) value = "";
         String escaped = escapeXml(value);
-        String metaStart = "<dc:" + name;
         String lower = xml.toLowerCase(Locale.US);
-        int tagStart = lower.indexOf(metaStart);
+        String openTag = "<dc:" + name;
+        int tagStart = lower.indexOf(openTag);
         if (tagStart >= 0) {
-            // find end of this element's closing tag by scanning
+            // find end of the opening tag's '>'
             int contentStart = xml.indexOf('>', tagStart);
             if (contentStart >= 0) contentStart++;
-            int close = xml.indexOf("</dc:" + name, contentStart);
+            // closing tag is always </dc:name> (no attributes allowed on closing tags);
+            // look for the exact sequence to avoid partial matches.
+            String closeTag = "</dc:" + name + ">";
+            int close = lower.indexOf(closeTag, contentStart);
             if (close >= 0) {
-                int closeEnd = xml.indexOf('>', close);
-                if (closeEnd >= 0) closeEnd++;
-                return xml.substring(0, contentStart) + escaped + xml.substring(closeEnd);
+                return xml.substring(0, contentStart) + escaped + xml.substring(close + closeTag.length());
             }
         } else {
             // insert before </metadata> or, failing that, </opf:metadata>

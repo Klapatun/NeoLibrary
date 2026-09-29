@@ -115,10 +115,11 @@ public class BookDatabase extends SQLiteOpenHelper {
 
     /** Returns the most recently read books (the "Recently read" tab). */
     public List<Book> recent(int limit) {
+        if (limit <= 0) limit = 200;
         List<Book> list = new ArrayList<Book>();
         SQLiteDatabase db = getReadableDatabase();
         Cursor c = db.query("books", null, "last_read IS NOT NULL", null, null, null,
-                "last_read DESC LIMIT " + limit);
+                "last_read DESC", String.valueOf(limit));
         try {
             while (c.moveToNext()) list.add(fromCursor(c));
         } finally {
