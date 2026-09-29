@@ -67,10 +67,11 @@ public class MainActivity extends Activity {
         list.setEmptyView(emptyView);
         grid.setEmptyView(emptyView);
         adapter = new BookAdapter(this);
-        // Attach the adapter to BOTH views once. Since list and grid live stacked in a
-        // FrameLayout, attaching/detaching on every toggle is what used to leave both
-        // attached and let them render on top of each other; attaching once keeps them
-        // in sync and makes setViewMode a pure visibility swap.
+        // The adapter is attached to exactly ONE view at a time — the visible one
+        // (list initially). list and grid are stacked in a FrameLayout and a BaseAdapter
+        // cannot be attached to two views at once, so setViewMode moves it: detaches it
+        // from the view going away and attaches it to the one coming forward (guarded
+        // by getAdapter() == null so the move happens only on the first toggle each way).
         list.setAdapter(adapter);
 
         list.setOnItemClickListener(new AdapterView.OnItemClickListener() {

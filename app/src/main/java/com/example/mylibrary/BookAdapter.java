@@ -18,7 +18,9 @@ import java.util.List;
 /**
  * Binds a list of {@link Book}s to rows in two view modes:
  * <ul>
- *   <li>{@link #MODE_LIST} — a compact single-line row ({@code item_book}).</li>
+ *   <li>{@link #MODE_LIST} — a compact single-line row ({@code item_book}); the
+ *       leading 48dp slot shows a small cover where the format can carry one, with
+ *       the letter badge as fallback.</li>
  *   <li>{@link #MODE_GRID} — a tile with a cover preview ({@code item_book_grid});
  *       the letter badge is shown when the format has no extractable cover.</li>
  * </ul>
@@ -85,12 +87,27 @@ public class BookAdapter extends BaseAdapter {
         TextView title = (TextView) v.findViewById(R.id.book_title);
         TextView sub = (TextView) v.findViewById(R.id.book_subtitle);
         TextView fmt = (TextView) v.findViewById(R.id.book_format);
+        ImageView cover = (ImageView) v.findViewById(R.id.book_cover);
 
         init.setText(b.initial());
         title.setText(titleOf(b));
         String subText = (b.author != null && b.author.length() > 0) ? b.author : b.path;
         sub.setText(subText);
         fmt.setText(b.displayFormat());
+
+        // Same mechanism as the grid: for formats that can carry a cover (EPUB/FB2) the
+        // letter badge is replaced by the 48dp cover in its own slot; the badge shows
+        // again automatically if no cover could be extracted.
+        if (CoverExtractor.canHaveCover(b.format)) {
+            cover.setTag(R.id.cover_tag, null);
+            cover.setVisibility(View.VISIBLE);
+            init.setVisibility(View.INVISIBLE);
+            CoverLoader.load(b, cover, init, true); // round: match the circular badge
+        } else {
+            cover.setImageBitmap(null);
+            cover.setVisibility(View.GONE);
+            init.setVisibility(View.VISIBLE);
+        }
     }
 
     // ------------------------------------------------------------------
