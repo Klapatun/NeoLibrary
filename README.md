@@ -177,6 +177,34 @@ needed, the SDK Platform), then **Run** on a device/emulator running Android 4.4
 
 The debug APK is produced at `app/build/outputs/apk/debug/app-debug.apk`.
 
+## CI and branch protection (GitHub)
+
+`github.com/Klapatun/NeoLibrary` runs **GitHub Actions** (`.github/workflows/ci.yml`) on
+every PR into `master` and every push to `master`:
+
+1. **`Unit tests (JUnit + Robolectric)`** — `./gradlew testDebugUnitTest` on JDK 17 with
+   Android SDK Platform 34 (all tests from `app/src/test`). Test reports are uploaded as
+   an artifact.
+2. **`Assemble debug APK`** — `./gradlew assembleDebug` (runs only if the tests pass);
+   the APK is uploaded as an artifact.
+
+### Enforcing "no merge on red tests"
+
+The workflow alone doesn't block merges — the enforcement lives in the **branch
+protection rule** for `master`:
+
+1. Repo → **Settings ▸ Branches** → **Add branch protection rule** → name: `master`.
+2. Under *Require pull request before merging*: enable **Require a pull request before
+   merging** (recommended).
+3. Under *Status checks*: switch on **Require status checks to pass before merging**
+   and select the **`Unit tests (JUnit + Robolectric)`** check.
+4. (Optional) enable **Include administrators** so the rule also applies to you.
+5. Save. From then on, a PR with failing tests gets a red check and the **Merge**
+   button stays disabled.
+
+> The check must have run at least once (open any PR or push to `master`) before it
+> appears in the status-checks selector.
+
 ## Project layout
 
 ```
