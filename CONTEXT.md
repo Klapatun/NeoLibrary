@@ -43,9 +43,10 @@ Every book's metadata is stored in **two places**:
 | `db/BookDatabase` | SQLite catalog; **`upsert` preserves `last_read`** |
 | `scan/Formats` | canonical formats + ext→id map (handles `.fb2.zip`) |
 | `scan/LibraryScanner` | recursive scan + `scanSingle()` |
-| `meta/MetaExtractor` | read meta: EPUB/FB2/TXT/HTML |
+| `meta/MetaExtractor` | read meta: EPUB/FB2/MOBI/TXT/HTML |
+| `meta/MobiParser` | shared MOBI/AZW binary reader (package-private): PalmDB record table + MOBI header + EXTH |
 | `meta/MetaWriter` | write meta EPUB/FB2, non-destructive (`.tmp`→swap→`.bak`) |
-| `meta/CoverExtractor` | cover bytes: EPUB (`content.opf`→manifest) & FB2 (`coverpage`→`<binary>`) |
+| `meta/CoverExtractor` | cover bytes: EPUB (`content.opf`→manifest), FB2 (`coverpage`→`<binary>`), MOBI (EXTH record 201, JPEG trimmed at EOI) |
 | `util/CoverLoader` | async cover bitmap + LruCache; hidden badge on success |
 | `BookAdapter` | list + grid/tile view modes (grid loads covers) |
 | `util/Openers` | MIME map + `ACTION_VIEW` intent (`Uri.fromFile`) |

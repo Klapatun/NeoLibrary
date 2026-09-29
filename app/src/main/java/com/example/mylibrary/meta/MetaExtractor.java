@@ -18,13 +18,14 @@ import java.util.zip.ZipInputStream;
  * supported formats.
  *
  * <p>EPUB and FB2 have well-defined, easily editable metadata structures and are
- * fully parsed. Plain-text and other simple formats are parsed best-effort for
- * title/author. For the remaining container formats (CHM, DjVu, MOBI, PDB, PDF,
- * DOC/DOCX, RTF, FB3...) we do not rewrite files, so catalog metadata is stored in
- * SQLite and the display title falls back to the file name.</p>
+ * fully parsed. MOBI/AZW is parsed read-only (PalmDB + MOBI header + EXTH) for
+ * title/author/publisher/description/language. Plain-text and other simple formats
+ * are parsed best-effort for title/author. For the remaining container formats (CHM,
+ * DjVu, PDB, PDF, DOC/DOCX, RTF, FB3...) we do not rewrite files, so catalog metadata
+ * is stored in SQLite and the display title falls back to the file name.</p>
  *
- * <p>No third-party libraries are used: ZIP reading uses {@link java.util.zip} and
- * XML parsing uses the platform XmlPullParser.</p>
+ * <p>No third-party libraries are used: ZIP reading uses {@link java.util.zip}, XML
+ * parsing uses the platform XmlPullParser, and MOBI is read straight off the bytes.</p>
  */
 public final class MetaExtractor {
 
@@ -41,6 +42,7 @@ public final class MetaExtractor {
         try {
             if (format.equals("EPUB")) return extractEpub(file);
             if (format.equals("FB2")) return extractFb2(file);
+            if (format.equals("MOBI")) return extractMobi(file);
             if (format.equals("TXT")) return extractText(file);
             if (format.equals("HTML")) return extractHtml(file);
         } catch (Exception ignored) {
@@ -197,6 +199,32 @@ public final class MetaExtractor {
         md.author = author.toString().trim();
         md.found = md.title != null && md.title.length() > 0;
         return md;
+    }
+
+    // -------------------------------------------------------------------
+    // MOBI / AZW
+    // -------------------------------------------------------------------
+
+    /**
+     * MOBI/AZW is a PalmDB container. The title is the book's full name stored in
+     * record 0; the author, publisher, description and language live in the EXTH block.
+     * {@link MobiParser} handles the binary layout; we just copy the results.
+     */
+    private static MetaData extractMobi(File file) throws Exception {
+        MobiParser p = new MobiParser();
+        try {
+            if (!p.open(file)) return notFound(file);
+            MetaData md = new MetaData();
+            md.title = p.title;
+            md.author = p.author;
+            md.publisher = p.publisher;
+            md.description = p.description;
+            md.language = p.language;
+            md.found = p.title != null && p.title.length() > 0;
+            return md;
+        } finally {
+            p.close();
+        }
     }
 
     // -------------------------------------------------------------------

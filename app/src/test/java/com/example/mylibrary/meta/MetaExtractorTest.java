@@ -32,11 +32,22 @@ public class MetaExtractorTest {
 
     private File epub;
     private File fb2;
+    private File mobi;
 
     @Before
     public void setUp() throws Exception {
         epub = folder.newFile("book.epub");
         fb2 = folder.newFile("book.fb2");
+        mobi = folder.newFile("book.mobi");
+    }
+
+    /** A small deterministic JPEG payload (starts FFD8, ends FFD9) for the MOBI fixture. */
+    private static byte[] jpegBytes() {
+        java.io.ByteArrayOutputStream j = new java.io.ByteArrayOutputStream();
+        j.write(0xFF); j.write(0xD8);
+        for (int i = 0; i < 32; i++) j.write(i * 7 + 3);
+        j.write(0xFF); j.write(0xD9);
+        return j.toByteArray();
     }
 
     private File epubWith(String opf) throws Exception {
@@ -114,6 +125,43 @@ public class MetaExtractorTest {
         TestFixtures.writeBytes(fb2, new byte[]{(byte) 0xFF, (byte) 0xFE, 0x00, 0x01, 0x02});
         MetaData md = MetaExtractor.extract(fb2);
         assertFalse(md.found);
+    }
+
+    // ------------------------------------------------------------------
+    // MOBI
+    // ------------------------------------------------------------------
+
+    @Test
+    public void mobiExtractsTitleAuthorPublisherDescriptionAndLanguage() throws Exception {
+        // Non-ASCII (Polish) title and author to exercise the UTF-8 code-page path.
+        TestFixtures.writeMobi(mobi, "Czterysta: Zbiór opowiadań", "Jan Kowalski",
+                "Wydawnictwo Testowe", "Historia o przygodach.", "pl", jpegBytes(), 2, 1);
+        MetaData md = MetaExtractor.extract(mobi);
+
+        assertTrue(md.found);
+        assertEquals("Czterysta: Zbiór opowiadań", md.title);
+        assertEquals("Jan Kowalski", md.author);
+        assertEquals("Wydawnictwo Testowe", md.publisher);
+        assertEquals("Historia o przygodach.", md.description);
+        assertEquals("pl", md.language);
+    }
+
+    @Test
+    public void mobiWithAzwExtensionIsParsedTheSameWay() throws Exception {
+        File azw = folder.newFile("book.azw");
+        TestFixtures.writeMobi(azw, "Azw Title", "Author", "Pub", "Desc.", "en",
+                jpegBytes(), 2, 1);
+
+        MetaData md = MetaExtractor.extract(azw);
+        assertTrue(md.found);
+        assertEquals("Azw Title", md.title);
+        assertEquals("Author", md.author);
+    }
+
+    @Test
+    public void corruptMobiReportsNotFound() throws Exception {
+        TestFixtures.writeBytes(mobi, new byte[]{0x00, 0x01, 0x02, 0x03, 0x04, 0x05});
+        assertFalse(MetaExtractor.extract(mobi).found);
     }
 
     // ------------------------------------------------------------------

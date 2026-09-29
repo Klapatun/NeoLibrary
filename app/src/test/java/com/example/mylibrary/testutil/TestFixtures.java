@@ -161,6 +161,146 @@ public final class TestFixtures {
     }
 
     // ------------------------------------------------------------------
+    // MOBI / AZW
+    // ------------------------------------------------------------------
+
+    /**
+     * Builds a structurally-valid, minimal MOBI (PalmDB) file in {@code f}. The file has
+     * four records: record 0 (PalmDOC + MOBI header + EXTH + the full-name title), a text
+     * record, a filler image record, and the cover image record. The cover is a raw JPEG
+     * (the {@code coverJpeg} bytes, which must start FFD8 and end FFD9) with 4 bytes of
+     * trailing record padding appended after its end-of-image marker, so that a correct
+     * extractor must trim it.
+     *
+     * <p>All multi-byte fields are written big-endian, matching the real format. The EXTH
+     * block carries author (100), publisher (101), description (103), language (524) and,
+     * when {@code coverOffset >= 0}, the cover offset (201). The cover image then lives in
+     * record {@code firstImageIndex + coverOffset}; pass a negative {@code coverOffset} to
+     * omit the 201 record entirely (a book without a cover image record).
+     */
+    public static void writeMobi(File f, String title, String author, String publisher,
+                                 String description, String language, byte[] coverJpeg,
+                                 int firstImageIndex, int coverOffset)
+            throws Exception {
+        final int nrecs = 4;
+        final int mobiHdrLen = 232;    // 0xE8, like real kindlegen output
+        final boolean hasCover = coverOffset >= 0;
+
+        byte[] titleBytes = title.getBytes("UTF-8");
+        byte[] authorB = author.getBytes("UTF-8");
+        byte[] pubB = publisher.getBytes("UTF-8");
+        byte[] descB = description.getBytes("UTF-8");
+        byte[] langB = language.getBytes("UTF-8");
+
+        // --- EXTH record bodies (id, size, content) ---
+        int recsLen = (8 + authorB.length) + (8 + pubB.length)
+                     + (8 + descB.length) + (8 + langB.length)
+                     + (hasCover ? 12 : 0);   // 201 -> 4-byte content
+        int exthLen = 12 + recsLen;               // length field excludes padding
+        int exthStart = 16 + mobiHdrLen;          // relative to record 0
+        int pad = (4 - (exthLen % 4)) % 4;
+        int exthTotal = exthLen + pad;
+        int fullNameOffset = exthStart + exthTotal;
+        int rec0Len = fullNameOffset + titleBytes.length;
+
+        // --- assemble record 0 ---
+        byte[] rec0 = new byte[rec0Len]; // zero-filled
+        putU16(rec0, 0x00, 1);           // compression = none
+        putU16(rec0, 0x08, 1);           // text record count
+        putU16(rec0, 0x0A, 4096);        // record size
+        putBytes(rec0, 0x10, "MOBI".getBytes("US-ASCII"));
+        putU32(rec0, 0x14, mobiHdrLen);
+        putU32(rec0, 0x18, 2);           // mobi type = book
+        putU32(rec0, 0x1C, 65001);       // code page = UTF-8
+        putU32(rec0, 0x68, 6);           // mobi version
+        putU32(rec0, 0x6C, firstImageIndex);
+        putU32(rec0, 0x80, 0x00000040);  // EXTH flag set
+        putU32(rec0, 0x54, fullNameOffset);
+        putU32(rec0, 0x58, titleBytes.length);
+
+        // --- EXTH block ---
+        int e = exthStart;
+        putBytes(rec0, e, "EXTH".getBytes("US-ASCII")); e += 4;
+        putU32(rec0, e, exthLen); e += 4;
+        putU32(rec0, e, 4 + (hasCover ? 1 : 0)); e += 4; // EXTH record count
+        writeExthRecord(rec0, e, 100, authorB); e += 8 + authorB.length;
+        writeExthRecord(rec0, e, 101, pubB); e += 8 + pubB.length;
+        writeExthRecord(rec0, e, 103, descB); e += 8 + descB.length;
+        writeExthRecord(rec0, e, 524, langB); e += 8 + langB.length;
+        if (hasCover) {
+            byte[] covOff = be32Bytes(coverOffset);
+            writeExthRecord(rec0, e, 201, covOff); e += 12;
+        }
+        // (padding bytes after e are already zero)
+
+        // --- full name (title) ---
+        putBytes(rec0, fullNameOffset, titleBytes);
+
+        // --- record table + data layout ---
+        int dataStart = 78 + nrecs * 8;      // 110
+        int off0 = dataStart;
+        int off1 = off0 + rec0Len;
+        int off2 = off1 + 8;
+        int off3 = off2 + 8;
+        int tailPad = 4;
+        int fileLen = off3 + coverJpeg.length + tailPad;
+
+        byte[] out = new byte[fileLen];
+        // PDB header
+        byte[] name = title.getBytes("US-ASCII");
+        int nlen = Math.min(31, name.length);
+        System.arraycopy(name, 0, out, 0, nlen);
+        putBytes(out, 60, "BOOK".getBytes("US-ASCII"));
+        putBytes(out, 64, "MOBI".getBytes("US-ASCII"));
+        putU16(out, 76, nrecs);
+        // record table (8 bytes each: offset BE, flag, 3-byte value)
+        int t = 78;
+        putU32(out, t, off0); t += 8;
+        putU32(out, t, off1); t += 8;
+        putU32(out, t, off2); t += 8;
+        putU32(out, t, off3); t += 8;
+        // record 0
+        System.arraycopy(rec0, 0, out, off0, rec0Len);
+        // record 1: text dummy
+        for (int i = 0; i < 8; i++) out[off1 + i] = (byte) 'x';
+        // record 2: filler image
+        for (int i = 0; i < 8; i++) out[off2 + i] = (byte) 0xAA;
+        // record 3: cover JPEG + trailing padding
+        System.arraycopy(coverJpeg, 0, out, off3, coverJpeg.length);
+        for (int i = 0; i < tailPad; i++) out[off3 + coverJpeg.length + i] = 0x00;
+
+        writeBytes(f, out);
+    }
+
+    private static void writeExthRecord(byte[] buf, int off, int id, byte[] content) {
+        putU32(buf, off, id);
+        putU32(buf, off + 4, content.length + 8);
+        System.arraycopy(content, 0, buf, off + 8, content.length);
+    }
+
+    private static void putU16(byte[] b, int off, int v) {
+        b[off] = (byte) (v >>> 8);
+        b[off + 1] = (byte) v;
+    }
+
+    private static void putU32(byte[] b, int off, int v) {
+        b[off] = (byte) (v >>> 24);
+        b[off + 1] = (byte) (v >>> 16);
+        b[off + 2] = (byte) (v >>> 8);
+        b[off + 3] = (byte) v;
+    }
+
+    private static byte[] be32Bytes(int v) {
+        byte[] b = new byte[4];
+        putU32(b, 0, v);
+        return b;
+    }
+
+    private static void putBytes(byte[] b, int off, byte[] data) {
+        System.arraycopy(data, 0, b, off, data.length);
+    }
+
+    // ------------------------------------------------------------------
     // IO helpers
     // ------------------------------------------------------------------
 

@@ -33,11 +33,22 @@ public class CoverExtractorTest {
 
     private File epub;
     private File fb2;
+    private File mobi;
 
     @Before
     public void setUp() throws Exception {
         epub = folder.newFile("book.epub");
         fb2 = folder.newFile("book.fb2");
+        mobi = folder.newFile("book.mobi");
+    }
+
+    /** A small deterministic JPEG payload (starts FFD8, ends FFD9). */
+    private static byte[] jpegBytes() {
+        java.io.ByteArrayOutputStream j = new java.io.ByteArrayOutputStream();
+        j.write(0xFF); j.write(0xD8);
+        for (int i = 0; i < 32; i++) j.write(i * 7 + 3);
+        j.write(0xFF); j.write(0xD9);
+        return j.toByteArray();
     }
 
     // ------------------------------------------------------------------
@@ -45,11 +56,11 @@ public class CoverExtractorTest {
     // ------------------------------------------------------------------
 
     @Test
-    public void canHaveCoverIsTrueOnlyForEpubAndFb2() {
+    public void canHaveCoverIsTrueForEpubFb2AndMobi() {
         assertTrue(CoverExtractor.canHaveCover("EPUB"));
         assertTrue(CoverExtractor.canHaveCover("FB2"));
+        assertTrue(CoverExtractor.canHaveCover("MOBI"));
         assertFalse(CoverExtractor.canHaveCover("PDF"));
-        assertFalse(CoverExtractor.canHaveCover("MOBI"));
         assertFalse(CoverExtractor.canHaveCover("DJVU"));
         assertFalse(CoverExtractor.canHaveCover("CHM"));
         assertFalse(CoverExtractor.canHaveCover(null));
@@ -121,6 +132,46 @@ public class CoverExtractorTest {
                 "<binary id=\"coverimg\" content-type=\"image/jpeg\">QUJD</binary>", "");
         TestFixtures.writeText(fb2, xml);
         assertNull(CoverExtractor.extract(fb2));
+    }
+
+    // ------------------------------------------------------------------
+    // MOBI covers
+    // ------------------------------------------------------------------
+
+    @Test
+    public void mobiCoverJpegIsTrimmedAtEndOfImage() throws Exception {
+        byte[] jpeg = jpegBytes();
+        // firstImageIndex = 2, EXTH cover offset = 1 -> the cover lives in record 3,
+        // which carries 4 bytes of trailing padding after the JPEG EOI marker.
+        TestFixtures.writeMobi(mobi, "Cover Book", "A. Author", "Publisher",
+                "A story.", "en", jpeg, 2, 1);
+
+        byte[] cover = CoverExtractor.extract(mobi);
+        assertNotNull("cover must be found", cover);
+        assertTrue("trailing record padding must be trimmed at the JPEG EOI marker",
+                java.util.Arrays.equals(cover, jpeg));
+    }
+
+    @Test
+    public void mobiWithoutCoverRecordReturnsNull() throws Exception {
+        // No EXTH 201 record -> no cover image can be located.
+        TestFixtures.writeMobi(mobi, "No Cover", "A. Author", "Publisher",
+                "A story.", "en", jpegBytes(), 2, -1);
+        assertNull(CoverExtractor.extract(mobi));
+    }
+
+    @Test
+    public void mobiCoverPointingAtNonImageRecordReturnsNull() throws Exception {
+        // Cover record = 1 + 0 = record 1, the text record ("xxxxxxxx") — not an image.
+        TestFixtures.writeMobi(mobi, "Bad Cover", "A. Author", "Publisher",
+                "A story.", "en", jpegBytes(), 1, 0);
+        assertNull(CoverExtractor.extract(mobi));
+    }
+
+    @Test
+    public void corruptMobiReturnsNullWithoutThrowing() throws Exception {
+        TestFixtures.writeBytes(mobi, new byte[]{0x00, 0x01, 0x02, 0x03, 0x04, 0x05});
+        assertNull(CoverExtractor.extract(mobi));
     }
 
     // ------------------------------------------------------------------
