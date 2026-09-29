@@ -114,7 +114,10 @@ public final class MetaWriter {
             String closeTag = "</dc:" + name + ">";
             int close = lower.indexOf(closeTag, contentStart);
             if (close >= 0) {
-                return xml.substring(0, contentStart) + escaped + xml.substring(close + closeTag.length());
+                // Keep the closing tag in place: replace only the text between the
+                // opening tag and the closing tag (substring(close) re-emits the
+                // closing tag itself).
+                return xml.substring(0, contentStart) + escaped + xml.substring(close);
             }
         } else {
             // insert before </metadata> or, failing that, </opf:metadata>
@@ -258,7 +261,11 @@ public final class MetaWriter {
     /** Replaces content of the first {@code <tag>...</tag>} occurrence, escaping value. */
     private static String replaceElementContent(String xml, String tag, String value) {
         if (value == null) value = "";
-        Pattern open = Pattern.compile("(?is)(<" + Pattern.quote(tag) + "[^>]*>)(.*?)(</" + Pattern.quote(tag) + ">)");
+        // The opening tag must be the exact tag name followed by whitespace, '/' or
+        // '>'. A bare [^>]* after the name would also match longer names that share
+        // the prefix — e.g. <title-info> for tag "title" — and corrupt the parent
+        // block instead of the target element.
+        Pattern open = Pattern.compile("(?is)(<" + Pattern.quote(tag) + "(?:\\s[^>]*)?>)(.*?)(</" + Pattern.quote(tag) + ">)");
         Matcher m = open.matcher(xml);
         if (m.find()) {
             return m.replaceFirst(Matcher.quoteReplacement(m.group(1)) + escapeXml(value)

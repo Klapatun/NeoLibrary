@@ -38,4 +38,9 @@ dependencies {
     // No runtime dependencies: everything is built on the Android framework and JDK
     // classes (java.util.zip, XmlPullParser via android.util.Xml), so the app builds
     // offline against API 19 without AndroidX or any third-party libs.
+
+    // Test-only (never shipped in the APK; the "no extra deps" invariant is about
+    // runtime). Phase 1 covers the pure-JVM core with plain JUnit. Robolectric is
+    // added in phase 2.
+    testImplementation 'junit:junit:4.13.2'
 }
