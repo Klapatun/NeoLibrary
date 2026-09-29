@@ -1,0 +1,77 @@
+#!/bin/sh
+# ---------------------------------------------------------------------------
+# pre-push hook — NeoLibrary
+#
+#  1. Refuses direct pushes to master. Push a feature branch and open a
+#     pull request instead; branch protection on GitHub then runs the CI
+#     tests and blocks the merge if they fail.
+#  2. Runs the unit test suite (the same task CI runs:
+#     ./gradlew testDebugUnitTest) before ANY push and aborts the push if
+#     a test fails.
+#
+# Enable once per clone (the hook stays in the repo under git-hooks/):
+#     git config core.hooksPath git-hooks
+#
+# Emergency bypass of the master block (tests still run):
+#     ALLOW_PUSH_MASTER=1 git push ...
+# ---------------------------------------------------------------------------
+
+remote_name="$1"
+
+# Refs being pushed arrive on stdin, one per line:
+#   <local ref> <local sha> <remote ref> <remote sha>
+while read -r local_ref local_sha remote_ref remote_sha; do
+  case "$remote_ref" in
+    refs/heads/master)
+      if [ "${ALLOW_PUSH_MASTER:-0}" != "1" ]; then
+        echo "pre-push: refusing to push to master on '$remote_name'."
+        echo "          Push a feature branch and open a pull request instead:"
+        echo "            git checkout -b feature/<name>"
+        echo "            git push -u origin HEAD"
+        echo "          (emergency bypass: ALLOW_PUSH_MASTER=1 git push ...)"
+        exit 1
+      fi
+      ;;
+  esac
+done
+
+# --- run the unit tests, same as CI ----------------------------------------
+echo "pre-push: running unit tests (gradlew testDebugUnitTest) before push..."
+cd "$(git rev-parse --show-toplevel)" || exit 1
+
+# If `java` is not on PATH, look for a JDK in common locations (on this
+# machine JDK 17 ships with Android Studio).
+if ! command -v java >/dev/null 2>&1; then
+  for cand in \
+    "D:/Program Files/Android/Android Studio/jbr" \
+    "C:/Program Files/Android/Android Studio/jbr" \
+    "$HOME/.jdks/jbr-17" \
+    /usr/lib/jvm/java-17 \
+    /usr/lib/jvm/default-java; do
+    if [ -x "$cand/bin/java" ]; then
+      JAVA_HOME="$cand"
+      export JAVA_HOME
+      echo "pre-push: using JAVA_HOME=$JAVA_HOME"
+      break
+    fi
+  done
+fi
+
+case "$(uname -s 2>/dev/null)" in
+  MINGW*|MSYS*|CYGWIN*)
+    ./gradlew.bat --no-daemon testDebugUnitTest
+    ;;
+  *)
+    ./gradlew --no-daemon testDebugUnitTest
+    ;;
+esac
+status=$?
+
+if [ "$status" -ne 0 ]; then
+  echo "pre-push: tests FAILED (exit $status) — push aborted."
+  echo "          Fix the tests and push again, or review the output above."
+  exit 1
+fi
+
+echo "pre-push: tests passed — pushing to $remote_name."
+exit 0

@@ -1,0 +1,3 @@
+# Git hooks are executed by sh; they must keep LF line endings on every
+# platform (with core.autocrlf=true a normal checkout would break them).
+git-hooks/* text eol=lf

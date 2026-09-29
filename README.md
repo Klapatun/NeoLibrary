@@ -205,6 +205,27 @@ protection rule** for `master`:
 > The check must have run at least once (open any PR or push to `master`) before it
 > appears in the status-checks selector.
 
+### Local pre-push hook (master guard + tests before every push)
+
+The repo ships a **`pre-push`** hook (versioned in `git-hooks/`). Before **any** push it:
+
+1. **Refuses direct pushes to `master`** — push a feature branch and open a pull
+   request instead. Emergency bypass: `ALLOW_PUSH_MASTER=1 git push ...`
+   (tests still run).
+2. **Runs the unit tests** — the same task CI runs, `./gradlew testDebugUnitTest` —
+   and aborts the push if a test fails.
+
+Enable it once per clone (the script lives in the repo, so it updates with the code):
+
+```bash
+git config core.hooksPath git-hooks
+```
+
+Notes: on machines where `java` is not on `PATH` the hook auto-detects the JDK 17
+bundled with Android Studio (the `jbr` folder); the Android SDK is read from
+`local.properties` / `ANDROID_HOME`. The hook is POSIX `sh`, so `.gitattributes`
+keeps `git-hooks/*` with LF endings on every platform.
+
 ## Project layout
 
 ```
