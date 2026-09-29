@@ -191,7 +191,9 @@ every PR into `master` and every push to `master`:
 1. **`Unit tests (JUnit + Robolectric)`** — `./gradlew testDebugUnitTest` on JDK 17 with
    Android SDK Platform 34 (all tests from `app/src/test`). Test reports are uploaded as
    an artifact.
-2. **`Assemble debug APK`** — `./gradlew assembleDebug` (runs only if the tests pass);
+2. **`Android Lint`** — `./gradlew :app:lintDebug` (runs in parallel with the tests).
+   Reports are uploaded as an artifact; see the "Lint" section below.
+3. **`Assemble debug APK`** — `./gradlew assembleDebug` (runs only if the tests pass);
    the APK is uploaded as an artifact.
 
 ### Enforcing "no merge on red tests"
@@ -211,9 +213,52 @@ protection rule** for `master`:
 > The check must have run at least once (open any PR or push to `master`) before it
 > appears in the status-checks selector.
 
+### Lint
+
+Lint is **Android Lint**, the static analyzer bundled with AGP 8.5.2 — no extra
+dependencies, and the build stays fully offline. Rule severities live in
+`app/lint.xml`. The key invariant "minSdk 19, no APIs above 19" is enforced by
+promoting **`NewApi` to error**: any call that requires an API level above 19
+must be version-checked (or simply is not used here). Checks that do not apply
+to this stack — Google app indexing, icon-density folders for the plain PNG
+Holo icons — are ignored.
+
+Run it locally:
+
+```bash
+./gradlew :app:lint          # all variants
+./gradlew :app:lintDebug      # debug only (what CI runs)
+```
+
+Reports land in `app/build/reports/` as `lint-results-debug.{txt,xml,html}`. The `pre-push` hook
+still runs only the tests to keep pushes fast; the lint gate lives in CI.
+
+Rollout is two phases:
+
+- **Phase 1 (current):** `abortOnError false` in `app/build.gradle` — lint
+  reports but never blocks. Review the CI reports, fix the real errors
+  (especially `NewApi`), and if there is legacy noise you do not want to fix
+  now, freeze it: add `baselineFile = file('lint-baseline.xml')` to the `lint`
+  block, run `./gradlew :app:lintDebug`, and commit the generated
+  `app/lint-baseline.xml`. Frozen issues stop being reported; new ones still
+  are.
+- **Phase 2:** once clean, set `abortOnError true` and add the **`Android
+  Lint`** check to the branch protection rule (step 3 above). From then on a
+  PR with new lint errors gets a red check and cannot be merged.
+
+### Local pre-commit hook (lint before every commit)
+
+The repo ships a **`pre-commit`** hook (versioned in `git-hooks/`). Before **any**
+commit it runs the same Android Lint task CI runs (`./gradlew :app:lintDebug`)
+and aborts the commit if lint fails (reports: `app/build/reports/lint/`). It
+uses the Gradle daemon on purpose — commits are frequent, and a warm daemon
+keeps each run fast. Emergency bypass: `SKIP_LINT=1 git commit ...`. The test
+suite is not repeated here: `pre-push` already runs it before every push.
+
 ### Local pre-push hook (master guard + tests before every push)
 
-The repo ships a **`pre-push`** hook (versioned in `git-hooks/`). Before **any** push it:
+The repo also ships a **`pre-push`** hook (versioned in `git-hooks/`). Before
+**any** push it:
 
 1. **Refuses direct pushes to `master`** — push a feature branch and open a pull
    request instead. Emergency bypass: `ALLOW_PUSH_MASTER=1 git push ...`
@@ -221,7 +266,8 @@ The repo ships a **`pre-push`** hook (versioned in `git-hooks/`). Before **any**
 2. **Runs the unit tests** — the same task CI runs, `./gradlew testDebugUnitTest` —
    and aborts the push if a test fails.
 
-Enable it once per clone (the script lives in the repo, so it updates with the code):
+Enable it once per clone (both scripts live in the repo, so they update with
+the code):
 
 ```bash
 git config core.hooksPath git-hooks

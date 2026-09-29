@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Lint configuration for Neo Library.
+
+  Lint is the Android Lint analyzer bundled with AGP 8.5.2: no extra
+  dependencies, and the build stays fully offline.
+
+  The key project invariant is "minSdk 19, no APIs above 19", so NewApi is
+  promoted to error: any call that requires an API level above 19 must be
+  version-checked (or simply is not used here).
+
+  Phase 1: reports only (abortOnError false in app/build.gradle).
+  Phase 2 (after the baseline is reviewed/fixed): flip abortOnError to true
+  and add the "Android Lint" CI job to the required status checks on master.
+  See README.md, "CI and branch protection" -> "Lint".
+-->
+<lint>
+
+    <!-- Invariant guards: fail on these. -->
+    <issue id="NewApi" severity="error" />
+    <issue id="ObsoleteApi" severity="error" />
+    <issue id="ObsoleteSdkInt" severity="error" />
+    <issue id="MissingPermission" severity="error" />
+
+    <!-- Stack-specific noise: this project intentionally ships plain PNG
+         Holo icons and uses no Google services, so these checks do not
+         apply. -->
+    <issue id="GoogleAppIndexing" severity="ignore" />
+    <issue id="IconDensities" severity="ignore" />
+    <issue id="IconMissingDensityFolder" severity="ignore" />
+    <issue id="IconLocation" severity="ignore" />
+
+    <!-- i18n: warn for now; some UI strings are still hardcoded. -->
+    <issue id="SetTextI18n" severity="warning" />
+    <issue id="HardcodedText" severity="warning" />
+
+</lint>

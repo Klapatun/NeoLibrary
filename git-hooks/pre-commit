@@ -1,0 +1,68 @@
+#!/bin/sh
+# ---------------------------------------------------------------------------
+# pre-commit hook — NeoLibrary
+#
+#  Runs Android Lint (the same task CI runs: ./gradlew :app:lintDebug)
+#  before ANY commit and aborts the commit if lint fails. Lint is bundled
+#  with AGP — no extra dependencies; rules live in app/lint.xml.
+#
+#  The unit test suite is not repeated here: pre-push already runs
+#  ./gradlew testDebugUnitTest before every push (same as CI).
+#
+#  A Gradle daemon is used on purpose (no --no-daemon, unlike pre-push):
+#  commits are frequent, and a warm daemon keeps each lint run fast.
+#
+#  Enable once per clone (the scripts live in the repo under git-hooks/):
+#      git config core.hooksPath git-hooks
+#
+#  Emergency bypass (commit without lint):
+#      SKIP_LINT=1 git commit ...
+# ---------------------------------------------------------------------------
+
+if [ "${SKIP_LINT:-0}" = "1" ]; then
+  echo "pre-commit: SKIP_LINT=1 — skipping Android Lint."
+  exit 0
+fi
+
+cd "$(git rev-parse --show-toplevel)" || exit 1
+
+# If `java` is not on PATH, look for a JDK in common locations (same list as
+# pre-push: on this machine JDK 17 ships with Android Studio).
+if ! command -v java >/dev/null 2>&1; then
+  for cand in \
+    "D:/Program Files/Android/Android Studio/jbr" \
+    "C:/Program Files/Android/Android Studio/jbr" \
+    "$HOME/.jdks/jbr-17" \
+    /usr/lib/jvm/java-17 \
+    /usr/lib/jvm/default-java; do
+    if [ -x "$cand/bin/java" ]; then
+      JAVA_HOME="$cand"
+      export JAVA_HOME
+      echo "pre-commit: using JAVA_HOME=$JAVA_HOME"
+      break
+    fi
+  done
+fi
+
+echo "pre-commit: running Android Lint (gradlew :app:lintDebug) before commit..."
+
+case "$(uname -s 2>/dev/null)" in
+  MINGW*|MSYS*|CYGWIN*)
+    ./gradlew.bat :app:lintDebug
+    ;;
+  *)
+    ./gradlew :app:lintDebug
+    ;;
+esac
+status=$?
+
+if [ "$status" -ne 0 ]; then
+  echo "pre-commit: lint FAILED (exit $status) — commit aborted."
+  echo "          Reports: app/build/reports/lint-results-*.html — fix them"
+  echo "          commit again, or review the output above."
+  echo "          Emergency bypass: SKIP_LINT=1 git commit ..."
+  exit 1
+fi
+
+echo "pre-commit: lint passed — committing."
+exit 0

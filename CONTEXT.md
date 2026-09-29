@@ -81,4 +81,9 @@ extractable cover (via `CoverExtractor.canHaveCover`) a letter badge is shown in
 
 - Android Studio 2024.2.2 (bundles JDK 17), SDK Platform 34. Sync → Run.
 - CLI: `gradlew.bat assembleDebug` → `app/build/outputs/apk/debug/app-debug.apk`.
+- Lint: `gradlew.bat :app:lint` (Android Lint bundled with AGP, rules in `app/lint.xml`;
+  reports in `app/build/reports/lint-results-*.{txt,xml,html}`). CI runs `:app:lintDebug`
+  on every PR.
+- Git hooks: `git config core.hooksPath git-hooks` → `pre-commit` runs Android Lint before
+  every commit, `pre-push` blocks direct pushes to master and runs the test suite.
 - If Studio reports a missing wrapper jar: **File ▸ Sync Project with Gradle Files**.

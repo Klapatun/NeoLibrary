@@ -29,7 +29,16 @@ android {
     }
 
     lint {
-        // We intentionally target API 19 and use only framework classes.
+        // Android Lint (bundled with AGP 8.5.2 — no extra deps, build stays
+        // offline). Rule severities live in app/lint.xml; the minSdk-19
+        // invariant is guarded by NewApi=error there.
+        checkReleaseBuilds true
+        textReport true
+        xmlReport true
+        // Phase 1: report only — the baseline hasn't been reviewed yet.
+        // Once the errors are fixed (and legacy noise frozen in a
+        // lint-baseline.xml if needed), flip to true and add the "Android
+        // Lint" CI job to the required status checks on master.
         abortOnError false
     }
 
