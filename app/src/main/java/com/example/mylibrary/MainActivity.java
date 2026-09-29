@@ -67,6 +67,10 @@ public class MainActivity extends Activity {
         list.setEmptyView(emptyView);
         grid.setEmptyView(emptyView);
         adapter = new BookAdapter(this);
+        // Attach the adapter to BOTH views once. Since list and grid live stacked in a
+        // FrameLayout, attaching/detaching on every toggle is what used to leave both
+        // attached and let them render on top of each other; attaching once keeps them
+        // in sync and makes setViewMode a pure visibility swap.
         list.setAdapter(adapter);
 
         list.setOnItemClickListener(new AdapterView.OnItemClickListener() {
@@ -107,14 +111,18 @@ public class MainActivity extends Activity {
 
         // Re-attach to whichever is now visible.
         if (isGrid) {
-            if (this.grid.getAdapter() == null)
+            if (this.grid.getAdapter() == null) {
+                this.list.setAdapter(null);
                 this.grid.setAdapter(adapter);
+            }
 
             this.grid.setVisibility(View.VISIBLE);
             this.list.setVisibility(View.GONE);
         } else {
-            if (this.list.getAdapter() == null)
+            if (this.list.getAdapter() == null) {
+                this.grid.setAdapter(null);
                 this.list.setAdapter(adapter);
+            }
 
             this.list.setVisibility(View.VISIBLE);
             this.grid.setVisibility(View.GONE);

@@ -108,12 +108,17 @@ public class BookAdapter extends BaseAdapter {
 
         boolean canCover = CoverExtractor.canHaveCover(b.format);
         initial.setText(b.initial());
+        // Invalidate any cover tag first so a stale async load from a previous format
+        // can never paint over this tile (its onPostExecute checks the tag == matches
+        // the fresh one only). This is what prevented covers leaking across formats.
+        cover.setTag(R.id.cover_tag, null);
         if (canCover) {
             // May already be showing a cached cover from a previous bind.
             cover.setVisibility(View.VISIBLE);
             initial.setVisibility(View.INVISIBLE); // badge shown only until a cover loads
             CoverLoader.load(b, cover, initial);
         } else {
+            cover.setImageBitmap(null);
             cover.setVisibility(View.GONE);
             initial.setVisibility(View.VISIBLE);
         }
