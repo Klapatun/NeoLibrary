@@ -56,9 +56,10 @@ public class CoverExtractorTest {
     // ------------------------------------------------------------------
 
     @Test
-    public void canHaveCoverIsTrueForEpubFb2AndMobi() {
+    public void canHaveCoverIsTrueForEpubFb2Fb2ZipAndMobi() {
         assertTrue(CoverExtractor.canHaveCover("EPUB"));
         assertTrue(CoverExtractor.canHaveCover("FB2"));
+        assertTrue(CoverExtractor.canHaveCover("FB2ZIP"));
         assertTrue(CoverExtractor.canHaveCover("MOBI"));
         assertFalse(CoverExtractor.canHaveCover("PDF"));
         assertFalse(CoverExtractor.canHaveCover("DJVU"));
@@ -132,6 +133,70 @@ public class CoverExtractorTest {
                 "<binary id=\"coverimg\" content-type=\"image/jpeg\">QUJD</binary>", "");
         TestFixtures.writeText(fb2, xml);
         assertNull(CoverExtractor.extract(fb2));
+    }
+
+    // ------------------------------------------------------------------
+    // FB2ZIP covers
+    // ------------------------------------------------------------------
+
+    @Test
+    public void fb2ZipCoverFromInnerBinaryBlockIsReturned() throws Exception {
+        File fz = folder.newFile("covered.fb2.zip");
+        String base64 = Base64.getEncoder().encodeToString(TestFixtures.coverBytes());
+        java.util.Map<String, byte[]> entries = new java.util.LinkedHashMap<String, byte[]>();
+        entries.put("covered.fb2", TestFixtures.buildFb2WithCover(base64).getBytes("UTF-8"));
+        TestFixtures.writeZip(fz, entries);
+
+        byte[] cover = CoverExtractor.extract(fz);
+        assertNotNull("cover must be found in the inner FB2's binary block", cover);
+        assertTrue(java.util.Arrays.equals(cover, TestFixtures.coverBytes()));
+    }
+
+    @Test
+    public void fb2ZipCoverFromLooseCoverJpgEntryIsReturned() throws Exception {
+        // Inner FB2 has no coverpage; the archive ships a loose cover.jpg next to it.
+        File fz = folder.newFile("loose.fb2.zip");
+        java.util.Map<String, byte[]> entries = new java.util.LinkedHashMap<String, byte[]>();
+        entries.put("loose.fb2", TestFixtures.FB2_FULL.getBytes("UTF-8"));
+        entries.put("cover.jpg", TestFixtures.coverBytes());
+        TestFixtures.writeZip(fz, entries);
+
+        byte[] cover = CoverExtractor.extract(fz);
+        assertNotNull("loose cover.jpg must be found", cover);
+        assertTrue(java.util.Arrays.equals(cover, TestFixtures.coverBytes()));
+    }
+
+    @Test
+    public void fb2ZipPrefersInnerBinaryBlockOverLooseImage() throws Exception {
+        byte[] innerCover = jpegBytes();
+        String base64 = Base64.getEncoder().encodeToString(innerCover);
+        File fz = folder.newFile("both.fb2.zip");
+        java.util.Map<String, byte[]> entries = new java.util.LinkedHashMap<String, byte[]>();
+        entries.put("both.fb2", TestFixtures.buildFb2WithCover(base64).getBytes("UTF-8"));
+        entries.put("cover.jpg", TestFixtures.coverBytes());
+        TestFixtures.writeZip(fz, entries);
+
+        byte[] cover = CoverExtractor.extract(fz);
+        assertNotNull(cover);
+        assertTrue("the inner FB2 cover must take priority over the loose image",
+                java.util.Arrays.equals(cover, innerCover));
+    }
+
+    @Test
+    public void fb2ZipWithoutAnyCoverReturnsNull() throws Exception {
+        File fz = folder.newFile("nobody.fb2.zip");
+        java.util.Map<String, byte[]> entries = new java.util.LinkedHashMap<String, byte[]>();
+        entries.put("nobody.fb2", TestFixtures.FB2_FULL.getBytes("UTF-8"));
+        TestFixtures.writeZip(fz, entries);
+
+        assertNull(CoverExtractor.extract(fz));
+    }
+
+    @Test
+    public void corruptFb2ZipReturnsNullWithoutThrowing() throws Exception {
+        File fz = folder.newFile("broken.fb2.zip");
+        TestFixtures.writeBytes(fz, new byte[]{(byte) 0x50, (byte) 0x4B, 0x03, 0x04, 0x01});
+        assertNull(CoverExtractor.extract(fz));
     }
 
     // ------------------------------------------------------------------
