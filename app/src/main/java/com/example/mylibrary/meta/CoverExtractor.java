@@ -10,6 +10,7 @@ import java.io.File;
 import java.io.FileInputStream;
 import java.io.InputStream;
 import java.util.HashMap;
+import java.util.Locale;
 import java.util.Map;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipInputStream;
@@ -24,6 +25,10 @@ import java.util.zip.ZipInputStream;
  *       id maps to a manifest item with an {@code href} inside the ZIP.</li>
  *   <li><b>FB2</b> — the {@code description} has a {@code <coverpage><image l:href="#id"/>}
  *       element pointing at a {@code <binary id="...">} entry (base64-encoded).</li>
+ *   <li><b>FB2.ZIP</b> — a ZIP whose payload is an FB2 document: the cover comes from
+ *       the inner FB2's {@code <binary>} block (same path as a plain FB2), or, when the
+ *       inner document has no coverpage, from a loose image entry (e.g.
+ *       {@code cover.jpg}) shipped next to the {@code .fb2} inside the archive.</li>
  *   <li><b>MOBI/AZW</b> — the EXTH block's {@code 201} record gives an offset that,
  *       added to the header's "first image" record index, locates the cover image
  *       record (a raw JPEG/PNG stored in a single PalmDB record).</li>
@@ -33,8 +38,8 @@ import java.util.zip.ZipInputStream;
  * more complex structures that need dedicated libraries, so they return {@code null}
  * and the UI shows a letter placeholder instead.</p>
  *
- * <p>All parsing uses the platform {@link java.util.zip}, {@link XmlPullParser} and raw
- * byte reads so it stays dependency-free and compatible with API 19.</p>
+ * <p>All parsing uses the platform {@link java.util.zip}, plain string/regex matching
+ * and raw byte reads so it stays dependency-free and compatible with API 19.</p>
  */
 public final class CoverExtractor {
 
@@ -50,6 +55,7 @@ public final class CoverExtractor {
         try {
             if (format.equals("EPUB")) return extractEpub(file);
             if (format.equals("FB2")) return extractFb2(file);
+            if (format.equals("FB2ZIP")) return extractFb2Zip(file);
             if (format.equals("MOBI")) return extractMobi(file);
         } catch (Exception ignored) {
             // Any malformed file simply yields no cover.
@@ -59,7 +65,8 @@ public final class CoverExtractor {
 
     /** Returns true if the format is expected to be able to carry a cover. */
     public static boolean canHaveCover(String format) {
-        return "EPUB".equals(format) || "FB2".equals(format) || "MOBI".equals(format);
+        return "EPUB".equals(format) || "FB2".equals(format)
+                || "FB2ZIP".equals(format) || "MOBI".equals(format);
     }
 
     // -------------------------------------------------------------------
@@ -180,7 +187,31 @@ public final class CoverExtractor {
     private static byte[] extractFb2(File file) throws Exception {
         String xml = readTextFile(file);
         if (xml == null) return null;
+        return coverFromFb2Xml(xml);
+    }
 
+    /**
+     * FB2ZIP is a ZIP container whose main content is an FB2 document. Two cover
+     * locations are recognised, mirroring what Neo Reader looks at: first the inner
+     * FB2's own {@code <coverpage>}/{@code <binary>} block (the same path as a plain
+     * FB2), then — when the inner document carries no coverpage — a loose image entry
+     * (e.g. {@code cover.jpg}) shipped next to the {@code .fb2} inside the archive.
+     */
+    private static byte[] extractFb2Zip(File file) throws Exception {
+        byte[] xml = readFb2Entry(file);
+        if (xml != null) {
+            byte[] inner = coverFromFb2Xml(new String(xml, "UTF-8"));
+            if (inner != null) return inner;
+        }
+        return findLooseImageEntry(file);
+    }
+
+    /**
+     * The shared FB2 cover lookup: finds {@code <coverpage>} →
+     * {@code href="#id"} → {@code <binary id="...">base64</binary>} in the given XML
+     * text and returns the decoded image bytes, or {@code null} when absent.
+     */
+    private static byte[] coverFromFb2Xml(String xml) {
         // Find <coverpage> ... <image l:href="#someId" /> ... </coverpage>
         int coverStart = xml.indexOf("<coverpage");
         if (coverStart < 0) coverStart = xml.indexOf("<cover-page");
@@ -220,6 +251,57 @@ public final class CoverExtractor {
         base64 = base64.replaceAll("\\s", "");
         if (base64.length() == 0) return null;
         return Base64.decode(base64, Base64.DEFAULT);
+    }
+
+    /**
+     * Returns the bytes of the first {@code .fb2} file entry in the given ZIP archive
+     * (entry names matched case-insensitively, so a book tucked into a subfolder is
+     * found too), or {@code null} if the archive contains no FB2 document.
+     */
+    private static byte[] readFb2Entry(File file) throws Exception {
+        ZipInputStream zip = new ZipInputStream(new BufferedInputStream(new FileInputStream(file)));
+        try {
+            ZipEntry e;
+            while ((e = zip.getNextEntry()) != null) {
+                if (!e.isDirectory() && e.getName().toLowerCase(Locale.US).endsWith(".fb2")) {
+                    return readToEndBytes(zip);
+                }
+            }
+        } finally {
+            zip.close();
+        }
+        return null;
+    }
+
+    /**
+     * Scans the archive for a loose image entry: an entry whose name ends with a common
+     * image extension. An entry whose name also contains "cover" (the typical
+     * {@code cover.jpg} layout of FB2.ZIP packages) wins outright; otherwise the first
+     * image entry in archive order is returned. {@code null} when there is no image.
+     */
+    private static byte[] findLooseImageEntry(File file) throws Exception {
+        byte[] fallback = null;
+        ZipInputStream zip = new ZipInputStream(new BufferedInputStream(new FileInputStream(file)));
+        try {
+            ZipEntry e;
+            while ((e = zip.getNextEntry()) != null) {
+                if (e.isDirectory()) continue;
+                String name = e.getName().toLowerCase(Locale.US);
+                if (!isImageName(name)) continue;
+                if (name.contains("cover")) return readToEndBytes(zip);
+                if (fallback == null) fallback = readToEndBytes(zip);
+            }
+        } finally {
+            zip.close();
+        }
+        return fallback;
+    }
+
+    /** True if the (lower-cased) entry name ends with a common image extension. */
+    private static boolean isImageName(String lowerName) {
+        return lowerName.endsWith(".jpg") || lowerName.endsWith(".jpeg")
+                || lowerName.endsWith(".png") || lowerName.endsWith(".gif")
+                || lowerName.endsWith(".bmp");
     }
 
     // -------------------------------------------------------------------

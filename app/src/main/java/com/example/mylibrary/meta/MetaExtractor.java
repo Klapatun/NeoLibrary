@@ -6,10 +6,12 @@ import com.example.mylibrary.scan.Formats;
 
 import org.xmlpull.v1.XmlPullParser;
 
+import java.io.ByteArrayInputStream;
 import java.io.BufferedInputStream;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.InputStream;
+import java.util.Locale;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipInputStream;
 
@@ -18,7 +20,9 @@ import java.util.zip.ZipInputStream;
  * supported formats.
  *
  * <p>EPUB and FB2 have well-defined, easily editable metadata structures and are
- * fully parsed. MOBI/AZW is parsed read-only (PalmDB + MOBI header + EXTH) for
+ * fully parsed (FB2ZIP — a ZIP container around an FB2 document — is parsed
+ * through its inner {@code .fb2} entry). MOBI/AZW is parsed read-only
+ * (PalmDB + MOBI header + EXTH) for
  * title/author/publisher/description/language. Plain-text and other simple formats
  * are parsed best-effort for title/author. For the remaining container formats (CHM,
  * DjVu, PDB, PDF, DOC/DOCX, RTF, FB3...) we do not rewrite files, so catalog metadata
@@ -42,6 +46,7 @@ public final class MetaExtractor {
         try {
             if (format.equals("EPUB")) return extractEpub(file);
             if (format.equals("FB2")) return extractFb2(file);
+            if (format.equals("FB2ZIP")) return extractFb2Zip(file);
             if (format.equals("MOBI")) return extractMobi(file);
             if (format.equals("TXT")) return extractText(file);
             if (format.equals("HTML")) return extractHtml(file);
@@ -154,8 +159,33 @@ public final class MetaExtractor {
 
     /** FB2 is UTF-8 XML with a &lt;description&gt; block containing title-info. */
     private static MetaData extractFb2(File file) throws Exception {
-        MetaData md = new MetaData();
         InputStream in = new BufferedInputStream(new FileInputStream(file));
+        try {
+            return parseFb2Xml(in);
+        } finally {
+            in.close();
+        }
+    }
+
+    /**
+     * FB2ZIP (".fb2.zip") is a ZIP container whose payload is a plain FB2 document
+     * (often alongside a loose cover image). The metadata lives in the inner FB2's
+     * &lt;description&gt; block, so we pull the first {@code .fb2} entry out of the
+     * archive and parse it exactly like a standalone FB2 file.
+     */
+    private static MetaData extractFb2Zip(File file) throws Exception {
+        byte[] xml = readFb2Entry(file);
+        if (xml == null) return notFound(file);
+        return parseFb2Xml(new ByteArrayInputStream(xml));
+    }
+
+    /**
+     * Parses a FB2 XML stream into a {@link MetaData}: title, author name parts
+     * (first/middle/last/nickname, combined afterwards), publisher, annotation,
+     * language and genre.
+     */
+    private static MetaData parseFb2Xml(InputStream in) throws Exception {
+        MetaData md = new MetaData();
         XmlPullParser p = Xml.newPullParser();
         p.setInput(in, "UTF-8");
         int event;
@@ -190,7 +220,6 @@ public final class MetaExtractor {
                 pending = null;
             }
         }
-        in.close();
 
         StringBuilder author = new StringBuilder();
         if (md.firstName != null) author.append(md.firstName).append(' ');
@@ -199,6 +228,35 @@ public final class MetaExtractor {
         md.author = author.toString().trim();
         md.found = md.title != null && md.title.length() > 0;
         return md;
+    }
+
+    /**
+     * Returns the bytes of the first {@code .fb2} file entry in the given ZIP archive
+     * (entry names matched case-insensitively, so a book tucked into a subfolder is
+     * found too), or {@code null} if the archive contains no FB2 document.
+     */
+    private static byte[] readFb2Entry(File file) throws Exception {
+        ZipInputStream zip = new ZipInputStream(new BufferedInputStream(new FileInputStream(file)));
+        try {
+            ZipEntry e;
+            while ((e = zip.getNextEntry()) != null) {
+                if (!e.isDirectory() && e.getName().toLowerCase(Locale.US).endsWith(".fb2")) {
+                    return readEntryBytes(zip);
+                }
+            }
+        } finally {
+            zip.close();
+        }
+        return null;
+    }
+
+    /** Reads the current (already-opened) zip entry into a byte array. */
+    private static byte[] readEntryBytes(ZipInputStream zip) throws Exception {
+        java.io.ByteArrayOutputStream baos = new java.io.ByteArrayOutputStream();
+        byte[] buf = new byte[8192];
+        int n;
+        while ((n = zip.read(buf)) > 0) baos.write(buf, 0, n);
+        return baos.toByteArray();
     }
 
     // -------------------------------------------------------------------

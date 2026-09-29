@@ -15,7 +15,7 @@ The app scans storage for and opens in Neo Reader every format Neo Reader 3.0 ca
 | DjVu       | `.djvu`      | —            | —   |
 | EPUB       | `.epub`      | ✅ (OPF)     | ✅ (OPF rebuild) |
 | FB2        | `.fb2`       | ✅ (XML)     | ✅ (XML patch) |
-| FB2.ZIP    | `.fb2.zip`   | —            | —   |
+| FB2.ZIP    | `.fb2.zip`   | ✅ (inner FB2) | —   |
 | FB3        | `.fb3`       | —            | —   |
 | HTML/HTM   | `.html/.htm` | ✅ (`<title>`) | — |
 | MOBI/AZW   | `.mobi/.azw` | ✅ (PalmDB/EXTH) | —   |
@@ -36,7 +36,7 @@ title/author/publisher/description *inside the file itself*.
   secondary SD-card mount points, filtered to the supported extensions.
 - **Browse** — list sorted by title, with a per-format filter and a *Recently read* view.
   Toggle between a **list** and a **tile/grid** layout (grid shows the embedded cover
-  preview for EPUB/FB2/MOBI, with a letter badge for formats without a cover).
+  preview for EPUB/FB2/FB2.ZIP/MOBI, with a letter badge for formats without a cover).
 - **Open in Neo Reader** — sends an `ACTION_VIEW` intent with the correct MIME type and a
   `file://` URI so Neo Reader (or any other viewer) opens the book; the file is marked
   as "recently read".
@@ -78,7 +78,7 @@ responsibility:
 ┌────────────────────────── LOGIC / format-handling layers ────────────────────────┐
 │   scan/Formats          single source of truth: 15 formats + extension mapping  │
 │   scan/LibraryScanner   recursive storage scan; builds Book from each file      │
-│   meta/MetaExtractor   reads meta from EPUB/FB2/MOBI/TXT/HTML (platform XML/zip)│
+│   meta/MetaExtractor    reads meta from EPUB/FB2/FB2.ZIP/MOBI/TXT/HTML (XML/zip)│
 │   meta/MobiParser        shared MOBI/AZW binary reader (PalmDB/EXTH) + cover rec│
 │   meta/MetaWriter       writes metadata into EPUB/FB2 (rebuild + .bak backup)   │
 │   util/Openers          MIME mapping + ACTION_VIEW intent for Neo Reader        │
@@ -111,10 +111,10 @@ Every book's metadata lives in **two places**:
 | `BookDatabase.upsert` | insert-or-update by path | preserves `last_read` (rejects REPLACE) |
 | `Formats` | canonical format ids + extension map | `.fb2.zip` handled as compound extension |
 | `LibraryScanner` | recursive scan + `scanSingle()` | primary ext storage + common SD mounts |
-| `MetaExtractor` | read meta | EPUB via `container.xml`→OPF; FB2 author split; MOBI via `MobiParser` |
+| `MetaExtractor` | read meta | EPUB via `container.xml`→OPF; FB2 author split; FB2.ZIP via the inner `.fb2` entry; MOBI via `MobiParser` |
 | `MobiParser` | read MOBI/AZW (package-private) | PalmDB record table + MOBI header + EXTH; cover = first image + EXTH 201 |
 | `MetaWriter` | write meta | non-destructive: `.tmp` → swap → `.bak` recovery |
-| `CoverExtractor` | read cover image bytes | EPUB via `content.opf`→manifest; FB2 via `coverpage`→`<binary>`; MOBI via EXTH record 201 (JPEG trimmed at EOI) |
+| `CoverExtractor` | read cover image bytes | EPUB via `content.opf`→manifest; FB2 via `coverpage`→`<binary>`; FB2.ZIP via the inner `<binary>` or a loose image entry (e.g. `cover.jpg`); MOBI via EXTH record 201 (JPEG trimmed at EOI) |
 | `CoverLoader` | async cover bitmap + LruCache | hides letter badge once cover shows |
 | `BookAdapter` | list + grid/tile view modes | re-inflates on mode switch; grid loads covers |
 | `Openers` | MIME map + `ACTION_VIEW` | `Uri.fromFile` (ok on KitKat) |
@@ -244,10 +244,10 @@ app/src/main/java/com/example/mylibrary/
 ├── db/BookDatabase.java     # SQLite catalog
 ├── scan/Formats.java        # canonical format list + extension mapping
 ├── scan/LibraryScanner.java # recursive storage scan
-├── meta/MetaExtractor.java  # reads metadata (EPUB/FB2/MOBI/TXT/HTML)
+├── meta/MetaExtractor.java  # reads metadata (EPUB/FB2/FB2.ZIP/MOBI/TXT/HTML)
 ├── meta/MobiParser.java     # shared MOBI/AZW binary reader (PalmDB + EXTH)
 ├── meta/MetaWriter.java     # writes metadata (EPUB/FB2)
-├── meta/CoverExtractor.java # reads cover image (EPUB/FB2/MOBI)
+├── meta/CoverExtractor.java # reads cover image (EPUB/FB2/FB2.ZIP/MOBI)
 ├── util/CoverLoader.java    # async cover loading + LruCache
 └── util/Openers.java        # MIME mapping + ACTION_VIEW intents
 ```

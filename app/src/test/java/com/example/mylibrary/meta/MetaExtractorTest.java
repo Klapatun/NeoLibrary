@@ -128,6 +128,63 @@ public class MetaExtractorTest {
     }
 
     // ------------------------------------------------------------------
+    // FB2ZIP
+    // ------------------------------------------------------------------
+
+    @Test
+    public void fb2ZipExtractsTitleAuthorPublisherAnnotationAndLang() throws Exception {
+        File fz = folder.newFile("archive.fb2.zip");
+        Map<String, byte[]> entries = new java.util.LinkedHashMap<String, byte[]>();
+        entries.put("archive.fb2", TestFixtures.FB2_FULL.getBytes("UTF-8"));
+        TestFixtures.writeZip(fz, entries);
+
+        MetaData md = MetaExtractor.extract(fz);
+
+        assertTrue(md.found);
+        assertEquals("Original Title", md.title);
+        assertEquals("Ivan Ivanovich Petrov", md.author);
+        assertEquals("Ivan", md.firstName);
+        assertEquals("Ivanovich", md.middleName);
+        assertEquals("Petrov", md.lastName);
+        assertEquals("Original Publisher", md.publisher);
+        assertEquals("An original story.", md.description);
+        assertEquals("en", md.language);
+        assertEquals("prose", md.genre);
+    }
+
+    @Test
+    public void fb2ZipFindsFb2InSubfolderAndIgnoresOtherEntries() throws Exception {
+        File fz = folder.newFile("nested.fb2.zip");
+        Map<String, byte[]> entries = new java.util.LinkedHashMap<String, byte[]>();
+        entries.put("README.txt", "just a readme\n".getBytes("UTF-8"));
+        entries.put("books/story.fb2", TestFixtures.FB2_FULL.getBytes("UTF-8"));
+        TestFixtures.writeZip(fz, entries);
+
+        MetaData md = MetaExtractor.extract(fz);
+        assertTrue(md.found);
+        assertEquals("Original Title", md.title);
+    }
+
+    @Test
+    public void fb2ZipWithoutFb2EntryIsNotFound() throws Exception {
+        File fz = folder.newFile("empty.fb2.zip");
+        Map<String, byte[]> entries = new java.util.LinkedHashMap<String, byte[]>();
+        entries.put("notes.txt", "no book here\n".getBytes("UTF-8"));
+        TestFixtures.writeZip(fz, entries);
+
+        MetaData md = MetaExtractor.extract(fz);
+        assertFalse(md.found);
+    }
+
+    @Test
+    public void corruptFb2ZipIsNotFoundWithoutThrowing() throws Exception {
+        File fz = folder.newFile("broken.fb2.zip");
+        TestFixtures.writeBytes(fz, new byte[]{0x00, 0x01, 0x02, 0x03});
+        MetaData md = MetaExtractor.extract(fz);
+        assertFalse(md.found);
+    }
+
+    // ------------------------------------------------------------------
     // MOBI
     // ------------------------------------------------------------------
 
