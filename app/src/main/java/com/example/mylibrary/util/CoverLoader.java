@@ -75,13 +75,18 @@ public class CoverLoader {
         }
 
         @Override protected void onPostExecute(Bitmap result) {
-            if (result == null) return;
-            CACHE.put(key, result);
             Object tag = imageView.getTag(R.id.cover_tag);
-            if (key.equals(tag)) {
-                imageView.setImageBitmap(result);
-                if (badgeToHide != null) badgeToHide.setVisibility(View.GONE);
+            if (!key.equals(tag)) return; // tile was recycled for another book meanwhile
+            if (result == null) {
+                // No extractable cover: restore the letter badge so the tile never
+                // shows neither a cover nor its placeholder (bindGrid hid it in
+                // advance while the load was in flight).
+                if (badgeToHide != null) badgeToHide.setVisibility(View.VISIBLE);
+                return;
             }
+            CACHE.put(key, result);
+            imageView.setImageBitmap(result);
+            if (badgeToHide != null) badgeToHide.setVisibility(View.GONE);
         }
     }
 
