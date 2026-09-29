@@ -32,6 +32,23 @@ android {
         // We intentionally target API 19 and use only framework classes.
         abortOnError false
     }
+
+    testOptions {
+        unitTests {
+            // Robolectric (phase 2) needs the merged resources; returnDefaultValues
+            // keeps plain-JVM tests (phase 1) safe if they ever touch a framework stub.
+            includeAndroidResources = true
+            returnDefaultValues = true
+        }
+    }
+
+    tasks.withType(Test) {
+        testLogging {
+            // Show test stdout (debug prints) and full stack traces in the console.
+            showStandardStreams = true
+            exceptionFormat = 'full'
+        }
+    }
 }
 
 dependencies {
@@ -40,7 +57,10 @@ dependencies {
     // offline against API 19 without AndroidX or any third-party libs.
 
     // Test-only (never shipped in the APK; the "no extra deps" invariant is about
-    // runtime). Phase 1 covers the pure-JVM core with plain JUnit. Robolectric is
-    // added in phase 2.
+    // runtime). Phase 1: pure-JVM core with plain JUnit. Phase 2: Android framework
+    // (SQLite, Parcel, Intent/Uri, XmlPullParser) via Robolectric — 4.12.x is the
+    // release line that still supports API 19 (this project's minSdk) under
+    // Gradle 8.7 / AGP 8.5.
     testImplementation 'junit:junit:4.13.2'
+    testImplementation 'org.robolectric:robolectric:4.12.2'
 }

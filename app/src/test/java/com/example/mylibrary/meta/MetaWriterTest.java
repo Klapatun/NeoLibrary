@@ -179,14 +179,26 @@ public class MetaWriterTest {
         b.parse(new ByteArrayInputStream(xml.getBytes("UTF-8")));
     }
 
-    /** No .tmp / .bak leftovers in the book's directory. */
-    private static void assertNoLeftovers(File dir) {
+    /** No .tmp / .bak leftovers in the book's directory.
+     *  On Windows a freshly created file can be briefly locked (antivirus/indexer)
+     *  during long test runs, so poll a few seconds before failing. */
+    private static void assertNoLeftovers(File dir) throws InterruptedException {
+        long deadline = System.currentTimeMillis() + 3000;
+        String[] leftovers = listLeftovers(dir);
+        while (leftovers.length > 0 && System.currentTimeMillis() < deadline) {
+            Thread.sleep(100);
+            leftovers = listLeftovers(dir);
+        }
+        assertEquals("expected no .tmp/.bak leftovers", 0, leftovers.length);
+    }
+
+    private static String[] listLeftovers(File dir) {
         String[] leftovers = dir.list(new java.io.FilenameFilter() {
             @Override public boolean accept(File d, String name) {
                 return name.endsWith(".tmp") || name.endsWith(".bak");
             }
         });
-        assertEquals("expected no .tmp/.bak leftovers", 0, leftovers == null ? 0 : leftovers.length);
+        return leftovers == null ? new String[0] : leftovers;
     }
 
     // ------------------------------------------------------------------
