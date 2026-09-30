@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Background of the grid tile's cover frame (item_book_grid.xml): solid
+     cover_bg with 8px rounded corners. The cover bitmap itself is clipped to
+     the same rounded shape by CoverLoader (Shape.ROUNDED_RECT). -->
+<shape xmlns:android="http://schemas.android.com/apk/res/android"
+    android:shape="rectangle">
+    <solid android:color="@color/cover_bg" />
+    <corners android:radius="8px" />
+</shape>

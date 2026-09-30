@@ -47,14 +47,14 @@ public class DetailActivity extends Activity {
         ((TextView) findViewById(R.id.detail_file)).setText(book.path);
 
         // Full-format cover (no circular crop) with the letter badge as fallback; same
-        // mechanism as the list rows, square variant (shares the grid tile's cache entry).
+        // mechanism as the list rows, square variant.
         TextView initial = (TextView) findViewById(R.id.detail_initial);
         ImageView cover = (ImageView) findViewById(R.id.detail_cover);
         initial.setText(book.initial());
         if (CoverExtractor.canHaveCover(book.format)) {
             cover.setVisibility(View.VISIBLE);
             initial.setVisibility(View.INVISIBLE);
-            CoverLoader.load(book, cover, initial);
+            CoverLoader.load(book, cover, initial, CoverLoader.Shape.SQUARE);
         } else {
             cover.setVisibility(View.GONE);
             initial.setVisibility(View.VISIBLE);

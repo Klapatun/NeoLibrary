@@ -104,7 +104,7 @@ public class BookAdapter extends BaseAdapter {
             cover.setTag(R.id.cover_tag, null);
             cover.setVisibility(View.VISIBLE);
             init.setVisibility(View.INVISIBLE);
-            CoverLoader.load(b, cover, init, true); // round: match the circular badge
+            CoverLoader.load(b, cover, init, CoverLoader.Shape.CIRCLE); // matches the circular badge
         } else {
             cover.setImageBitmap(null);
             cover.setVisibility(View.GONE);
@@ -137,7 +137,7 @@ public class BookAdapter extends BaseAdapter {
             // May already be showing a cached cover from a previous bind.
             cover.setVisibility(View.VISIBLE);
             initial.setVisibility(View.INVISIBLE); // badge shown only until a cover loads
-            CoverLoader.load(b, cover, initial);
+            CoverLoader.load(b, cover, initial, CoverLoader.Shape.ROUNDED_RECT); // 8px-rounded cover frame
         } else {
             cover.setImageBitmap(null);
             cover.setVisibility(View.GONE);
