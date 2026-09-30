@@ -60,15 +60,23 @@
             android:layout_height="match_parent"
             android:choiceMode="singleChoice" />
 
+        <!-- Uniform tiles, sized in px for the ONYX Boox Volta 3 (6", 1024x758):
+             each tile is a fixed 242px wide (stretchMode=none, columnWidth=242px),
+             and the number of columns AUTO-FITS the screen width:
+             portrait 758px -> 3 per row (3x242 + 2x16 = exactly 758px),
+             landscape 1024px -> 4 per row, wider screens -> even more.
+             insideOverlay: the scrollbar floats above the content so it never
+             steals width from the last column. -->
         <GridView
             android:id="@+id/book_grid"
             android:layout_width="match_parent"
             android:layout_height="match_parent"
-            android:numColumns="2"
-            android:verticalSpacing="8dp"
-            android:horizontalSpacing="8dp"
-            android:stretchMode="columnWidth"
-            android:columnWidth="160dp"
+            android:numColumns="auto_fit"
+            android:verticalSpacing="16px"
+            android:horizontalSpacing="16px"
+            android:stretchMode="none"
+            android:columnWidth="242px"
+            android:scrollbarStyle="insideOverlay"
             android:verticalScrollbarPosition="defaultPosition"
             android:visibility="gone" />
 

@@ -1,51 +1,73 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- Tile (grid) layout. IMPORTANT: width is wrap_content — inside a GridView a
-     match_parent item stretches to the full width and overlaps its neighbours. -->
-<RelativeLayout xmlns:android="http://schemas.android.com/apk/res/android"
-    android:layout_width="wrap_content"
+<!-- Tile (grid) layout, per the reference screenshot, sized for the
+     ONYX Boox Volta 3 (6", 1024x758, portrait width 758px):
+     3 tiles of 242px + 2 gaps of 16px = exactly 758px.
+     - cover on top (242 x 387px, keeps the old 5:8 cover proportion),
+     - a small format label pinned to the bottom-left corner of the cover,
+     - the book title right under the cover.
+     The whole tile (cover + label + title) is ONE clickable item — GridView
+     dispatches item clicks over the entire child view. All tiles are exactly
+     the same size: the root has a fixed 242px width matching the GridView's
+     columnWidth (242px, stretchMode=none), so columns and tiles never diverge.
+     Sizes are in px (the target device's screen pixels) so the design is exact
+     on that hardware; the old design scaled at x2.42 (100dp -> 242px). -->
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="242px"
     android:layout_height="wrap_content"
-    android:padding="6dp">
+    android:orientation="vertical">
 
     <FrameLayout
         android:id="@+id/cover_frame"
         android:layout_width="match_parent"
-        android:layout_height="160dp"
+        android:layout_height="387px"
         android:background="@color/cover_bg">
 
+        <!-- centerCrop: the cover is scaled (uniformly, no distortion) to fill the
+             whole tile width AND height; the overflow is cropped at the edges. -->
         <ImageView
             android:id="@+id/book_grid_cover"
             android:layout_width="match_parent"
             android:layout_height="match_parent"
-            android:scaleType="fitCenter"
+            android:scaleType="centerCrop"
             android:contentDescription="Cover" />
 
+        <!-- Books without a cover: a red circle with the title's initial, centered. -->
         <TextView
             android:id="@+id/book_grid_initial"
-            android:layout_width="match_parent"
-            android:layout_height="match_parent"
+            android:layout_width="155px"
+            android:layout_height="155px"
+            android:layout_gravity="center"
+            android:background="@drawable/bg_circle_red"
             android:gravity="center"
             android:textColor="@color/white"
-            android:textSize="40sp"
+            android:textSize="68px"
             android:textStyle="bold" />
+
+        <!-- Format label: fixed 116px width so every label is the same size
+             (the longest one is "FB2ZIP"). -->
+        <TextView
+            android:id="@+id/book_grid_format"
+            android:layout_width="116px"
+            android:layout_height="wrap_content"
+            android:layout_gravity="bottom|start"
+            android:background="@drawable/bg_format_badge"
+            android:gravity="center"
+            android:paddingTop="5px"
+            android:paddingBottom="5px"
+            android:textColor="#303030"
+            android:textSize="27px"
+            android:textStyle="bold"
+            android:maxLines="1" />
     </FrameLayout>
 
     <TextView
         android:id="@+id/book_grid_title"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:layout_below="@id/cover_frame"
-        android:layout_marginTop="4dp"
+        android:layout_marginTop="10px"
         android:textColor="#202020"
-        android:textSize="14sp"
+        android:textSize="29px"
+        android:minLines="2"
         android:maxLines="2"
         android:ellipsize="end" />
-
-    <TextView
-        android:id="@+id/book_grid_format"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:layout_below="@id/book_grid_title"
-        android:textColor="@color/colorPrimary"
-        android:textSize="12sp"
-        android:maxLines="1" />
-</RelativeLayout>
+</LinearLayout>

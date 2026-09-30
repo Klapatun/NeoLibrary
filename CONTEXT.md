@@ -55,9 +55,17 @@ Every book's metadata is stored in **two places**:
 
 `MainActivity` shows the same `BookAdapter` in both a `ListView` and a `GridView`
 (`activity_main.xml`). The toolbar button (`@+id/toggle_view`) calls `setViewMode()` which
-swaps visibility and tells the adapter which layout to inflate. In **tile** mode each
-`item_book_grid.xml` row asks `CoverLoader` for the cover; if the format doesn't carry an
-extractable cover (via `CoverExtractor.canHaveCover`) a letter badge is shown instead.
+swaps visibility and tells the adapter which layout to inflate. In **tile** mode
+(3-column `GridView`) each `item_book_grid.xml` tile is one clickable unit: the cover
+on top, a small uniform-width format label (`bg_format_badge`) at the cover's
+bottom-left corner, the book title under the cover (fixed two lines) — all tiles
+exactly the same size. The grid is sized in **px** for the ONYX Boox Volta 3
+(6", 1024x758): fixed 242px tiles (`stretchMode=none`, `columnWidth=242px`),
+16px gaps, and `numColumns="auto_fit"` so the columns fit the screen width —
+portrait 758px → 3 per row (exactly 758px), landscape 1024px → 4, wider → more.
+Cover 242x387px (5:8), 155px red circle (`bg_circle_red`) with the title's
+initial for books without a cover; the scrollbar is `insideOverlay` so it never
+steals column width.
 
 ## Main workflows
 

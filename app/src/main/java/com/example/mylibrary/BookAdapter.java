@@ -21,8 +21,10 @@ import java.util.List;
  *   <li>{@link #MODE_LIST} — a compact single-line row ({@code item_book}); the
  *       leading 48dp slot shows a small cover where the format can carry one, with
  *       the letter badge as fallback.</li>
- *   <li>{@link #MODE_GRID} — a tile with a cover preview ({@code item_book_grid});
- *       the letter badge is shown when the format has no extractable cover.</li>
+ *   <li>{@link #MODE_GRID} — a tile ({@code item_book_grid}) with the cover on top,
+ *       a small format label at the cover's bottom-left corner and the title below;
+ *       the whole tile is one clickable item. The letter badge is shown when the
+ *       format has no extractable cover; all tiles have the same size.</li>
  * </ul>
  * When switching modes, views whose layout type no longer matches are re-inflated.
  */
@@ -115,6 +117,8 @@ public class BookAdapter extends BaseAdapter {
     // ------------------------------------------------------------------
 
     private void bindGrid(View v, Book b) {
+        // The tile (cover + format label at its bottom-left + title below) is one
+        // clickable unit; GridView dispatches the item click over the whole view.
         ImageView cover = (ImageView) v.findViewById(R.id.book_grid_cover);
         TextView initial = (TextView) v.findViewById(R.id.book_grid_initial);
         TextView title = (TextView) v.findViewById(R.id.book_grid_title);
