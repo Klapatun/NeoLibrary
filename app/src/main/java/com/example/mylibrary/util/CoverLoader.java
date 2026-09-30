@@ -6,6 +6,7 @@ import android.graphics.BitmapShader;
 import android.graphics.Canvas;
 import android.graphics.Matrix;
 import android.graphics.Paint;
+import android.graphics.RectF;
 import android.graphics.Shader;
 import android.os.AsyncTask;
 import android.util.LruCache;
@@ -35,16 +36,26 @@ public class CoverLoader {
                 }
             };
 
-    /** Applies the cached cover to {@code imageView} or kicks off an async load.
-     *  When a cover is successfully shown, {@code badgeToHide} (if any) is hidden. */
-    public static void load(Book book, ImageView imageView, final View badgeToHide) {
-        load(book, imageView, badgeToHide, false);
+    /** The grid tile's cover frame (item_book_grid.xml): 242x387px (5:8) with
+     *  8px rounded corners; ROUNDED_RECT bitmaps are pre-cropped to exactly this. */
+    private static final int GRID_COVER_W = 242;
+    private static final int GRID_COVER_H = 387;
+    private static final int GRID_COVER_RADIUS = 8;
+
+    /** How a cover bitmap should be shaped before it is shown. */
+    public enum Shape {
+        /** As extracted (center-cropped by the ImageView). */
+        SQUARE,
+        /** Center-cropped into a circle (matches the round badge slot in list mode). */
+        CIRCLE,
+        /** Center-cropped into the grid tile's 8px-rounded cover frame. */
+        ROUNDED_RECT
     }
 
-    /** Same as {@link #load(Book, ImageView, View)}, but {@code round} clips the bitmap
-     *  into a circle (center-cropped) so it matches the round badge slot in list mode. */
-    public static void load(Book book, ImageView imageView, final View badgeToHide, boolean round) {
-        String key = coverKey(book, round);
+    /** Applies the cached cover to {@code imageView} or kicks off an async load.
+     *  When a cover is successfully shown, {@code badgeToHide} (if any) is hidden. */
+    public static void load(Book book, ImageView imageView, final View badgeToHide, Shape shape) {
+        String key = coverKey(book, shape);
         imageView.setTag(R.id.cover_tag, key);
 
         Bitmap cached = CACHE.get(key);
@@ -54,26 +65,27 @@ public class CoverLoader {
             return;
         }
         imageView.setImageBitmap(null);
-        new CoverTask(imageView, key, badgeToHide, round).execute(book);
+        new CoverTask(imageView, key, badgeToHide, shape).execute(book);
     }
 
-    private static String coverKey(Book b, boolean round) {
+    private static String coverKey(Book b, Shape shape) {
         // Format included so a cover never leaks across format reassignment; the shape is
-        // part of the key so a round list badge and the square grid tile cache separately.
-        return b.format + "|" + b.path + (round ? "|round" : "");
+        // part of the key so a round list badge and the grid tile's rounded cover cache
+        // separately from each other.
+        return b.format + "|" + b.path + "|" + shape;
     }
 
     private static class CoverTask extends AsyncTask<Book, Void, Bitmap> {
         private final ImageView imageView;
         private final String key;
         private final View badgeToHide;
-        private final boolean round;
+        private final Shape shape;
 
-        CoverTask(ImageView iv, String key, View badgeToHide, boolean round) {
+        CoverTask(ImageView iv, String key, View badgeToHide, Shape shape) {
             this.imageView = iv;
             this.key = key;
             this.badgeToHide = badgeToHide;
-            this.round = round;
+            this.shape = shape;
         }
 
         @Override protected Bitmap doInBackground(Book... params) {
@@ -84,8 +96,13 @@ public class CoverLoader {
                 Bitmap bmp = BitmapFactory.decodeByteArray(bytes, 0, bytes.length);
                 if (bmp == null) return null;
                 bmp = ensureReasonableSize(bmp);
-                if (round) {
+                if (shape == Shape.CIRCLE) {
                     Bitmap cropped = circleCrop(bmp);
+                    bmp.recycle();
+                    return cropped;
+                }
+                if (shape == Shape.ROUNDED_RECT) {
+                    Bitmap cropped = roundedRectCrop(bmp);
                     bmp.recycle();
                     return cropped;
                 }
@@ -143,6 +160,31 @@ public class CoverLoader {
         shader.setLocalMatrix(m);
         paint.setShader(shader);
         c.drawCircle(size / 2f, size / 2f, size / 2f, paint);
+        return out;
+    }
+
+    /** Center-crops the bitmap to the grid tile's cover frame (242x387px, 5:8) and
+     *  clips it into a rounded rectangle (8px corners, transparent outside), so it
+     *  matches the rounded cover frame in grid mode. The pre-cropped bitmap is exactly
+     *  the size of the ImageView, so the ImageView's centerCrop scales it 1:1.
+     *  Always returns a new bitmap; the caller is responsible for recycling {@code src}. */
+    private static Bitmap roundedRectCrop(Bitmap src) {
+        int w = GRID_COVER_W;
+        int h = GRID_COVER_H;
+        Bitmap out = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888);
+        Canvas c = new Canvas(out);
+        Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG | Paint.FILTER_BITMAP_FLAG);
+        BitmapShader shader = new BitmapShader(src, Shader.TileMode.CLAMP, Shader.TileMode.CLAMP);
+        // Center-crop: scale the image up until it fully covers w x h, drop the overflow.
+        float scale = Math.max(w / (float) src.getWidth(), h / (float) src.getHeight());
+        float dx = (src.getWidth() * scale - w) / 2f;
+        float dy = (src.getHeight() * scale - h) / 2f;
+        Matrix m = new Matrix();
+        m.setScale(scale, scale);
+        m.postTranslate(-dx, -dy);
+        shader.setLocalMatrix(m);
+        paint.setShader(shader);
+        c.drawRoundRect(new RectF(0, 0, w, h), GRID_COVER_RADIUS, GRID_COVER_RADIUS, paint);
         return out;
     }
 }

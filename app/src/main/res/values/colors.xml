@@ -7,4 +7,5 @@
     <color name="divider">#DDDDDD</color>
     <color name="windowBackground">#FAFAFA</color>
     <color name="cover_bg">#E0E0E0</color>
+    <color name="red">#F44336</color>
 </resources>

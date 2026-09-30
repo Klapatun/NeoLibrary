@@ -103,11 +103,15 @@ public class BookAdapterTest {
         adapter.setMode(BookAdapter.MODE_GRID);
         View tile = adapter.getView(0, listRow, parent);
         assertNotSame("a list row must be re-inflated for grid mode", listRow, tile);
-        assertNotNull(tile.findViewById(R.id.book_grid_title));
+        // The tile is one unit: cover slot + format label at its corner + title below.
+        assertNotNull(tile.findViewById(R.id.book_grid_cover));
         assertEquals("Alpha",
                 ((TextView) tile.findViewById(R.id.book_grid_title)).getText().toString());
         assertEquals("PDF",
                 ((TextView) tile.findViewById(R.id.book_grid_format)).getText().toString());
+        // A PDF carries no cover, so the letter badge shows.
+        assertEquals("A",
+                ((TextView) tile.findViewById(R.id.book_grid_initial)).getText().toString());
 
         adapter.setMode(BookAdapter.MODE_LIST);
         View row2 = adapter.getView(0, tile, parent);

@@ -34,4 +34,12 @@
     <issue id="SetTextI18n" severity="warning" />
     <issue id="HardcodedText" severity="warning" />
 
+    <!-- The grid tile is deliberately sized in screen px for the ONYX Boox
+         Volta 3 (6", 1024x758) — px units are intentional in these files. -->
+    <issue id="PxUsage">
+        <ignore path="**/item_book_grid.xml" />
+        <ignore path="**/bg_format_badge.xml" />
+        <ignore path="**/activity_main.xml" />
+    </issue>
+
 </lint>
