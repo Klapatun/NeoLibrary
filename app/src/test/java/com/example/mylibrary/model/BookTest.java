@@ -31,6 +31,8 @@ public class BookTest {
         b.series = "Классика";
         b.sizeBytes = 123456789L;
         b.exported = true;
+        b.metaDone = true;
+        b.userEdited = true;
 
         Book copy = roundTrip(b);
 
@@ -44,6 +46,8 @@ public class BookTest {
         assertEquals("Классика", copy.series);
         assertEquals(123456789L, copy.sizeBytes);
         assertEquals(true, copy.exported);
+        assertEquals("metaDone flag must round-trip", true, copy.metaDone);
+        assertEquals("userEdited flag must round-trip", true, copy.userEdited);
     }
 
     @Test
