@@ -49,6 +49,37 @@
             android:prompt="@string/filter_all" />
     </LinearLayout>
 
+    <!-- Stage-2 (background enrichment) status strip: visible only while the
+         metadata/covers worker runs, never blocks the list below. -->
+    <LinearLayout
+        android:id="@+id/enrich_bar"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:gravity="center_vertical"
+        android:paddingLeft="16dp"
+        android:paddingRight="16dp"
+        android:paddingTop="4dp"
+        android:paddingBottom="4dp"
+        android:background="#FFF3CD"
+        android:visibility="gone">
+
+        <ProgressBar
+            android:id="@+id/enrich_progress"
+            style="?android:attr/progressBarStyleSmall"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:indeterminate="true" />
+
+        <TextView
+            android:id="@+id/enrich_status"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginLeft="8dp"
+            android:textSize="12sp"
+            android:textColor="#7A5C00" />
+    </LinearLayout>
+
     <FrameLayout
         android:layout_width="match_parent"
         android:layout_height="0dp"

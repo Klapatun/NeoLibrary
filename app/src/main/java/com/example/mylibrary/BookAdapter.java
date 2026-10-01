@@ -1,43 +1,43 @@
 package com.example.mylibrary;
 
 import android.content.Context;
+import android.database.Cursor;
 import android.view.LayoutInflater;
 import android.view.View;
 import android.view.ViewGroup;
-import android.widget.BaseAdapter;
+import android.widget.CursorAdapter;
 import android.widget.ImageView;
 import android.widget.TextView;
 
+import com.example.mylibrary.db.BookDatabase;
 import com.example.mylibrary.meta.CoverExtractor;
 import com.example.mylibrary.model.Book;
 import com.example.mylibrary.util.CoverLoader;
 
-import java.util.ArrayList;
-import java.util.List;
-
 /**
- * Binds a list of {@link Book}s to rows in two view modes:
+ * Binds the books-table cursor to rows in two view modes:
  * <ul>
  *   <li>{@link #MODE_LIST} — a compact single-line row ({@code item_book}); the
  *       leading 48dp slot shows a small cover where the format can carry one, with
  *       the letter badge as fallback.</li>
- *   <li>{@link #MODE_GRID} — a tile ({@code item_book_grid}) with the cover on top,
- *       a small format label at the cover's bottom-left corner and the title below;
- *       the whole tile is one clickable item. The letter badge is shown when the
- *       format has no extractable cover; all tiles have the same size.</li>
+ *   <li>{@link #MODE_GRID} — a tile with a cover preview ({@code item_book_grid});
+ *       the letter badge is shown when the format has no extractable cover.</li>
  * </ul>
- * When switching modes, views whose layout type no longer matches are re-inflated.
+ * Extends {@link CursorAdapter} so the {@code CursorLoader} in the main screen can
+ * drive it: the loader re-queries whenever the catalog changes (scan, background
+ * enrichment, import) and the adapter re-binds the rows. When switching modes, views
+ * whose layout type no longer matches are re-inflated.
  */
-public class BookAdapter extends BaseAdapter {
+public class BookAdapter extends CursorAdapter {
 
     public static final int MODE_LIST = 0;
     public static final int MODE_GRID = 1;
 
     private final LayoutInflater inflater;
-    private final List<Book> books = new ArrayList<Book>();
     private int mode = MODE_LIST;
 
-    public BookAdapter(Context context) {
+    public BookAdapter(Context context, Cursor c) {
+        super(context, c);
         inflater = LayoutInflater.from(context);
     }
 
@@ -52,32 +52,52 @@ public class BookAdapter extends BaseAdapter {
         return mode;
     }
 
-    public void setBooks(List<Book> list) {
-        books.clear();
-        if (list != null) books.addAll(list);
-        notifyDataSetChanged();
+    /** The book at the given position (for row-click handling), or null if the
+     *  cursor moved on. */
+    public Book getItem(int position) {
+        Cursor c = getCursor();
+        if (c == null || !c.moveToPosition(position)) return null;
+        return BookDatabase.fromCursor(c);
     }
 
-    @Override public int getCount() { return books.size(); }
-    @Override public Book getItem(int position) { return books.get(position); }
-    @Override public long getItemId(int position) { return books.get(position).id; }
+    @Override
+    public long getItemId(int position) {
+        Cursor c = getCursor();
+        if (c == null || !c.moveToPosition(position)) return -1;
+        int idx = c.getColumnIndexOrThrow("_id");
+        return c.getLong(idx);
+    }
 
     @Override
     public View getView(int position, View convertView, ViewGroup parent) {
-        View v = convertView;
-        // Re-inflate when the recycled view was built for the other mode.
-        if (v == null || !Integer.valueOf(mode).equals(v.getTag(R.id.view_mode))) {
-            v = inflater.inflate(mode == MODE_GRID ? R.layout.item_book_grid : R.layout.item_book,
-                    parent, false);
-            v.setTag(R.id.view_mode, mode);
+        // A view recycled from the other mode has a different layout: drop it so
+        // newView() builds a fresh one for the current mode, then let the framework
+        // do its normal newView()/bindView() dance.
+        if (convertView != null && !Integer.valueOf(mode).equals(convertView.getTag(R.id.view_mode))) {
+            convertView = null;
         }
-        Book b = getItem(position);
-        if (mode == MODE_GRID) {
-            bindGrid(v, b);
-        } else {
-            bindList(v, b);
-        }
+        return super.getView(position, convertView, parent);
+    }
+
+    @Override
+    public View newView(Context context, Cursor cursor, ViewGroup parent) {
+        View v = inflater.inflate(mode == MODE_GRID ? R.layout.item_book_grid : R.layout.item_book,
+                parent, false);
+        v.setTag(R.id.view_mode, mode);
         return v;
+    }
+
+    @Override
+    public void bindView(View view, Context context, Cursor cursor) {
+        // The framework positions the shared cursor on the row to bind before calling
+        // here (and never does so for an empty data set). Guard only against null.
+        if (cursor == null) return;
+        Book b = BookDatabase.fromCursor(cursor);
+        if (mode == MODE_GRID) {
+            bindGrid(view, b);
+        } else {
+            bindList(view, b);
+        }
     }
 
     // ------------------------------------------------------------------
@@ -104,7 +124,7 @@ public class BookAdapter extends BaseAdapter {
             cover.setTag(R.id.cover_tag, null);
             cover.setVisibility(View.VISIBLE);
             init.setVisibility(View.INVISIBLE);
-            CoverLoader.load(b, cover, init, CoverLoader.Shape.CIRCLE); // matches the circular badge
+            CoverLoader.load(b, cover, init, CoverLoader.Shape.CIRCLE); // round: match the circular badge
         } else {
             cover.setImageBitmap(null);
             cover.setVisibility(View.GONE);
@@ -117,8 +137,6 @@ public class BookAdapter extends BaseAdapter {
     // ------------------------------------------------------------------
 
     private void bindGrid(View v, Book b) {
-        // The tile (cover + format label at its bottom-left + title below) is one
-        // clickable unit; GridView dispatches the item click over the whole view.
         ImageView cover = (ImageView) v.findViewById(R.id.book_grid_cover);
         TextView initial = (TextView) v.findViewById(R.id.book_grid_initial);
         TextView title = (TextView) v.findViewById(R.id.book_grid_title);
@@ -137,7 +155,7 @@ public class BookAdapter extends BaseAdapter {
             // May already be showing a cached cover from a previous bind.
             cover.setVisibility(View.VISIBLE);
             initial.setVisibility(View.INVISIBLE); // badge shown only until a cover loads
-            CoverLoader.load(b, cover, initial, CoverLoader.Shape.ROUNDED_RECT); // 8px-rounded cover frame
+            CoverLoader.load(b, cover, initial, CoverLoader.Shape.ROUNDED_RECT);
         } else {
             cover.setImageBitmap(null);
             cover.setVisibility(View.GONE);
