@@ -109,7 +109,7 @@ final class ZipUtil {
 `ContentResolver.notifyChange`. Тикеты 6.1–6.4 закрываются серияю фикс-коммитов
 2026-10-02 (по одному коммиту на пункт; тесты 144/144 на старте).
 
-### 6.1 Список не обновляется после удаления / правки / markRead — [ ] (высокий)
+### 6.1 Список не обновлялся после удаления / правки / markRead — [x] (высокий) — сделано 2026-10-02
 - **Где:** `DetailActivity` (delete, `openBook`→`markRead`), `EditMetaActivity` (save).
 - **Проблема:** с cursor-driven UI (коммит `6099dca`) список живёт от явного
   `notifyChange`. Удаление книги и сохранение метаданных его не вызывали →
@@ -117,10 +117,12 @@ final class ZipUtil {
   enricher не доделает партию или не сменится фильтр). `markRead` — та же
   история для вкладки «Недавно прочитанные»: её CursorLoader слушает
   `RECENT_URI`, а уведомления уходили только на `CONTENT_URI`.
-- **План:** `BookProvider.notifyChangeAll(context)` (статика, шлёт оба URI);
+- **Сделано:** `BookProvider.notifyChangeAll(context)` (статика, шлёт оба URI);
   вызовы — после `deleteByPath` (confirmDelete), после `markRead` (openBook),
   после `upsert` (EditMetaActivity.save). Тесты: observer-ассерты в
-  `DetailActivityTest` (delete + open) и `EditMetaActivityTest` (save).
+  `DetailActivityTest` (`deleteNotifiesTheCatalogObservers`,
+  `openingABookNotifiesTheCatalogObservers`) и `EditMetaActivityTest`
+  (`saveNotifiesTheCatalogObservers`).
 
 ### 6.2 `upsert` затирает `meta_done`/`user_edited` из устаревшей модели — [ ] (высокий)
 - **Где:** `BookDatabase.upsert`, `EditMetaActivity.save`.

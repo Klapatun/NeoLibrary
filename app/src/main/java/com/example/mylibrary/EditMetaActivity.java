@@ -11,6 +11,7 @@ import android.widget.TextView;
 import android.widget.Toast;
 
 import com.example.mylibrary.db.BookDatabase;
+import com.example.mylibrary.db.BookProvider;
 import com.example.mylibrary.meta.MetaData;
 import com.example.mylibrary.meta.MetaWriter;
 import com.example.mylibrary.model.Book;
@@ -107,6 +108,10 @@ public class EditMetaActivity extends Activity {
                 // clobbers these values with the file's original metadata.
                 updated.userEdited = true;
                 db.upsert(updated);
+                // The list is cursor-driven: announce the new metadata so the
+                // catalog views (list + recently read) re-query without a reload.
+                // (EditMetaActivity.this — inside the AsyncTask, this == the task.)
+                BookProvider.notifyChangeAll(EditMetaActivity.this);
                 return ok;
             }
             @Override protected void onPostExecute(Boolean ok) {

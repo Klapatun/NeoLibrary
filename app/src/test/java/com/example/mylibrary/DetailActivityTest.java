@@ -12,7 +12,9 @@ import android.app.AlertDialog;
 import android.content.DialogInterface;
 import android.content.Intent;
 import android.content.Context;
+import android.database.ContentObserver;
 import android.net.Uri;
+import android.os.Handler;
 import android.os.Looper;
 import android.view.View;
 import android.widget.Button;
@@ -20,6 +22,7 @@ import android.widget.ImageView;
 import android.widget.TextView;
 
 import com.example.mylibrary.db.BookDatabase;
+import com.example.mylibrary.db.BookProvider;
 import com.example.mylibrary.model.Book;
 import com.example.mylibrary.testutil.TestFixtures;
 
@@ -191,6 +194,60 @@ public class DetailActivityTest {
     public void unknownBookIdFinishesImmediately() {
         DetailActivity a = launch(424242);
         assertTrue(a.isFinishing());
+    }
+
+    // ------------------------------------------------------------------
+    // cursor notifications (the list only refreshes on notifyChange)
+    // ------------------------------------------------------------------
+
+    /** Records whether the observer fired (for one registered URI). */
+    private static final class FiringObserver extends ContentObserver {
+        private boolean fired;
+        FiringObserver() { super(new Handler(Looper.getMainLooper())); }
+        @Override public void onChange(boolean selfChange, Uri uri) { fired = true; }
+    }
+
+    /** A delete must announce the change to the cursors of BOTH views (the row may
+     *  be visible in the list or in the "recently read" view). */
+    @Test
+    public void deleteNotifiesTheCatalogObservers() {
+        FiringObserver onBooks = new FiringObserver();
+        FiringObserver onRecent = new FiringObserver();
+        app.getContentResolver().registerContentObserver(BookProvider.CONTENT_URI, true, onBooks);
+        app.getContentResolver().registerContentObserver(BookProvider.RECENT_URI, true, onRecent);
+
+        DetailActivity a = launch(bookId);
+        ((Button) a.findViewById(R.id.btn_delete)).performClick();
+        AlertDialog dialog = ShadowAlertDialog.getLatestAlertDialog();
+        for (int attempt = 0; attempt < 5 && !a.isFinishing(); attempt++) {
+            shadowOf(Looper.getMainLooper()).idle();
+            dialog.getButton(DialogInterface.BUTTON_POSITIVE).performClick();
+        }
+        shadowOf(Looper.getMainLooper()).idle();
+
+        assertTrue("the all-books cursor must be told the row is gone", onBooks.fired);
+        assertTrue("the recently-read cursor must be told as well", onRecent.fired);
+        app.getContentResolver().unregisterContentObserver(onBooks);
+        app.getContentResolver().unregisterContentObserver(onRecent);
+    }
+
+    /** Opening a book (markRead) must announce the change too — otherwise the
+     *  "recently read" view never re-sorts and the book doesn't rise to the top. */
+    @Test
+    public void openingABookNotifiesTheCatalogObservers() {
+        FiringObserver onBooks = new FiringObserver();
+        FiringObserver onRecent = new FiringObserver();
+        app.getContentResolver().registerContentObserver(BookProvider.CONTENT_URI, true, onBooks);
+        app.getContentResolver().registerContentObserver(BookProvider.RECENT_URI, true, onRecent);
+
+        DetailActivity a = launch(bookId);
+        ((Button) a.findViewById(R.id.btn_open)).performClick();
+        shadowOf(Looper.getMainLooper()).idle();
+
+        assertTrue("markRead must announce the change to the all-books cursor", onBooks.fired);
+        assertTrue("... and to the recently-read cursor", onRecent.fired);
+        app.getContentResolver().unregisterContentObserver(onBooks);
+        app.getContentResolver().unregisterContentObserver(onRecent);
     }
 
     @Test
