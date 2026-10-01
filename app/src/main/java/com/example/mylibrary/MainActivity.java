@@ -314,6 +314,8 @@ public class MainActivity extends Activity implements LoaderManager.LoaderCallba
 
     /** Starts the background enrichment worker if any book still needs it. */
     private void startEnrichment() {
+        getLoaderManager().restartLoader(LOADER_BOOKS, null, this);
+
         if (isFinishing()) return;
         if (db.needMeta().isEmpty()) return;
         enrichBar.setVisibility(View.VISIBLE);

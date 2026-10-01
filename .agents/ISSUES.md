@@ -14,7 +14,7 @@
 Оба класса — «толстые фасад-классы», в которых смешаны три слоя:
 (1) парсинг форматов, (2) обвязка ZIP/IO, (3) утилиты над байтами изображений.
 
-Текущий объём: `MetaExtractor` 343 стр., `CoverExtractor` 448 стр.,
+Текущий объём: `MetaExtractor` 345 стр., `CoverExtractor` 448 стр.,
 `MobiParser` 277 стр.
 
 Конкретное дублирование:
@@ -91,75 +91,28 @@ final class ZipUtil {
 - `gradlew.bat :app:assembleDebug` — сборка APK.
 - Хук `git-hooks/pre-push` гоняет весь сьют перед каждым push.
 
-### 6. Текущее состояние (на 2026-09-30)
+### 6. Текущее состояние (2026-09-30, сверено 2026-10-02)
 
 - Поддержка FB2ZIP добавлена (мета через внутренний `.fb2`; обложка — внутренний
   `<binary>` либо loose-картинка в архиве); все тесты зелёные, APK собирается.
-- Рефакторинг по плану выше **не начат**; начинать с шага 0 или шага 1
-  (оба наиболее безопасны, шаг 1 сразу убирает самое густое дублирование).
+- Рефакторинг по плану выше **не начат** (сверено 2026-10-02: `meta/ZipUtil`,
+  `meta/EpubPackage`, `meta/Fb2Reader` в дереве отсутствуют); начинать с шага 0
+  или шага 1 (оба наиболее безопасны, шаг 1 сразу убирает самое густое
+  дублирование).
 
 ---
 
-## [FIX] Новые проблемы из ревью последних 14 коммитов (2026-10-02)
+## [FIX] Остаток ревью последних 14 коммитов (2026-10-02)
 
 **Создано:** 2026-10-02. Источник: ревью коммитов `b239619…314831a`
 (ветка `feature/separate_scan_and_finding_meta`) + сверка с AOSP: локальный
 `SQLiteCursor` (API 19) **не имеет** автоматического уведомления об изменении
 данных — `CursorLoader` переспрашивает только по явному
-`ContentResolver.notifyChange`. Тикеты 6.1–6.4 закрываются серияю фикс-коммитов
-2026-10-02 (по одному коммиту на пункт; тесты 144/144 на старте).
-
-### 6.1 Список не обновлялся после удаления / правки / markRead — [x] (высокий) — сделано 2026-10-02
-- **Где:** `DetailActivity` (delete, `openBook`→`markRead`), `EditMetaActivity` (save).
-- **Проблема:** с cursor-driven UI (коммит `6099dca`) список живёт от явного
-  `notifyChange`. Удаление книги и сохранение метаданных его не вызывали →
-  удалённая книга оставалась в списке, новый title/author не видны (пока
-  enricher не доделает партию или не сменится фильтр). `markRead` — та же
-  история для вкладки «Недавно прочитанные»: её CursorLoader слушает
-  `RECENT_URI`, а уведомления уходили только на `CONTENT_URI`.
-- **Сделано:** `BookProvider.notifyChangeAll(context)` (статика, шлёт оба URI);
-  вызовы — после `deleteByPath` (confirmDelete), после `markRead` (openBook),
-  после `upsert` (EditMetaActivity.save). Тесты: observer-ассерты в
-  `DetailActivityTest` (`deleteNotifiesTheCatalogObservers`,
-  `openingABookNotifiesTheCatalogObservers`) и `EditMetaActivityTest`
-  (`saveNotifiesTheCatalogObservers`).
-
-### 6.2 `upsert` затирает `meta_done`/`user_edited` из устаревшей модели — [x] (высокий) — сделано 2026-10-02
-- **Где:** `BookDatabase.upsert`, `EditMetaActivity.save`.
-- **Проблема:** `upsert` писал `meta_done`/`user_edited` из модели в памяти.
-  (a) Гонка: enricher между перечитом и записью ставит `meta_done=1` → upsert
-  возвращает 0 → лишний повторный парсинг файла; (b) если строку удалили во
-  время редактирования, `updated = book` + `upsert` **вставали удалённую книгу
-  обратно** (resurrect).
-- **Сделано:** `upsert` больше не пишет эти два столбца (как `last_read` —
-  сохраняются; при INSERT — дефолт 0). Новый `markUserEdited(id)` (монотонный:
-  0→1). `EditMetaActivity`: запись в каталог только если строка ещё существует
-  (resurrect устранён). Тесты: `upsertDoesNotTouchMetaFlagsOnExistingRow`,
-  `markUserEditedSetsTheFlag`, `saveDoesNotResurrectADeletedBook` +
-  приведение 5 старых тестов к новому API (`BookDatabaseTest` ×3,
-  `MetaEnricherTest`, `DetailActivityTest.setUp`).
-
-### 6.3 Полный рескан и рестарт воркера при каждом `onCreate` — [x] (средний) — сделано 2026-10-02
-- **Где:** `MainActivity.onCreate` (`startScan()` вызывался безусловно).
-- **Проблема:** любое пересоздание activity (ротация, low-memory) = полный
-  обход дисков + `MetaEnricher.start()` (cancel + рестарт воркера с начала
-  очереди) — минуты лишней работы на большой библиотеке, прогресс сбрасывался.
-- **Сделано:** `startScan()` только при `savedInstanceState == null` (холодный
-  старт — как раньше подхватывает новые файлы с диска); при пересоздании —
-  `startEnrichment()` (воркер уже остановлен в `onDestroy`, `needMeta()` даёт
-  остаток очереди). Тест: `recreationSkipsTheRescanButResumesEnrichment`.
-
-### 6.4 Импорт под тем же именем: протухшие метаданные и обложка — [x] (средний) — сделано 2026-10-02
-- **Где:** `MainActivity.importToLibrary`, `BookDatabase`.
-- **Проблема:** импорт файла с уже существующим именем молча перезаписывал
-  содержимое, но строка держала старые in-file метаданные (`meta_done=1` →
-  enricher пропускал) и в `CoverCache` оставалась старая обложка (если новой
-  книги обложки нет — старая висит вечно).
-- **Сделано:** при перезаписи (строка существует) — `db.markMetaPending(id)`
-  (`meta_done=0`, новый метод) + `CoverCache.delete(path)`; немедленный
-  `enrichOne` перепарсит, а сброшенный флаг — страховка для фонового воркера.
-  Тесты: `markMetaPendingClearsTheDoneFlag`,
-  `reimportingOverAnExistingFileReEnrichesTheBook`.
+`ContentResolver.notifyChange`.
+Тикеты 6.1–6.4 закрыты серией фикс-коммитов 2026-10-02 (8abf5ff, 8d5995a,
+9987668, edf6752 — по одному коммиту на пункт) и вынесены из этого файла
+(полный текст — в истории git). Оставшиеся после этих фиксов узкие места —
+в разделе 7.x. В этой секции остались 6.5 и 6.6.
 
 ### 6.5 Документация разошлась с кодом — [~] (низкий)
 - **Сделано** (коммит с разделом 6): CONTEXT.md — фактические отступы грида
@@ -169,39 +122,95 @@ final class ZipUtil {
 - **Осталось:** мёртвый ресурс `empty_view_grid` в `activity_main.xml`
   (в коде не используется — один `empty_view` служит обоим видам); удалить.
 
-### 6.6 Spinner фильтра теряет выбор при ротации — [ ] (низкий)
-- **Где:** `MainActivity` (`currentFilter`, `filterSpinner`).
+### 6.6 UI-состояние (фильтр, режим списка/плиток) теряется при ротации — [ ] (низкий)
+- **Где:** `MainActivity` (`currentFilter`, `filterSpinner`, `viewMode`).
 - **Проблема:** при пересоздании `currentFilter` обнуляется в `""`, спиннер
   сбрасывается на «All formats» (`onSaveInstanceState` не реализован) —
   пользователь на «Recently read» или фильтре формата после поворота экрана
-  оказывается на «All formats».
-- **Доработка:** сохранять позицию спиннера (или `currentFilter`) в
-  `onSaveInstanceState` и восстанавливать в `onCreate`.
+  оказывается на «All formats». Режим списка/плиток (`viewMode`) сбрасывается
+  в список — то же самое, тот же корень.
+- **Доработка:** сохранять позицию спиннера (или `currentFilter`) и `viewMode`
+  в `onSaveInstanceState` и восстанавливать в `onCreate`.
+
+---
+
+## [FIX] Новые проблемы из ревью фикс-коммитов 2026-10-02 (8abf5ff…edf6752)
+
+**Создано:** 2026-10-02 (вторая ревизия). Источник: детальный ревью четырёх
+фикс-коммитов, закрывших 6.1–6.4 (8abf5ff, 8d5995a, 9987668, edf6752), + коммита
+09b3353 (lint-suppression) + сверка кода с семантикой флагов
+`BookDatabase`/`MetaEnricher`. Все четыре фикса
+в целом корректны (сьют 153/153 зелёный, lint 0 errors / 65 warnings); ниже —
+узкие места, которые они оставили или вскрыли.
+
+### 7.1 Переимпорт под тем же именем при `user_edited=1`: метаданные нового файла не применяются — [ ] (средний)
+- **Где:** `MainActivity.importToLibrary` (фикс 6.4, `edf6752`), `BookDatabase.markMetaPending`, `updateMetadata`.
+- **Проблема:** при импорте поверх существующего файла сбрасывается только
+  `meta_done`, чистится кэш обложки; флаг `user_edited` остаётся. Если
+  пользователь раньше правил метаданные СТАРОЙ книги, строка (теперь это
+  ДРУГАЯ книга с тем же именем) держит `user_edited=1` → `updateMetadata`
+  заполняет только пустые поля → in-file метаданные нового файла не
+  применяются, а в каталоге над новым файлом навсегда остаются пользовательские
+  значения старой (флаг монотонный, ничего его не сбросит).
+- **Доработка:** при перезаписи файла сбрасывать и `user_edited` (редакции
+  пользователя относились к старому файлу): добавить сброс `user_edited=0` в
+  `markMetaPending` либо отдельный вызов в import-пути. Тест: user-edited книга
+  → переимпорт под тем же именем → title берётся из нового файла.
+
+### 7.2 «Recently read» не обновляется во время фоновой обогащённости — [ ] (низкий)
+- **Где:** `MetaEnricher.start` (batch-notify), `BookProvider` (`RECENT_URI`).
+- **Проблема:** фикс 6.1 ввёл `notifyChangeAll` для delete/edit/markRead, но сам
+  bulk-воркер по-прежнему шлёт `notifyChange` только на `CONTENT_URI`. Вкладка
+  «Recently read» слушает `RECENT_URI`: пока идёт stage-2, её строки (title
+  меняется с имени файла на настоящий, появляется обложка) остаются устаревшими
+  до любого другого события (смена фильтра, markRead, правка, удаление).
+- **Доработка:** в `MetaEnricher.start` заменить `notifyChange(CONTENT_URI)`
+  (batch + финальный) на `BookProvider.notifyChangeAll(appContext)` —
+  application-context там уже есть.
+
+### 7.3 Узкая resurrect-гонка осталась в `EditMetaActivity.save` — [ ] (низкий)
+- **Где:** `EditMetaActivity.save` (фикс 6.2, `8d5995a`).
+- **Проблема:** фикс закрыл широкий случай (строка удалена до `getById`), но если
+  её удалят **между** `db.getById(book.id)` и `db.upsert(updated)`, path-based
+  `upsert` INSERTит новую строку, и `markUserEdited(updated.id)` пометит уже её:
+  книга воскресает под новым id. Окно — миллисекунды, но тот же класс бага.
+  Связанно: `upsert` + `markUserEdited` — две отдельные транзакции (см. 1.3).
+- **Доработка:** сохранять через id-based update (`UPDATE ... WHERE _id=?`,
+  без INSERT-ветки) — resurrect-ветка исчезает совсем.
+
+### 7.4 `@SuppressLint("StaticFieldLeak")` вместо исправления утечки — [ ] (низкий)
+- **Где:** `MainActivity.startScan` (коммит `09b3353`); тот же паттерн в `importToLibrary`.
+- **Проблема:** AsyncTask-сы держат неявную ссылку на `MainActivity`; если
+  activity уничтожена во время скана/импорта (пользователь ушёл с экрана),
+  задача и activity живут до её завершения — на большой библиотеке окно
+  измеряется минутами. Предупреждение lint-а заглушено, а не устранено
+  (65-й вместо 66-го warning в секции 5).
+- **Доработка:** в `doInBackground` использовать `getApplicationContext()`
+  (сканеру нужен только `Context` для путей хранилища), в `onPostExecute` —
+  гварда `isFinishing()`; снять `@SuppressLint`.
+
+### 7.5 `startEnrichment()` на UI-потоке при каждой ротации — [ ] (низкий)
+- **Где:** `MainActivity.onCreate` (фикс 6.3, `9987668`).
+- **Проблема:** `startEnrichment()` → `db.needMeta()`: при каждом пересоздании
+  (ротация) на UI-потоке материализуется весь список pending-книг
+  (`fromCursor` на каждую строку), хотя нужен только ответ «пусто/не пусто».
+- **Доработка:** дешёвый `SELECT COUNT(*) WHERE meta_done=0` (новый
+  `hasPendingMeta()`) либо перенос проверки внутрь воркера.
 
 ---
 
 ## [IMPROVE] Доработки и известные ограничения после фичи «сканер → метаданные фоном»
 
-**Создано:** 2026-10-01. **Статус:** приоритет «высокий» закрыт (1.1, 1.2, 2.1 —
-сделаны 2026-10-02), 3.1 закрыт 2026-10-02 (реализовано в фиче cursor UI);
-остаток «среднего»/«низкого» — не начато (см. также раздел [FIX] 6.x).
+**Создано:** 2026-10-01. **Статус:** закрытые пункты (1.1, 1.2, 2.1 — сделаны
+2026-10-02; 3.1 — реализовано в фиче cursor UI) вынесены из этого файла
+(полный текст — в истории git). Осталось не начатым: 1.3, 1.4 (средний) и
+2.2, 3.2 (низкий); плюс раздел [FIX] 7.x — узкие места после фиксов 6.1–6.4.
 Источник: журнал `.agents/scaner/PLAN_CONTEXT.md` (8 коммитов, 130/130 тестов) +
 обзор кода. Приоритет: **высокий** — до масштабирования библиотеки (тысячи+
 книг) или до релиза; **средний** — заметное улучшение; **низкий** — nice-to-have.
 Статус пункта: `[ ]` не начато, `[~]` в работе, `[x]` готово.
 
 ### 1. База данных (`db/BookDatabase`)
-
-#### 1.1 Нет индексов, кроме `UNIQUE(path)` — [x] (высокий) — сделано 2026-10-02
-`DB_VERSION = 3`; `idx_books_meta_done` / `idx_books_last_read` создаются в
-`onCreate` и в `onUpgrade` (ветка `oldVersion < 3`, идемпотентно try/catch, без
-DROP). Тесты: `openingAV2DatabaseUpgradesInPlaceAndAddsIndexes` (v2→v3, данные +
-`PRAGMA index_list`) и `freshDatabaseHasIndexesOnMetaDoneAndLastRead`.
-
-#### 1.2 `updateMetadata`: 5 лишних SELECT на книгу — [x] (высокий) — сделано 2026-10-02
-Значения 5 полей читаются из первого (единственного) курсора; «пустое» решается
-в Java (`isBlank`: NULL/пустое/только пробелы — семантика сохранена). 6 запросов → 1.
-Тест: `updateMetadataTreatsWhitespaceOnlyFieldsAsBlank`.
 
 #### 1.3 `upsert`/`upsertBasic` не атомарны — [ ] (средний)
 - **Где:** `upsert()`, `upsertBasic()`.
@@ -222,15 +231,6 @@ DROP). Тесты: `openingAV2DatabaseUpgradesInPlaceAndAddsIndexes` (v2→v3, �
 
 ### 2. Кэш обложек (`util/CoverCache`)
 
-#### 2.1 Кэш не чистится — [x] (высокий) — сделано 2026-10-02
-`CoverCache.delete(ctx, path)` (удаляет `covers/<hash>.img` и возможный `.tmp`
-орфаним от прерванного save; no-op, если записи нет) и `CoverCache.clear(ctx)`
-(весь кэш + каталог). Вызовы — в `BookDatabase.deleteByPath` (контекст хранится
-в поле, т.к. `SQLiteOpenHelper` не даёт `getContext()`) и `BookDatabase.clear`.
-Опциональный лимит с вытеснением по mtime — не сделан (отдельная задача при
-росте кэша). Тесты: `CoverCacheTest` (9 тестов, incl. half-written tmp) +
-`deleteByPathAlsoDropsTheCachedCover`, `clearDropsTheWholeCoverCache`.
-
 #### 2.2 Ключ кэша — `path.hashCode()` — [ ] (низкий)
 - **Где:** `CoverCache.fileFor()`.
 - **Проблема:** `String.hashCode()` — 32 бита, коллизии двух разных путей возможны;
@@ -239,11 +239,6 @@ DROP). Тесты: `openingAV2DatabaseUpgradesInPlaceAndAddsIndexes` (v2→v3, �
 - **Доработка:** коллизионно-устойчивый ключ (FNV-1a 64 → base36, либо SHA-1 hex).
 
 ### 3. UI / потоки
-
-#### 3.1 Прогресс обогащения — [x] (низкий) — закрыто 2026-10-02 (реализовано в фиче cursor UI)
-`OnProgress(done, total)` → полоса `enrich_bar` показывает «Fetching metadata…
-done/total» (ресурс `enriching_progress`); `total` = `needMeta().size()` на старте
-воркера. Оценка остатка по времени не добавлена (не было в скопе фичи).
 
 #### 3.2 Двойной парсинг при fast path — [ ] (низкий)
 - **Где:** `DetailActivity` (fast path) vs bulk-воркер `MetaEnricher`.
@@ -262,8 +257,9 @@ done/total» (ресурс `enriching_progress`); `total` = `needMeta().size()` 
 
 ### 5. Качество (вплетено в общий бэклог)
 
-- **66 предсуществующих Lint-предупреждений** (`:app:lintDebug`, 0 errors;
-  DefaultLocale, UnusedResources, …) — отдельная чистовая задача по категориям [ ] (низкий).
+- **65 предсуществующих Lint-предупреждений** (`:app:lintDebug`, 0 errors;
+  DefaultLocale, UnusedResources, …; один `StaticFieldLeak` — см. 7.4) —
+  отдельная чистовая задача по категориям [ ] (низкий).
   К ним добавились hardcoded-строки в `MainActivity`/`DetailActivity`/`EditMetaActivity`
   («Found N book(s)», «File not found», «No books read yet.» и т.п.) и `#FFF3CD`
   в `activity_main.xml`.
