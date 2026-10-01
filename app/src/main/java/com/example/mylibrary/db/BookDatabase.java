@@ -8,6 +8,7 @@ import android.database.sqlite.SQLiteOpenHelper;
 
 import com.example.mylibrary.meta.MetaData;
 import com.example.mylibrary.model.Book;
+import com.example.mylibrary.util.CoverCache;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -20,12 +21,16 @@ import java.util.List;
 public class BookDatabase extends SQLiteOpenHelper {
 
     private static final String DB_NAME = "library.db";
-    private static final int DB_VERSION = 2;
+    private static final int DB_VERSION = 3;
 
     /** Serializes all write operations. A static lock (not an instance monitor) so
      *  that concurrent writers from different BookDatabase instances (each Activity
      *  creates its own) still cannot interleave and lose updates. */
     private static final Object WRITE_LOCK = new Object();
+
+    /** Kept for {@link CoverCache} calls in {@link #deleteByPath}/{@link #clear}
+     *  (SQLiteOpenHelper exposes no getContext()). */
+    private final Context context;
 
     private static final String CREATE =
             "CREATE TABLE books ("
@@ -46,11 +51,13 @@ public class BookDatabase extends SQLiteOpenHelper {
 
     public BookDatabase(Context context) {
         super(context, DB_NAME, null, DB_VERSION);
+        this.context = context;
     }
 
     @Override
     public void onCreate(SQLiteDatabase db) {
         db.execSQL(CREATE);
+        createIndexes(db);
     }
 
     @Override
@@ -68,12 +75,34 @@ public class BookDatabase extends SQLiteOpenHelper {
             } catch (Exception ignored) {
             }
         }
+        if (oldVersion < 3) {
+            createIndexes(db);
+        }
     }
 
-    /** Inserts the book if new, or updates its metadata fields if it already exists. The
-     *  {@code last_read} timestamp is always preserved across rescans. The caller is
-     *  expected to pass a model read fresh from this database (so the meta_done /
-     *  user_edited flags are not clobbered). Returns the row id. */
+    /** Indexes for the two hot query paths: the stage-2 queue
+     *  ({@link #needMeta()}, {@code WHERE meta_done = 0}) and the "Recently read"
+     *  view ({@code WHERE last_read IS NOT NULL ORDER BY last_read DESC}). Without
+     *  them both walk the whole table on a large library. Non-unique on purpose
+     *  (many books share a value); CREATE INDEX is idempotency-guarded like the
+     *  ALTER statements above, so a re-run of a partial upgrade is safe. */
+    private static void createIndexes(SQLiteDatabase db) {
+        try {
+            db.execSQL("CREATE INDEX idx_books_meta_done ON books (meta_done)");
+        } catch (Exception ignored) { // index already present (partial upgrade)
+        }
+        try {
+            db.execSQL("CREATE INDEX idx_books_last_read ON books (last_read)");
+        } catch (Exception ignored) {
+        }
+    }
+
+    /** Inserts the book if new, or updates its metadata fields if it already exists.
+     *  The {@code last_read}, {@code meta_done} and {@code user_edited} columns are
+     *  never written here: an existing row keeps them as-is (so a stale in-memory
+     *  model can never clobber the enrichment state or the user-edited flag) and a
+     *  new row gets the schema defaults (both 0). The user-edited flag is set
+     *  explicitly via {@link #markUserEdited}. Returns the row id. */
     public long upsert(Book b) {
         synchronized (WRITE_LOCK) {
             SQLiteDatabase db = getWritableDatabase();
@@ -87,8 +116,6 @@ public class BookDatabase extends SQLiteOpenHelper {
             cv.put("series", b.series);
             cv.put("size_bytes", b.sizeBytes);
             cv.put("exported", b.exported ? 1 : 0);
-            cv.put("meta_done", b.metaDone ? 1 : 0);
-            cv.put("user_edited", b.userEdited ? 1 : 0);
 
             Cursor c = db.rawQuery("SELECT _id FROM books WHERE path=?", new String[]{b.path});
             long existing = -1;
@@ -157,32 +184,33 @@ public class BookDatabase extends SQLiteOpenHelper {
                 return; // row deleted meanwhile
             }
             boolean userEdited = cur.getInt(cur.getColumnIndexOrThrow("user_edited")) == 1;
+            // The current field values come from this same cursor (already fetched
+            // above), so "is this field blank?" is decided in Java — no extra
+            // per-field SELECT on the hottest path of stage 2.
+            String curTitle = cur.getString(cur.getColumnIndexOrThrow("title"));
+            String curAuthor = cur.getString(cur.getColumnIndexOrThrow("author"));
+            String curPublisher = cur.getString(cur.getColumnIndexOrThrow("publisher"));
+            String curDescription = cur.getString(cur.getColumnIndexOrThrow("description"));
+            String curSeries = cur.getString(cur.getColumnIndexOrThrow("series"));
             cur.close();
 
             ContentValues cv = new ContentValues();
             cv.put("meta_done", 1);
             if (md != null && md.found && fileReadable) {
-                if (!userEdited || isBlankValue(db, id, "title")) cv.put("title", md.title);
-                if (!userEdited || isBlankValue(db, id, "author")) cv.put("author", md.author);
-                if (!userEdited || isBlankValue(db, id, "publisher")) cv.put("publisher", md.publisher);
-                if (!userEdited || isBlankValue(db, id, "description")) cv.put("description", md.description);
-                if (!userEdited || isBlankValue(db, id, "series")) cv.put("series", md.series);
+                if (!userEdited || isBlank(curTitle)) cv.put("title", md.title);
+                if (!userEdited || isBlank(curAuthor)) cv.put("author", md.author);
+                if (!userEdited || isBlank(curPublisher)) cv.put("publisher", md.publisher);
+                if (!userEdited || isBlank(curDescription)) cv.put("description", md.description);
+                if (!userEdited || isBlank(curSeries)) cv.put("series", md.series);
             }
             // cv always carries at least meta_done, so the update is unconditional.
             db.update("books", cv, "_id=?", new String[]{String.valueOf(id)});
         }
     }
 
-    private static boolean isBlankValue(SQLiteDatabase db, long id, String column) {
-        Cursor c = db.query("books", new String[]{column}, "_id=?",
-                new String[]{String.valueOf(id)}, null, null, null);
-        try {
-            if (!c.moveToFirst()) return true;
-            int i = c.getColumnIndexOrThrow(column);
-            return c.isNull(i) || c.getString(i).trim().length() == 0;
-        } finally {
-            c.close();
-        }
+    /** A field value is "blank" when it is NULL or empty/whitespace-only. */
+    private static boolean isBlank(String value) {
+        return value == null || value.trim().length() == 0;
     }
 
     /** All books whose in-file metadata has not been extracted yet (stage-2 queue). */
@@ -275,6 +303,30 @@ public class BookDatabase extends SQLiteOpenHelper {
         }
     }
 
+    /** Marks the row as needing stage-2 enrichment again. Used after the underlying
+     *  file was overwritten (an import with the same name), so the old in-file
+     *  metadata is re-extracted instead of being trusted. */
+    public void markMetaPending(long id) {
+        synchronized (WRITE_LOCK) {
+            SQLiteDatabase db = getWritableDatabase();
+            ContentValues cv = new ContentValues();
+            cv.put("meta_done", 0);
+            db.update("books", cv, "_id=?", new String[]{String.valueOf(id)});
+        }
+    }
+
+    /** Marks the row as user-edited (the enricher will then only fill still-blank
+     *  fields and never clobber the user's values). Monotonic by design: once 1,
+     *  it never goes back to 0. */
+    public void markUserEdited(long id) {
+        synchronized (WRITE_LOCK) {
+            SQLiteDatabase db = getWritableDatabase();
+            ContentValues cv = new ContentValues();
+            cv.put("user_edited", 1);
+            db.update("books", cv, "_id=?", new String[]{String.valueOf(id)});
+        }
+    }
+
     public void markRead(long id) {
         synchronized (WRITE_LOCK) {
             SQLiteDatabase db = getWritableDatabase();
@@ -289,6 +341,9 @@ public class BookDatabase extends SQLiteOpenHelper {
             SQLiteDatabase db = getWritableDatabase();
             db.delete("books", "path=?", new String[]{path});
         }
+        // Drop the book's cached cover too, so removal never leaves an orphan
+        // "covers/<hash>.img" file on disk.
+        CoverCache.delete(context, path);
     }
 
     public void clear() {
@@ -296,6 +351,8 @@ public class BookDatabase extends SQLiteOpenHelper {
             SQLiteDatabase db = getWritableDatabase();
             db.delete("books", null, null);
         }
+        // The whole catalog is gone — wipe the whole cover cache with it.
+        CoverCache.clear(context);
     }
 
     /** Maps a books-table cursor row to a {@link Book} (also used by the UI adapter). */

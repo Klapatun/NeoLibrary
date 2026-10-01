@@ -1,7 +1,9 @@
 package com.example.mylibrary.db;
 
 import android.content.ContentProvider;
+import android.content.ContentResolver;
 import android.content.ContentValues;
+import android.content.Context;
 import android.database.Cursor;
 import android.net.Uri;
 
@@ -25,6 +27,19 @@ public class BookProvider extends ContentProvider {
     public static final Uri CONTENT_URI = Uri.parse("content://" + AUTHORITY + "/books");
     /** The "Recently read" view (limit 200). */
     public static final Uri RECENT_URI = Uri.parse("content://" + AUTHORITY + "/books/recent");
+
+    /**
+     * Announces a catalog change to BOTH views at once. The all-books list and the
+     * "recently read" view observe different URIs, so a change that affects both
+     * (a delete, a metadata edit, a mark-read) must be announced on both —
+     * {@code notifyChange(CONTENT_URI)} alone would leave the "recently read"
+     * cursor stale (the local {@code SQLiteCursor} has no automatic refresh).
+     */
+    public static void notifyChangeAll(Context context) {
+        ContentResolver resolver = context.getContentResolver();
+        resolver.notifyChange(CONTENT_URI, null);
+        resolver.notifyChange(RECENT_URI, null);
+    }
 
     private BookDatabase db;
 

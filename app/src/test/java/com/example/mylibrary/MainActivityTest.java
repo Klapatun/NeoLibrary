@@ -11,6 +11,7 @@ import android.app.Activity;
 import android.content.Intent;
 import android.content.Context;
 import android.net.Uri;
+import android.os.Bundle;
 import android.os.Looper;
 import android.provider.OpenableColumns;
 import android.view.View;
@@ -198,6 +199,97 @@ public class MainActivityTest {
         for (Book b : db.all(null)) {
             assertTrue("book must be enriched: " + b.path, b.metaDone);
         }
+    }
+
+    /** A configuration change (rotation) must NOT re-run the full storage scan —
+     *  the catalog is already there — but it MUST resume the enrichment worker over
+     *  the remaining queue (the previous worker was cancelled in onDestroy). */
+    @Test
+    public void recreationSkipsTheRescanButResumesEnrichment() throws Exception {
+        TestFixtures.writeText(new File(storage, "story_a.txt"), "alpha\n");
+        TestFixtures.writeText(new File(storage, "story_b.txt"), "beta\n");
+
+        ActivityController<MainActivity> c = Robolectric.buildActivity(MainActivity.class);
+        MainActivity a = c.setup().get();
+        awaitCatalogSize(2);
+        final BookDatabase dbLocal = db;
+        awaitCondition("stage-2 to finish", new Cond() {
+            public boolean holds() {
+                return dbLocal.needMeta().isEmpty();
+            }
+        });
+
+        // Simulate the worker having been cut off mid-work: make one row need
+        // enrichment again.
+        Book first = db.all(null).get(0);
+        db.getWritableDatabase().execSQL("UPDATE books SET meta_done = 0 WHERE _id = " + first.id);
+        assertFalse("precondition: one book is pending again", db.needMeta().isEmpty());
+
+        // Simulate a rotation: save the instance state, destroy the activity, and
+        // build a new one with the saved state.
+        Bundle saved = new Bundle();
+        c.saveInstanceState(saved);
+        c.destroy();
+        int toastsAfterColdStart = ShadowToast.shownToastCount();
+
+        MainActivity a2 = Robolectric.buildActivity(MainActivity.class).setup(saved).get();
+
+        // No rescan: the scan's progress bar is shown only while a scan is running.
+        assertEquals("the full rescan must not restart on recreation",
+                View.GONE, a2.findViewById(R.id.progress).getVisibility());
+        shadowOf(Looper.getMainLooper()).idle();
+        assertEquals("a second scan would toast 'Found N book(s)' again",
+                toastsAfterColdStart, ShadowToast.shownToastCount());
+        assertEquals(2, db.all(null).size());
+
+        // The enrichment worker must have resumed over the remaining queue.
+        awaitCondition("stage-2 to resume after recreation", new Cond() {
+            public boolean holds() {
+                return dbLocal.needMeta().isEmpty();
+            }
+        });
+    }
+
+    /** The reported bug scenario: the first load finds no books (storage was empty),
+     *  the user then drops books onto storage while the app stays open, and picks
+     *  "Rescan" from the menu. The new books must be DRAWN in the list, not just
+     *  written to the catalog — without a manual app restart, and without relying on
+     *  the CursorLoader's ContentObserver being alive (on API 19 it can be lost after
+     *  loader cancel/restart cycles, which is why the rescan's own write must refresh
+     *  the list directly). */
+    @Test
+    public void rescanAfterEmptyFirstScanDrawsTheNewBooks() throws Exception {
+        MainActivity a = launchMain();
+        final BookDatabase dbLocal = db;
+
+        // First load: storage is empty -> the catalog and the list stay empty.
+        awaitCondition("the first scan to finish on empty storage", new Cond() {
+            public boolean holds() {
+                return a.findViewById(R.id.progress).getVisibility() == View.GONE
+                        && dbLocal.all(null).isEmpty();
+            }
+        });
+        ListView list = a.findViewById(R.id.book_list);
+        assertEquals("no books after the first (empty) scan", 0, list.getAdapter().getCount());
+
+        // The user drops two books onto storage while the app is still open...
+        TestFixtures.writeText(new File(storage, "story_a.txt"), "alpha\n");
+        TestFixtures.writeText(new File(storage, "story_b.txt"), "beta\n");
+
+        // ...and picks "Rescan" from the options menu. The menu item's handler
+        // (onOptionsItemSelected) calls startScan() 1:1, so drive that same entry
+        // point (reflection: it is private, and the internal MenuBuilder is not on
+        // the compile classpath).
+        java.lang.reflect.Method rescan = MainActivity.class.getDeclaredMethod("startScan");
+        rescan.setAccessible(true);
+        rescan.invoke(a);
+
+        // The new books land in the catalog...
+        awaitCatalogSize(2);
+        // ...and must be drawn in the list (the original bug: catalog updated,
+        // list stayed empty until the app was restarted).
+        awaitAdapterCount(list, 2);
+        assertEquals(2, list.getAdapter().getCount());
     }
 
     // ------------------------------------------------------------------
@@ -401,6 +493,55 @@ public class MainActivityTest {
         // And the list picked it up through the loader.
         ListView list = a.findViewById(R.id.book_list);
         awaitAdapterCount(list, 1);
+    }
+
+    /** Re-importing a file with the same name overwrites it: the catalog row must be
+     *  re-enriched with the NEW in-file metadata (not keep the old title from the
+     *  previous file of the same name). */
+    @Test
+    public void reimportingOverAnExistingFileReEnrichesTheBook() throws Exception {
+        ShadowContentResolver resolver = shadowOf(app.getContentResolver());
+        File dest = new File(app.getExternalFilesDir("books"), "novel.fb2");
+
+        // --- first edition ---
+        File picked1 = new File(folder.getRoot(), "picked1.fb2");
+        TestFixtures.writeText(picked1, TestFixtures.FB2_FULL);
+        Uri uri1 = Uri.parse("content://com.neo.librarytest.picked/e1");
+        resolver.setCursor(uri1, new DisplayNameCursor("novel.fb2"));
+        resolver.registerInputStream(uri1, new FileInputStream(picked1));
+
+        MainActivity a = launchMain();
+        awaitCatalogSize(0);
+        a.onActivityResult(REQ_IMPORT, Activity.RESULT_OK, new Intent().setData(uri1));
+
+        final BookDatabase dbLocal = db;
+        awaitCondition("first import to be enriched", new Cond() {
+            public boolean holds() {
+                Book b = dbLocal.getById(dbLocal.getIdForPath(dest.getAbsolutePath()));
+                return b != null && b.metaDone && "Original Title".equals(b.title);
+            }
+        });
+
+        // --- second edition: same name, different in-file title ---
+        String secondEdition =
+                TestFixtures.FB2_FULL.replace("Original Title", "Second Edition Title");
+        File picked2 = new File(folder.getRoot(), "picked2.fb2");
+        TestFixtures.writeText(picked2, secondEdition);
+        Uri uri2 = Uri.parse("content://com.neo.librarytest.picked/e2");
+        resolver.setCursor(uri2, new DisplayNameCursor("novel.fb2"));
+        resolver.registerInputStream(uri2, new FileInputStream(picked2));
+
+        a.onActivityResult(REQ_IMPORT, Activity.RESULT_OK, new Intent().setData(uri2));
+
+        // The re-extraction must have picked up the new in-file title.
+        awaitCondition("re-import to re-enrich the row", new Cond() {
+            public boolean holds() {
+                Book b = dbLocal.getById(dbLocal.getIdForPath(dest.getAbsolutePath()));
+                return b != null && b.metaDone && "Second Edition Title".equals(b.title);
+            }
+        });
+        assertEquals("the file on disk was overwritten",
+                secondEdition, new String(TestFixtures.readAll(dest), "UTF-8"));
     }
 
     @Test

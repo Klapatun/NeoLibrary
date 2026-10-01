@@ -7,12 +7,16 @@ import static org.robolectric.Shadows.shadowOf;
 import android.app.Activity;
 import android.content.Intent;
 import android.content.Context;
+import android.database.ContentObserver;
+import android.net.Uri;
+import android.os.Handler;
 import android.os.Looper;
 import android.widget.Button;
 import android.widget.EditText;
 import android.widget.TextView;
 
 import com.example.mylibrary.db.BookDatabase;
+import com.example.mylibrary.db.BookProvider;
 import com.example.mylibrary.model.Book;
 import com.example.mylibrary.testutil.TestFixtures;
 
@@ -221,5 +225,66 @@ public class EditMetaActivityTest {
 
         assertTrue(a.isFinishing());
         assertEquals("Old Title", db.getById(id).title);
+    }
+
+    /** If the row is deleted while the editor is open, saving must not resurrect
+     *  the book with a stale in-memory copy. */
+    @Test
+    public void saveDoesNotResurrectADeletedBook() throws Exception {
+        File pdf = new File(folder.getRoot(), "book.pdf");
+        TestFixtures.writeBytes(pdf, new byte[]{1, 2, 3});
+        EditMetaActivity a = launch(pdf, "PDF", "Old Title", "Old Author");
+        long id = db.getIdForPath(pdf.getAbsolutePath());
+        assertTrue("precondition: the row exists", id >= 0);
+
+        // The book is removed from the catalog while the editor is open.
+        db.deleteByPath(pdf.getAbsolutePath());
+
+        ((Button) a.findViewById(R.id.btn_save)).performClick();
+
+        // Let the background save run to completion (the activity finishes with it).
+        long deadline = System.currentTimeMillis() + 10000;
+        while (System.currentTimeMillis() < deadline && !a.isFinishing()) {
+            shadowOf(Looper.getMainLooper()).idle();
+            Thread.sleep(10);
+        }
+        shadowOf(Looper.getMainLooper()).idle();
+
+        assertEquals("the deleted row must not come back", 0, db.all(null).size());
+        assertEquals(Activity.RESULT_OK, shadowOf(a).getResultCode());
+    }
+
+    /** The list is cursor-driven: a save must announce the change, otherwise the
+     *  new title/author stay invisible in the catalog views. */
+    @Test
+    public void saveNotifiesTheCatalogObservers() throws Exception {
+        File pdf = new File(folder.getRoot(), "book.pdf");
+        TestFixtures.writeBytes(pdf, new byte[]{1, 2, 3});
+
+        FiringObserver onBooks = new FiringObserver();
+        FiringObserver onRecent = new FiringObserver();
+        app.getContentResolver().registerContentObserver(BookProvider.CONTENT_URI, true, onBooks);
+        app.getContentResolver().registerContentObserver(BookProvider.RECENT_URI, true, onRecent);
+
+        EditMetaActivity a = launch(pdf, "PDF", "Old Title", "Old Author");
+        long id = db.getIdForPath(pdf.getAbsolutePath());
+
+        ((EditText) a.findViewById(R.id.edit_title)).setText("New Title");
+        ((Button) a.findViewById(R.id.btn_save)).performClick();
+
+        awaitCatalogTitle(db, id, "New Title");
+        shadowOf(Looper.getMainLooper()).idle();
+
+        assertTrue("the all-books cursor must be told about the new metadata", onBooks.fired);
+        assertTrue("the recently-read cursor must be told as well", onRecent.fired);
+        app.getContentResolver().unregisterContentObserver(onBooks);
+        app.getContentResolver().unregisterContentObserver(onRecent);
+    }
+
+    /** Records whether the observer fired (for one registered URI). */
+    private static final class FiringObserver extends ContentObserver {
+        private boolean fired;
+        FiringObserver() { super(new Handler(Looper.getMainLooper())); }
+        @Override public void onChange(boolean selfChange, Uri uri) { fired = true; }
     }
 }

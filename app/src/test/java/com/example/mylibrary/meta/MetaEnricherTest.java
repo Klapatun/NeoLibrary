@@ -108,8 +108,8 @@ public class MetaEnricherTest {
         b.author = "User Author";
         b.publisher = null;    // empty -> the enricher may fill it
         b.description = null;  // empty -> the enricher may fill it
-        b.userEdited = true;
         long id = db.upsert(b);
+        db.markUserEdited(id); // what the editor does after the upsert
 
         MetaEnricher.enrichOne(app, db, get(id));
 

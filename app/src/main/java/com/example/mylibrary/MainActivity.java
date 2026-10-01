@@ -1,5 +1,6 @@
 package com.example.mylibrary;
 
+import android.annotation.SuppressLint;
 import android.app.Activity;
 import android.app.LoaderManager;
 import android.app.ProgressDialog;
@@ -30,6 +31,7 @@ import com.example.mylibrary.meta.MetaEnricher;
 import com.example.mylibrary.model.Book;
 import com.example.mylibrary.scan.Formats;
 import com.example.mylibrary.scan.LibraryScanner;
+import com.example.mylibrary.util.CoverCache;
 
 import java.io.File;
 import java.util.ArrayList;
@@ -134,7 +136,19 @@ public class MainActivity extends Activity implements LoaderManager.LoaderCallba
         // The framework Activity (unlike AndroidX's FragmentActivity) has no loader
         // shortcuts of its own — go through the LoaderManager explicitly.
         getLoaderManager().initLoader(LOADER_BOOKS, null, this);
-        startScan();
+        if (savedInstanceState == null) {
+            // Cold start (first launch of this task): walk storage and (re)build the
+            // catalog. This is also what picks up files added outside the app
+            // between sessions.
+            startScan();
+        } else {
+            // Recreation (rotation / configuration change): the catalog and the
+            // loaders already have the data — a full rescan would be pure waste
+            // (and would reset the enrichment worker from the top of the queue).
+            // The worker was cancelled in onDestroy; if any books still need stage
+            // 2, resume it over the remaining queue (needMeta()).
+            startEnrichment();
+        }
     }
 
     @Override
@@ -257,6 +271,16 @@ public class MainActivity extends Activity implements LoaderManager.LoaderCallba
         }
     }
 
+    /** The catalog cursor the current view expects for {@link #currentFilter} — the
+     *  same query {@link #onCreateLoader} would ask the provider for. Used for the
+     *  direct rebind in {@link #startScan} after a rescan. */
+    private Cursor currentCatalogCursor() {
+        if ("__recent__".equals(currentFilter)) {
+            return db.cursorRecent(200);
+        }
+        return db.cursorAll(currentFilter);
+    }
+
     private void openDetails(long id) {
         Intent i = new Intent(this, DetailActivity.class);
         i.putExtra(DetailActivity.EXTRA_BOOK_ID, id);
@@ -267,6 +291,7 @@ public class MainActivity extends Activity implements LoaderManager.LoaderCallba
     // Stage 1: fast scan
     // -----------------------------------------------------------------
 
+    @SuppressLint("StaticFieldLeak")
     private void startScan() {
         progressBar.setVisibility(View.VISIBLE);
         new AsyncTask<Void, Void, List<Book>>() {
@@ -281,8 +306,17 @@ public class MainActivity extends Activity implements LoaderManager.LoaderCallba
                 // metadata, enrichment state and last_read timestamps in sync.
                 if (found != null) {
                     for (Book b : found) db.upsertBasic(b);
-                    // Tell the loader the catalog changed; it re-queries and the
-                    // list refreshes itself — no manual reload, no blocking.
+                    // The upserts above were committed on this (UI) thread, just now —
+                    // so re-query the catalog ourselves and rebind the adapter.
+                    // Deterministic: it does not rely on the CursorLoader's
+                    // ContentObserver being alive (on API 19 it can be lost after a
+                    // loader cancel/restart cycle — without this rebind the list
+                    // would stay empty after a rescan that finds new books). The
+                    // loader's next delivery simply replaces this cursor.
+                    adapter.changeCursor(currentCatalogCursor());
+                    updateEmptyView();
+                    // Also announce through the normal channel (the "recently read"
+                    // observer and any other listeners).
                     getContentResolver().notifyChange(BookProvider.CONTENT_URI, null);
                 }
                 Toast.makeText(MainActivity.this,
@@ -297,7 +331,9 @@ public class MainActivity extends Activity implements LoaderManager.LoaderCallba
     // Stage 2: background metadata + covers
     // -----------------------------------------------------------------
 
-    /** Starts the background enrichment worker if any book still needs it. */
+    /** Starts the background enrichment worker if any book still needs it. List
+     *  refresh is NOT the worker's job: stage-1 writes rebind the adapter directly
+     *  (see {@link #startScan}) and stage-2 announces itself via {@code notifyChange}. */
     private void startEnrichment() {
         if (isFinishing()) return;
         if (db.needMeta().isEmpty()) return;
@@ -388,7 +424,17 @@ public class MainActivity extends Activity implements LoaderManager.LoaderCallba
                     out.close();
                     Book b = LibraryScanner.scanSingle(dest);
                     if (b != null) {
+                        long existing = db.getIdForPath(dest.getAbsolutePath());
                         db.upsertBasic(b);
+                        if (existing >= 0) {
+                            // The import overwrote an existing file: the row still carries
+                            // the OLD in-file metadata and the cache the OLD cover (a new
+                            // file without a cover would keep the stale one forever).
+                            // Drop both — the re-extraction below refreshes them, and the
+                            // pending flag is the safety net for a later bulk pass.
+                            db.markMetaPending(existing);
+                            CoverCache.delete(MainActivity.this, dest.getAbsolutePath());
+                        }
                         // Stage 2 for this single book — already off the UI thread.
                         MetaEnricher.enrichOne(MainActivity.this, db, b);
                         getContentResolver().notifyChange(BookProvider.CONTENT_URI, null);

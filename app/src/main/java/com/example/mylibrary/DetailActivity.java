@@ -12,6 +12,7 @@ import android.widget.TextView;
 import android.widget.Toast;
 
 import com.example.mylibrary.db.BookDatabase;
+import com.example.mylibrary.db.BookProvider;
 import com.example.mylibrary.meta.CoverExtractor;
 import com.example.mylibrary.meta.MetaEnricher;
 import com.example.mylibrary.model.Book;
@@ -102,6 +103,9 @@ public class DetailActivity extends Activity {
             Intent i = Openers.openFile(f);
             startActivity(i);
             db.markRead(book.id);
+            // The list is cursor-driven: announce the new last_read so the
+            // "recently read" view (and the list, if it is on screen) re-queries.
+            BookProvider.notifyChangeAll(this);
         } catch (Exception e) {
             showNoViewer();
         }
@@ -129,6 +133,9 @@ public class DetailActivity extends Activity {
                 .setPositiveButton("Remove", new android.content.DialogInterface.OnClickListener() {
                     @Override public void onClick(android.content.DialogInterface d, int w) {
                         db.deleteByPath(book.path);
+                        // Both catalog views may still be showing the row — tell
+                        // their cursors it is gone (no other code path re-queries).
+                        BookProvider.notifyChangeAll(DetailActivity.this);
                         setResult(RESULT_OK);
                         finish();
                     }

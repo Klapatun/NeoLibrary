@@ -11,6 +11,7 @@ import android.widget.TextView;
 import android.widget.Toast;
 
 import com.example.mylibrary.db.BookDatabase;
+import com.example.mylibrary.db.BookProvider;
 import com.example.mylibrary.meta.MetaData;
 import com.example.mylibrary.meta.MetaWriter;
 import com.example.mylibrary.model.Book;
@@ -97,16 +98,25 @@ public class EditMetaActivity extends Activity {
                 }
                 // Always persist to the catalog database.
                 Book updated = db.getById(book.id);
-                if (updated == null) updated = book;
+                if (updated == null) {
+                    // The row vanished meanwhile (e.g. removed from another screen) —
+                    // do NOT resurrect it with a stale in-memory copy.
+                    return ok;
+                }
                 updated.title = title;
                 updated.author = author;
                 updated.publisher = publisher;
                 updated.description = description;
                 updated.exported = ok && inline;
-                // Mark the row as user-edited so the background enricher never
-                // clobbers these values with the file's original metadata.
-                updated.userEdited = true;
+                // Persist the fields, then mark the row user-edited so the background
+                // enricher never clobbers these values with the file's original
+                // metadata. (upsert() itself never touches user_edited/meta_done.)
                 db.upsert(updated);
+                db.markUserEdited(updated.id);
+                // The list is cursor-driven: announce the new metadata so the
+                // catalog views (list + recently read) re-query without a reload.
+                // (EditMetaActivity.this — inside the AsyncTask, this == the task.)
+                BookProvider.notifyChangeAll(EditMetaActivity.this);
                 return ok;
             }
             @Override protected void onPostExecute(Boolean ok) {

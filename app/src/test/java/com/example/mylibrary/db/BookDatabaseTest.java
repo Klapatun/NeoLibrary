@@ -12,6 +12,7 @@ import android.database.sqlite.SQLiteDatabase;
 
 import com.example.mylibrary.meta.MetaData;
 import com.example.mylibrary.model.Book;
+import com.example.mylibrary.util.CoverCache;
 
 import org.junit.Before;
 import org.junit.Test;
@@ -20,6 +21,7 @@ import org.robolectric.RobolectricTestRunner;
 import org.robolectric.RuntimeEnvironment;
 import org.robolectric.annotation.Config;
 
+import java.util.ArrayList;
 import java.util.List;
 
 /**
@@ -226,12 +228,46 @@ public class BookDatabaseTest {
         assertEquals(1, db.all(null).size());
     }
 
+    /** Removing a book from the catalog must also drop its cached cover file —
+     *  otherwise "covers/&lt;hash&gt;.img" orphans grow forever on disk. */
+    @Test
+    public void deleteByPathAlsoDropsTheCachedCover() {
+        CoverCache.save(context, "/x/drop.epub", new byte[]{9, 9, 9});
+        assertTrue(CoverCache.fileFor(context, "/x/drop.epub").exists());
+        db.upsert(book("/x/drop.epub", "EPUB", "Drop", null));
+        CoverCache.save(context, "/x/keep.epub", new byte[]{8, 8, 8});
+        db.upsert(book("/x/keep.epub", "EPUB", "Keep", null));
+
+        db.deleteByPath("/x/drop.epub");
+
+        assertFalse("removed book's cover must be gone",
+                CoverCache.fileFor(context, "/x/drop.epub").exists());
+        assertNull(CoverCache.load(context, "/x/drop.epub"));
+        assertNotNull("the other book's cover must survive",
+                CoverCache.load(context, "/x/keep.epub"));
+    }
+
     @Test
     public void clearRemovesEverything() {
         db.upsert(book("/x/a.pdf", "PDF", "A", null));
         db.upsert(book("/x/b.pdf", "PDF", "B", null));
         db.clear();
         assertTrue(db.all(null).isEmpty());
+    }
+
+    /** Wiping the catalog must wipe the whole cover cache with it (no orphan
+     *  "covers/*.img" files left on disk). */
+    @Test
+    public void clearDropsTheWholeCoverCache() {
+        CoverCache.save(context, "/x/a.epub", new byte[]{1});
+        CoverCache.save(context, "/x/b.epub", new byte[]{2});
+        db.upsert(book("/x/a.epub", "EPUB", "A", null));
+        db.upsert(book("/x/b.epub", "EPUB", "B", null));
+
+        db.clear();
+
+        assertNull(CoverCache.load(context, "/x/a.epub"));
+        assertNull(CoverCache.load(context, "/x/b.epub"));
     }
 
     @Test
@@ -248,9 +284,13 @@ public class BookDatabaseTest {
     @Test
     public void allFieldsRoundTripThroughCursor() {
         Book b = book("/storage/emulated/0/cyr.epub", "EPUB", "Мастер и Маргарита", "М. А. Булгаков");
-        b.metaDone = true;
-        b.userEdited = true;
         long id = db.upsert(b);
+        // The stage flags are row-owned state (upsert no longer writes them from the
+        // model) — set them through their own channels, then verify the full row
+        // round-trips through the cursor.
+        db.markUserEdited(id);
+        SQLiteDatabase raw = db.getWritableDatabase();
+        raw.execSQL("UPDATE books SET meta_done = 1 WHERE _id = " + id);
 
         Book got = db.getById(id);
         assertEquals(b.path, got.path);
@@ -325,6 +365,85 @@ public class BookDatabaseTest {
         } finally {
             c.close();
         }
+    }
+
+    // ------------------------------------------------------------------
+    // migration (v2 -> v3: indexes)
+    // ------------------------------------------------------------------
+
+    /** Old (v2) table definition, exactly as shipped in version 2 (with the
+     *  meta_done / user_edited columns, no indexes). */
+    private static final String V2_CREATE =
+            "CREATE TABLE books ("
+            + "_id INTEGER PRIMARY KEY AUTOINCREMENT, "
+            + "path TEXT UNIQUE NOT NULL, "
+            + "format TEXT, "
+            + "title TEXT, "
+            + "author TEXT, "
+            + "publisher TEXT, "
+            + "description TEXT, "
+            + "series TEXT, "
+            + "size_bytes INTEGER, "
+            + "exported INTEGER DEFAULT 0, "
+            + "meta_done INTEGER NOT NULL DEFAULT 0, "
+            + "user_edited INTEGER NOT NULL DEFAULT 0, "
+            + "last_read INTEGER"
+            + ")";
+
+    /**
+     * Opening a v2 database must upgrade it in place to v3: the existing row (with
+     * last_read) survives and both hot-path indexes are created.
+     */
+    @Test
+    public void openingAV2DatabaseUpgradesInPlaceAndAddsIndexes() {
+        db.close(); // release setUp()'s connection so the raw open below can proceed
+        java.io.File f = context.getDatabasePath("library.db");
+        if (f.getParentFile() != null) f.getParentFile().mkdirs();
+        SQLiteDatabase rawDb = SQLiteDatabase.openOrCreateDatabase(f.getAbsolutePath(), null);
+        try {
+            rawDb.execSQL(V2_CREATE);
+            rawDb.execSQL("INSERT INTO books (path, format, title, last_read) VALUES "
+                    + "('/x/v2.pdf', 'PDF', 'V2 Title', 42424)");
+            rawDb.execSQL("PRAGMA user_version = 2");
+        } finally {
+            rawDb.close();
+        }
+
+        BookDatabase upgraded = new BookDatabase(context);
+        SQLiteDatabase raw = upgraded.getReadableDatabase();
+        Cursor c = raw.rawQuery("SELECT title, last_read FROM books", null);
+        try {
+            assertTrue("row must survive the upgrade", c.moveToFirst());
+            assertEquals("V2 Title", c.getString(0));
+            assertEquals(42424L, c.getLong(1));
+        } finally {
+            c.close();
+        }
+        List<String> indexes = indexNames(raw);
+        assertTrue("meta_done index must be created on upgrade",
+                indexes.contains("idx_books_meta_done"));
+        assertTrue("last_read index must be created on upgrade",
+                indexes.contains("idx_books_last_read"));
+    }
+
+    /** A brand-new database (onCreate path) must have both hot-path indexes. */
+    @Test
+    public void freshDatabaseHasIndexesOnMetaDoneAndLastRead() {
+        List<String> indexes = indexNames(db.getReadableDatabase());
+        assertTrue(indexes.contains("idx_books_meta_done"));
+        assertTrue(indexes.contains("idx_books_last_read"));
+    }
+
+    /** The index names of the books table (PRAGMA index_list, name = column 1). */
+    private static List<String> indexNames(SQLiteDatabase db) {
+        List<String> names = new ArrayList<String>();
+        Cursor c = db.rawQuery("PRAGMA index_list(books)", null);
+        try {
+            while (c.moveToNext()) names.add(c.getString(1));
+        } finally {
+            c.close();
+        }
+        return names;
     }
 
     // ------------------------------------------------------------------
@@ -412,8 +531,8 @@ public class BookDatabaseTest {
         Book b = book("/x/c.epub", "EPUB", "User Title", "User Author");
         b.publisher = null;   // left empty by the user -> the enricher may fill it
         b.description = null; // left empty by the user -> the enricher may fill it
-        b.userEdited = true;
         long id = db.upsert(b);
+        db.markUserEdited(id); // what the editor does after the upsert
 
         // Background extraction finds different in-file values.
         MetaData md = new MetaData();
@@ -432,6 +551,26 @@ public class BookDatabaseTest {
         assertTrue(got.metaDone);
     }
 
+    /** A whitespace-only catalog value counts as blank (same rule as before the
+     *  single-cursor rewrite): the enricher may fill it even when user_edited=1. */
+    @Test
+    public void updateMetadataTreatsWhitespaceOnlyFieldsAsBlank() {
+        Book b = book("/x/w.epub", "EPUB", "  ", "Real Author");
+        long id = db.upsert(b);
+        db.markUserEdited(id);
+
+        MetaData md = new MetaData();
+        md.title = "File Title";
+        md.author = "File Author";
+        md.found = true;
+        db.updateMetadata(id, md, true);
+
+        Book got = db.getById(id);
+        assertEquals("whitespace-only title is filled by the enricher", "File Title", got.title);
+        assertEquals("non-blank user author is kept", "Real Author", got.author);
+        assertTrue(got.metaDone);
+    }
+
     @Test
     public void updateMetadataWithoutFoundMetaLeavesTitleInPlaceAndMarksDone() {
         long id = db.upsertBasic(book("/x/d.pdf", "PDF", "d", null));
@@ -442,6 +581,53 @@ public class BookDatabaseTest {
         Book got = db.getById(id);
         assertEquals("d", got.title); // file-name title survives
         assertTrue(got.metaDone);     // but the book is marked enriched
+    }
+
+    /** upsert must not clobber the stage flags from a stale in-memory model:
+     *  meta_done / user_edited are row-owned state, like last_read. */
+    @Test
+    public void upsertDoesNotTouchMetaFlagsOnExistingRow() {
+        long id = db.upsertBasic(book("/x/a.epub", "EPUB", "A", null));
+        // Simulate stage 2 having enriched the row and the user having edited it.
+        MetaData md = new MetaData();
+        md.title = "Embedded";
+        md.found = true;
+        db.updateMetadata(id, md, true);
+        db.markUserEdited(id);
+
+        // A STALE model (both flags false) must not reset them.
+        Book stale = book("/x/a.epub", "EPUB", "A2", null);
+        stale.metaDone = false;
+        stale.userEdited = false;
+        assertEquals(id, db.upsert(stale));
+
+        Book got = db.getById(id);
+        assertEquals("metadata fields did update", "A2", got.title);
+        assertTrue("meta_done must stay 1", got.metaDone);
+        assertTrue("user_edited must stay 1", got.userEdited);
+    }
+
+    @Test
+    public void markUserEditedSetsTheFlag() {
+        long id = db.upsertBasic(book("/x/a.epub", "EPUB", "A", null));
+        assertFalse(db.getById(id).userEdited);
+        db.markUserEdited(id);
+        assertTrue(db.getById(id).userEdited);
+    }
+
+    /** After the underlying file is overwritten (an import with the same name) the
+     *  row must be flagged for re-enrichment instead of trusting the old metadata. */
+    @Test
+    public void markMetaPendingClearsTheDoneFlag() {
+        long id = db.upsertBasic(book("/x/a.epub", "EPUB", "A", null));
+        MetaData md = new MetaData();
+        md.title = "Embedded";
+        md.found = true;
+        db.updateMetadata(id, md, true);
+        assertTrue(db.getById(id).metaDone);
+
+        db.markMetaPending(id);
+        assertFalse("the row must be pending enrichment again", db.getById(id).metaDone);
     }
 
     @Test
