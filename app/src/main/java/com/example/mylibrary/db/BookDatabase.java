@@ -8,6 +8,7 @@ import android.database.sqlite.SQLiteOpenHelper;
 
 import com.example.mylibrary.meta.MetaData;
 import com.example.mylibrary.model.Book;
+import com.example.mylibrary.util.CoverCache;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -26,6 +27,10 @@ public class BookDatabase extends SQLiteOpenHelper {
      *  that concurrent writers from different BookDatabase instances (each Activity
      *  creates its own) still cannot interleave and lose updates. */
     private static final Object WRITE_LOCK = new Object();
+
+    /** Kept for {@link CoverCache} calls in {@link #deleteByPath}/{@link #clear}
+     *  (SQLiteOpenHelper exposes no getContext()). */
+    private final Context context;
 
     private static final String CREATE =
             "CREATE TABLE books ("
@@ -46,6 +51,7 @@ public class BookDatabase extends SQLiteOpenHelper {
 
     public BookDatabase(Context context) {
         super(context, DB_NAME, null, DB_VERSION);
+        this.context = context;
     }
 
     @Override
@@ -311,6 +317,9 @@ public class BookDatabase extends SQLiteOpenHelper {
             SQLiteDatabase db = getWritableDatabase();
             db.delete("books", "path=?", new String[]{path});
         }
+        // Drop the book's cached cover too, so removal never leaves an orphan
+        // "covers/<hash>.img" file on disk.
+        CoverCache.delete(context, path);
     }
 
     public void clear() {
@@ -318,6 +327,8 @@ public class BookDatabase extends SQLiteOpenHelper {
             SQLiteDatabase db = getWritableDatabase();
             db.delete("books", null, null);
         }
+        // The whole catalog is gone — wipe the whole cover cache with it.
+        CoverCache.clear(context);
     }
 
     /** Maps a books-table cursor row to a {@link Book} (also used by the UI adapter). */

@@ -59,6 +59,36 @@ public final class CoverCache {
     }
 
     /**
+     * Deletes the cached cover file for a book (and any half-written ".tmp" left by
+     * an interrupted {@link #save}). Silently does nothing when there is nothing to
+     * delete — a missing cache entry is a normal state. Called from
+     * {@code BookDatabase.deleteByPath} so a removed book leaves no orphan file.
+     */
+    public static void delete(Context context, String bookPath) {
+        File dir = coversDir(context);
+        if (dir == null) return;
+        File target = fileFor(context, bookPath);
+        File tmp = new File(dir, target.getName() + ".tmp");
+        if (tmp.exists()) tmp.delete(); // best-effort: an orphan half-write
+        target.delete();
+    }
+
+    /**
+     * Deletes the entire cache (every cached cover, and the "covers" directory
+     * itself). Called from {@code BookDatabase.clear} so a wiped catalog leaves no
+     * orphan files behind.
+     */
+    public static void clear(Context context) {
+        File dir = coversDir(context);
+        if (dir == null || !dir.exists()) return;
+        File[] files = dir.listFiles();
+        if (files != null) {
+            for (File f : files) f.delete();
+        }
+        dir.delete();
+    }
+
+    /**
      * Returns the cached cover bytes for a book, or {@code null} if the book has no
      * cached cover (yet).
      */

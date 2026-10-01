@@ -12,6 +12,7 @@ import android.database.sqlite.SQLiteDatabase;
 
 import com.example.mylibrary.meta.MetaData;
 import com.example.mylibrary.model.Book;
+import com.example.mylibrary.util.CoverCache;
 
 import org.junit.Before;
 import org.junit.Test;
@@ -227,12 +228,46 @@ public class BookDatabaseTest {
         assertEquals(1, db.all(null).size());
     }
 
+    /** Removing a book from the catalog must also drop its cached cover file —
+     *  otherwise "covers/&lt;hash&gt;.img" orphans grow forever on disk. */
+    @Test
+    public void deleteByPathAlsoDropsTheCachedCover() {
+        CoverCache.save(context, "/x/drop.epub", new byte[]{9, 9, 9});
+        assertTrue(CoverCache.fileFor(context, "/x/drop.epub").exists());
+        db.upsert(book("/x/drop.epub", "EPUB", "Drop", null));
+        CoverCache.save(context, "/x/keep.epub", new byte[]{8, 8, 8});
+        db.upsert(book("/x/keep.epub", "EPUB", "Keep", null));
+
+        db.deleteByPath("/x/drop.epub");
+
+        assertFalse("removed book's cover must be gone",
+                CoverCache.fileFor(context, "/x/drop.epub").exists());
+        assertNull(CoverCache.load(context, "/x/drop.epub"));
+        assertNotNull("the other book's cover must survive",
+                CoverCache.load(context, "/x/keep.epub"));
+    }
+
     @Test
     public void clearRemovesEverything() {
         db.upsert(book("/x/a.pdf", "PDF", "A", null));
         db.upsert(book("/x/b.pdf", "PDF", "B", null));
         db.clear();
         assertTrue(db.all(null).isEmpty());
+    }
+
+    /** Wiping the catalog must wipe the whole cover cache with it (no orphan
+     *  "covers/*.img" files left on disk). */
+    @Test
+    public void clearDropsTheWholeCoverCache() {
+        CoverCache.save(context, "/x/a.epub", new byte[]{1});
+        CoverCache.save(context, "/x/b.epub", new byte[]{2});
+        db.upsert(book("/x/a.epub", "EPUB", "A", null));
+        db.upsert(book("/x/b.epub", "EPUB", "B", null));
+
+        db.clear();
+
+        assertNull(CoverCache.load(context, "/x/a.epub"));
+        assertNull(CoverCache.load(context, "/x/b.epub"));
     }
 
     @Test

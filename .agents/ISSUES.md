@@ -102,7 +102,8 @@ final class ZipUtil {
 
 ## [IMPROVE] Доработки и известные ограничения после фичи «сканер → метаданные фоном»
 
-**Создано:** 2026-10-01. **Статус:** план, не начато. Источник: журнал
+**Создано:** 2026-10-01. **Статус:** приоритет «высокий» закрыт (1.1, 1.2, 2.1 —
+сделаны 2026-10-02, тесты 144/144); «средний»/«низкий» — не начато. Источник: журнал
 `.agents/scaner/PLAN_CONTEXT.md` (8 коммитов, 130/130 тестов) + обзор кода.
 Приоритет: **высокий** — до масштабирования библиотеки (тысячи+ книг) или до релиза;
 **средний** — заметное улучшение; **низкий** — nice-to-have. Статус пункта:
@@ -155,7 +156,7 @@ final class ZipUtil {
 
 ### 2. Кэш обложек (`util/CoverCache`)
 
-#### 2.1 Кэш не чистится — [ ] (высокий)
+#### 2.1 Кэш не чистится — [x] (высокий) — сделано 2026-10-02
 - **Где:** `CoverCache` (нет delete-API), `BookDatabase.deleteByPath/clear`,
   `DetailActivity` (удаление книги).
 - **Проблема:** `deleteByPath()` и `clear()` не касаются файлов `covers/<hash>.img` →
@@ -163,6 +164,13 @@ final class ZipUtil {
   без ограничения.
 - **Доработка:** `CoverCache.delete(path)`; вызовы в `deleteByPath`/`clear`; опционально —
   лимит размера кэша с вытеснением по mtime файлов.
+- **Сделано:** `CoverCache.delete(ctx, path)` (удаляет `covers/<hash>.img` и возможный
+  орфаним `.tmp` от прерванного save; no-op, если записи нет) и `CoverCache.clear(ctx)`
+  (весь кэш + каталог). Вызовы — в `BookDatabase.deleteByPath` (контекст хранится в поле,
+  т.к. `SQLiteOpenHelper` не даёт `getContext()`) и `BookDatabase.clear`. Лимит с
+  вытеснением по mtime — не сделан (был опциональным). Тесты: новый `CoverCacheTest`
+  (9 тестов, incl. half-written tmp) + интеграционные `deleteByPathAlsoDropsTheCachedCover`
+  и `clearDropsTheWholeCoverCache` в `BookDatabaseTest`.
 
 #### 2.2 Ключ кэша — `path.hashCode()` — [ ] (низкий)
 - **Где:** `CoverCache.fileFor()`.
