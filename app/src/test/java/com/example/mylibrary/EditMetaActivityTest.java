@@ -227,6 +227,33 @@ public class EditMetaActivityTest {
         assertEquals("Old Title", db.getById(id).title);
     }
 
+    /** If the row is deleted while the editor is open, saving must not resurrect
+     *  the book with a stale in-memory copy. */
+    @Test
+    public void saveDoesNotResurrectADeletedBook() throws Exception {
+        File pdf = new File(folder.getRoot(), "book.pdf");
+        TestFixtures.writeBytes(pdf, new byte[]{1, 2, 3});
+        EditMetaActivity a = launch(pdf, "PDF", "Old Title", "Old Author");
+        long id = db.getIdForPath(pdf.getAbsolutePath());
+        assertTrue("precondition: the row exists", id >= 0);
+
+        // The book is removed from the catalog while the editor is open.
+        db.deleteByPath(pdf.getAbsolutePath());
+
+        ((Button) a.findViewById(R.id.btn_save)).performClick();
+
+        // Let the background save run to completion (the activity finishes with it).
+        long deadline = System.currentTimeMillis() + 10000;
+        while (System.currentTimeMillis() < deadline && !a.isFinishing()) {
+            shadowOf(Looper.getMainLooper()).idle();
+            Thread.sleep(10);
+        }
+        shadowOf(Looper.getMainLooper()).idle();
+
+        assertEquals("the deleted row must not come back", 0, db.all(null).size());
+        assertEquals(Activity.RESULT_OK, shadowOf(a).getResultCode());
+    }
+
     /** The list is cursor-driven: a save must announce the change, otherwise the
      *  new title/author stay invisible in the catalog views. */
     @Test

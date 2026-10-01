@@ -284,9 +284,13 @@ public class BookDatabaseTest {
     @Test
     public void allFieldsRoundTripThroughCursor() {
         Book b = book("/storage/emulated/0/cyr.epub", "EPUB", "Мастер и Маргарита", "М. А. Булгаков");
-        b.metaDone = true;
-        b.userEdited = true;
         long id = db.upsert(b);
+        // The stage flags are row-owned state (upsert no longer writes them from the
+        // model) — set them through their own channels, then verify the full row
+        // round-trips through the cursor.
+        db.markUserEdited(id);
+        SQLiteDatabase raw = db.getWritableDatabase();
+        raw.execSQL("UPDATE books SET meta_done = 1 WHERE _id = " + id);
 
         Book got = db.getById(id);
         assertEquals(b.path, got.path);
@@ -527,8 +531,8 @@ public class BookDatabaseTest {
         Book b = book("/x/c.epub", "EPUB", "User Title", "User Author");
         b.publisher = null;   // left empty by the user -> the enricher may fill it
         b.description = null; // left empty by the user -> the enricher may fill it
-        b.userEdited = true;
         long id = db.upsert(b);
+        db.markUserEdited(id); // what the editor does after the upsert
 
         // Background extraction finds different in-file values.
         MetaData md = new MetaData();
@@ -552,8 +556,8 @@ public class BookDatabaseTest {
     @Test
     public void updateMetadataTreatsWhitespaceOnlyFieldsAsBlank() {
         Book b = book("/x/w.epub", "EPUB", "  ", "Real Author");
-        b.userEdited = true;
         long id = db.upsert(b);
+        db.markUserEdited(id);
 
         MetaData md = new MetaData();
         md.title = "File Title";
@@ -577,6 +581,38 @@ public class BookDatabaseTest {
         Book got = db.getById(id);
         assertEquals("d", got.title); // file-name title survives
         assertTrue(got.metaDone);     // but the book is marked enriched
+    }
+
+    /** upsert must not clobber the stage flags from a stale in-memory model:
+     *  meta_done / user_edited are row-owned state, like last_read. */
+    @Test
+    public void upsertDoesNotTouchMetaFlagsOnExistingRow() {
+        long id = db.upsertBasic(book("/x/a.epub", "EPUB", "A", null));
+        // Simulate stage 2 having enriched the row and the user having edited it.
+        MetaData md = new MetaData();
+        md.title = "Embedded";
+        md.found = true;
+        db.updateMetadata(id, md, true);
+        db.markUserEdited(id);
+
+        // A STALE model (both flags false) must not reset them.
+        Book stale = book("/x/a.epub", "EPUB", "A2", null);
+        stale.metaDone = false;
+        stale.userEdited = false;
+        assertEquals(id, db.upsert(stale));
+
+        Book got = db.getById(id);
+        assertEquals("metadata fields did update", "A2", got.title);
+        assertTrue("meta_done must stay 1", got.metaDone);
+        assertTrue("user_edited must stay 1", got.userEdited);
+    }
+
+    @Test
+    public void markUserEditedSetsTheFlag() {
+        long id = db.upsertBasic(book("/x/a.epub", "EPUB", "A", null));
+        assertFalse(db.getById(id).userEdited);
+        db.markUserEdited(id);
+        assertTrue(db.getById(id).userEdited);
     }
 
     @Test

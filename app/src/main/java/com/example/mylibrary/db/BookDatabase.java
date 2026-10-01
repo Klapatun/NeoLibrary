@@ -97,10 +97,12 @@ public class BookDatabase extends SQLiteOpenHelper {
         }
     }
 
-    /** Inserts the book if new, or updates its metadata fields if it already exists. The
-     *  {@code last_read} timestamp is always preserved across rescans. The caller is
-     *  expected to pass a model read fresh from this database (so the meta_done /
-     *  user_edited flags are not clobbered). Returns the row id. */
+    /** Inserts the book if new, or updates its metadata fields if it already exists.
+     *  The {@code last_read}, {@code meta_done} and {@code user_edited} columns are
+     *  never written here: an existing row keeps them as-is (so a stale in-memory
+     *  model can never clobber the enrichment state or the user-edited flag) and a
+     *  new row gets the schema defaults (both 0). The user-edited flag is set
+     *  explicitly via {@link #markUserEdited}. Returns the row id. */
     public long upsert(Book b) {
         synchronized (WRITE_LOCK) {
             SQLiteDatabase db = getWritableDatabase();
@@ -114,8 +116,6 @@ public class BookDatabase extends SQLiteOpenHelper {
             cv.put("series", b.series);
             cv.put("size_bytes", b.sizeBytes);
             cv.put("exported", b.exported ? 1 : 0);
-            cv.put("meta_done", b.metaDone ? 1 : 0);
-            cv.put("user_edited", b.userEdited ? 1 : 0);
 
             Cursor c = db.rawQuery("SELECT _id FROM books WHERE path=?", new String[]{b.path});
             long existing = -1;
@@ -300,6 +300,18 @@ public class BookDatabase extends SQLiteOpenHelper {
             return null;
         } finally {
             c.close();
+        }
+    }
+
+    /** Marks the row as user-edited (the enricher will then only fill still-blank
+     *  fields and never clobber the user's values). Monotonic by design: once 1,
+     *  it never goes back to 0. */
+    public void markUserEdited(long id) {
+        synchronized (WRITE_LOCK) {
+            SQLiteDatabase db = getWritableDatabase();
+            ContentValues cv = new ContentValues();
+            cv.put("user_edited", 1);
+            db.update("books", cv, "_id=?", new String[]{String.valueOf(id)});
         }
     }
 

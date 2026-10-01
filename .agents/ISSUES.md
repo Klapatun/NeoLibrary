@@ -124,19 +124,20 @@ final class ZipUtil {
   `openingABookNotifiesTheCatalogObservers`) и `EditMetaActivityTest`
   (`saveNotifiesTheCatalogObservers`).
 
-### 6.2 `upsert` затирает `meta_done`/`user_edited` из устаревшей модели — [ ] (высокий)
+### 6.2 `upsert` затирает `meta_done`/`user_edited` из устаревшей модели — [x] (высокий) — сделано 2026-10-02
 - **Где:** `BookDatabase.upsert`, `EditMetaActivity.save`.
 - **Проблема:** `upsert` писал `meta_done`/`user_edited` из модели в памяти.
   (a) Гонка: enricher между перечитом и записью ставит `meta_done=1` → upsert
   возвращает 0 → лишний повторный парсинг файла; (b) если строку удалили во
   время редактирования, `updated = book` + `upsert` **вставали удалённую книгу
   обратно** (resurrect).
-- **План:** `upsert` больше не пишет эти два столбца (как `last_read` —
+- **Сделано:** `upsert` больше не пишет эти два столбца (как `last_read` —
   сохраняются; при INSERT — дефолт 0). Новый `markUserEdited(id)` (монотонный:
   0→1). `EditMetaActivity`: запись в каталог только если строка ещё существует
   (resurrect устранён). Тесты: `upsertDoesNotTouchMetaFlagsOnExistingRow`,
   `markUserEditedSetsTheFlag`, `saveDoesNotResurrectADeletedBook` +
-  приведение 3 старых тестов к новому API.
+  приведение 5 старых тестов к новому API (`BookDatabaseTest` ×3,
+  `MetaEnricherTest`, `DetailActivityTest.setUp`).
 
 ### 6.3 Полный рескан и рестарт воркера при каждом `onCreate` — [ ] (средний)
 - **Где:** `MainActivity.onCreate` (`startScan()` вызывался безусловно).

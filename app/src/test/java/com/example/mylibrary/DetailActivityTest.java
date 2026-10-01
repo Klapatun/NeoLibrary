@@ -82,8 +82,8 @@ public class DetailActivityTest {
         b.sizeBytes = 1234;
         // A title/author that the user set through the editor: the fast-path
         // enrichment on open must not clobber them (see MetaEnricher's contract).
-        b.userEdited = true;
         bookId = db.upsert(b);
+        db.markUserEdited(bookId); // what the editor does after the upsert
     }
 
     private DetailActivity launch(long id) {
