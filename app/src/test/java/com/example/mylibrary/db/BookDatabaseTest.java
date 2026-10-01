@@ -512,6 +512,26 @@ public class BookDatabaseTest {
         assertTrue(got.metaDone);
     }
 
+    /** A whitespace-only catalog value counts as blank (same rule as before the
+     *  single-cursor rewrite): the enricher may fill it even when user_edited=1. */
+    @Test
+    public void updateMetadataTreatsWhitespaceOnlyFieldsAsBlank() {
+        Book b = book("/x/w.epub", "EPUB", "  ", "Real Author");
+        b.userEdited = true;
+        long id = db.upsert(b);
+
+        MetaData md = new MetaData();
+        md.title = "File Title";
+        md.author = "File Author";
+        md.found = true;
+        db.updateMetadata(id, md, true);
+
+        Book got = db.getById(id);
+        assertEquals("whitespace-only title is filled by the enricher", "File Title", got.title);
+        assertEquals("non-blank user author is kept", "Real Author", got.author);
+        assertTrue(got.metaDone);
+    }
+
     @Test
     public void updateMetadataWithoutFoundMetaLeavesTitleInPlaceAndMarksDone() {
         long id = db.upsertBasic(book("/x/d.pdf", "PDF", "d", null));

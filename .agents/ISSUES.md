@@ -124,13 +124,17 @@ final class ZipUtil {
   идемпотентно try/catch). Тесты: `openingAV2DatabaseUpgradesInPlaceAndAddsIndexes`
   (v2→v3, данные + `PRAGMA index_list`) и `freshDatabaseHasIndexesOnMetaDoneAndLastRead`.
 
-#### 1.2 `updateMetadata`: 5 лишних SELECT на книгу — [ ] (высокий)
+#### 1.2 `updateMetadata`: 5 лишних SELECT на книгу — [x] (высокий) — сделано 2026-10-02
 - **Где:** `updateMetadata()` + `isBlankValue()`.
 - **Проблема:** первый запрос уже выборит `title/author/publisher/description/series`
   (используется только `user_edited`), а затем `isBlankValue()` делает отдельный `SELECT`
   **на каждое** поле. Итог: до 6 запросов на одну книгу — самый горячий путь фазы 2.
 - **Доработка:** читать значения 5 полей из первого курсора (они уже выбораны) и
   определять «пустое» в Java. 6 запросов → 1.
+- **Сделано:** значения 5 полей читаются из первого (единственного) курсора;
+  `isBlankValue(db,id,col)` (SELECT на поле) заменён на `isBlank(String)` в Java
+  (семантика сохранена: NULL/пустое/только пробелы). 6 запросов → 1. Тест:
+  `updateMetadataTreatsWhitespaceOnlyFieldsAsBlank` (whitespace-only = blank).
 
 #### 1.3 `upsert`/`upsertBasic` не атомарны — [ ] (средний)
 - **Где:** `upsert()`, `upsertBasic()`.

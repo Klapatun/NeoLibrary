@@ -178,32 +178,33 @@ public class BookDatabase extends SQLiteOpenHelper {
                 return; // row deleted meanwhile
             }
             boolean userEdited = cur.getInt(cur.getColumnIndexOrThrow("user_edited")) == 1;
+            // The current field values come from this same cursor (already fetched
+            // above), so "is this field blank?" is decided in Java — no extra
+            // per-field SELECT on the hottest path of stage 2.
+            String curTitle = cur.getString(cur.getColumnIndexOrThrow("title"));
+            String curAuthor = cur.getString(cur.getColumnIndexOrThrow("author"));
+            String curPublisher = cur.getString(cur.getColumnIndexOrThrow("publisher"));
+            String curDescription = cur.getString(cur.getColumnIndexOrThrow("description"));
+            String curSeries = cur.getString(cur.getColumnIndexOrThrow("series"));
             cur.close();
 
             ContentValues cv = new ContentValues();
             cv.put("meta_done", 1);
             if (md != null && md.found && fileReadable) {
-                if (!userEdited || isBlankValue(db, id, "title")) cv.put("title", md.title);
-                if (!userEdited || isBlankValue(db, id, "author")) cv.put("author", md.author);
-                if (!userEdited || isBlankValue(db, id, "publisher")) cv.put("publisher", md.publisher);
-                if (!userEdited || isBlankValue(db, id, "description")) cv.put("description", md.description);
-                if (!userEdited || isBlankValue(db, id, "series")) cv.put("series", md.series);
+                if (!userEdited || isBlank(curTitle)) cv.put("title", md.title);
+                if (!userEdited || isBlank(curAuthor)) cv.put("author", md.author);
+                if (!userEdited || isBlank(curPublisher)) cv.put("publisher", md.publisher);
+                if (!userEdited || isBlank(curDescription)) cv.put("description", md.description);
+                if (!userEdited || isBlank(curSeries)) cv.put("series", md.series);
             }
             // cv always carries at least meta_done, so the update is unconditional.
             db.update("books", cv, "_id=?", new String[]{String.valueOf(id)});
         }
     }
 
-    private static boolean isBlankValue(SQLiteDatabase db, long id, String column) {
-        Cursor c = db.query("books", new String[]{column}, "_id=?",
-                new String[]{String.valueOf(id)}, null, null, null);
-        try {
-            if (!c.moveToFirst()) return true;
-            int i = c.getColumnIndexOrThrow(column);
-            return c.isNull(i) || c.getString(i).trim().length() == 0;
-        } finally {
-            c.close();
-        }
+    /** A field value is "blank" when it is NULL or empty/whitespace-only. */
+    private static boolean isBlank(String value) {
+        return value == null || value.trim().length() == 0;
     }
 
     /** All books whose in-file metadata has not been extracted yet (stage-2 queue). */
