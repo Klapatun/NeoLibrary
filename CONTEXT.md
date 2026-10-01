@@ -36,19 +36,22 @@ Every book's metadata is stored in **two places**:
 
 | Class | Role |
 |---|---|
-| `MainActivity` | catalog: scan, browse, filter by format, "Recently read", SAF import |
-| `DetailActivity` | open in Neo Reader / edit meta / remove |
-| `EditMetaActivity` | metadata form → writes file (EPUB/FB2) + always updates catalog |
-| `Book` | Parcelable model |
-| `db/BookDatabase` | SQLite catalog; **`upsert` preserves `last_read`** |
+| `MainActivity` | catalog: 3-stage load (fast scan → display → background enrich), browse, filter, "Recently read", SAF import; list is cursor-driven (framework `LoaderManager` + `CursorLoader`) |
+| `DetailActivity` | open in Neo Reader / edit meta / remove; fast-path enrichment of a not-yet-enriched book on open |
+| `EditMetaActivity` | metadata form → writes file (EPUB/FB2) + always updates catalog (`userEdited = true`) |
+| `Book` | Parcelable model (`metaDone`, `userEdited` flags) |
+| `db/BookDatabase` | SQLite catalog; **`upsert`/`upsertBasic`/`updateMetadata` preserve `last_read`**; `needMeta()` = stage-2 queue; static write lock |
+| `db/BookProvider` | read-only `ContentProvider` — the `ContentObserver` channel for the `CursorLoader` (all / recent / `format=?`) |
 | `scan/Formats` | canonical formats + ext→id map (handles `.fb2.zip`) |
-| `scan/LibraryScanner` | recursive scan + `scanSingle()` |
+| `scan/LibraryScanner` | stage-1 fast scan (skeleton books, no in-file meta) + `scanSingle()` |
+| `meta/MetaEnricher` | stage-2 background worker: per-book `MetaExtractor` + `CoverExtractor` → DB + `CoverCache`, `notifyChange` per batch; `enrichOne` for import/fast path |
 | `meta/MetaExtractor` | read meta: EPUB/FB2/FB2ZIP (inner `.fb2` entry)/MOBI/TXT/HTML |
 | `meta/MobiParser` | shared MOBI/AZW binary reader (package-private): PalmDB record table + MOBI header + EXTH |
 | `meta/MetaWriter` | write meta EPUB/FB2, non-destructive (`.tmp`→swap→`.bak`) |
 | `meta/CoverExtractor` | cover bytes: EPUB (`content.opf`→manifest), FB2 (`coverpage`→`<binary>`), FB2ZIP (inner `<binary>`, else loose image entry like `cover.jpg`), MOBI (EXTH record 201, JPEG trimmed at EOI) |
-| `util/CoverLoader` | async cover bitmap + LruCache; hidden badge on success |
-| `BookAdapter` | list + grid/tile view modes (grid loads covers) |
+| `util/CoverCache` | durable file cache of cover **bytes** (`getExternalFilesDir("covers")/<hash>.img`, atomic `.tmp`→rename); warmed by the enricher |
+| `util/CoverLoader` | async cover bitmap: `CoverCache` first, in-file extraction second, LruCache; hidden badge on success |
+| `BookAdapter` | `CursorAdapter`; list + grid/tile view modes (grid loads covers); `getItem()` maps the cursor row to a `Book` |
 | `util/Openers` | MIME map + `ACTION_VIEW` intent (`Uri.fromFile`) |
 
 ### List / tile view toggle
@@ -70,11 +73,22 @@ it never steals column width.
 
 ## Main workflows
 
-- **Scan** → `startScan()` → AsyncTask → `LibraryScanner.scan()` → upsert into DB → reload.
+- **Scan (stage 1, fast)** → `startScan()` → AsyncTask → `LibraryScanner.scan()`
+  (file walk only, skeleton book: path/format/size/title from the file name) →
+  `db.upsertBasic()` per book → `notifyChange` → the `CursorLoader` re-queries and the
+  list is on screen immediately; the user can already interact with it.
+- **Enrich (stage 2, background)** → `MetaEnricher.start()` — a single worker over
+  `db.needMeta()`: per book `MetaExtractor` + `CoverExtractor` → `db.updateMetadata()`
+  (never clobbers `user_edited` values, keeps `last_read`) + `CoverCache` file write →
+  `notifyChange` every batch → the cursor re-queries and rows refresh in place.
 - **Open** → `DetailActivity` → `Openers.openFile()` → `ACTION_VIEW` → `markRead`.
-- **Edit** → `EditMetaActivity`: if EPUB/FB2 → `MetaWriter.write(file,md)`; always → upsert.
+  Fast path: a book still not enriched (opened before stage 2 reached it) is enriched
+  on open, off the UI thread, and the detail screen refreshes itself.
+- **Edit** → `EditMetaActivity`: if EPUB/FB2 → `MetaWriter.write(file,md)`; always →
+  upsert with `userEdited = true` (the enricher will never overwrite those fields).
 - **Import** → `ACTION_OPEN_DOCUMENT` (SAF) → validate → copy to `getExternalFilesDir("books")`
-  → `scanSingle()` → upsert.
+  → `scanSingle()` → `upsertBasic` → `MetaEnricher.enrichOne()` on the same background
+  thread → `notifyChange` (the list picks the book up without a manual reload).
 
 ## Invariants (don't break)
 

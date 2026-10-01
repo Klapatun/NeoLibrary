@@ -104,33 +104,52 @@ Every book's metadata lives in **two places**:
 
 | Class | Responsibility | Key detail |
 |---|---|---|
-| `MainActivity` | catalog screen: scan, browse, filter, recently-read, SAF import | never clears the DB on rescan → `last_read` survives |
-| `DetailActivity` | one book: open / edit / remove | open fires `ACTION_VIEW`, then `markRead` |
-| `EditMetaActivity` | metadata form | writes file for EPUB/FB2, always updates catalog |
-| `Book` | Parcelable model | `initial()`, `displayFormat()` helpers |
-| `BookDatabase.upsert` | insert-or-update by path | preserves `last_read` (rejects REPLACE) |
+| `MainActivity` | catalog screen: 3-stage load, browse, filter, recently-read, SAF import | list is cursor-driven (framework `LoaderManager` + `CursorLoader`); never clears the DB on rescan → `last_read` survives |
+| `DetailActivity` | one book: open / edit / remove | open fires `ACTION_VIEW`, then `markRead`; fast-path `enrichOne` for a not-yet-enriched book |
+| `EditMetaActivity` | metadata form | writes file for EPUB/FB2, always updates catalog with `userEdited = true` |
+| `Book` | Parcelable model | `initial()`, `displayFormat()` helpers; `metaDone`/`userEdited` flags |
+| `BookDatabase.upsert` | insert-or-update by path | preserves `last_read` (rejects REPLACE); `upsertBasic` (stage 1) refreshes only format+size; `updateMetadata` (stage 2) respects `user_edited`; all writes under a static lock |
+| `BookProvider` | read-only provider over the catalog | the `ContentObserver` channel for the `CursorLoader`: all / recent / `format=?` |
 | `Formats` | canonical format ids + extension map | `.fb2.zip` handled as compound extension |
-| `LibraryScanner` | recursive scan + `scanSingle()` | primary ext storage + common SD mounts |
+| `LibraryScanner` | stage-1 fast scan + `scanSingle()` | file walk only — in-file metadata is the enricher's job |
+| `MetaEnricher` | stage-2 background worker | single thread over `needMeta()`; `enrichOne` for import/detail fast path; `notifyChange` per batch |
 | `MetaExtractor` | read meta | EPUB via `container.xml`→OPF; FB2 author split; FB2.ZIP via the inner `.fb2` entry; MOBI via `MobiParser` |
 | `MobiParser` | read MOBI/AZW (package-private) | PalmDB record table + MOBI header + EXTH; cover = first image + EXTH 201 |
 | `MetaWriter` | write meta | non-destructive: `.tmp` → swap → `.bak` recovery |
 | `CoverExtractor` | read cover image bytes | EPUB via `content.opf`→manifest; FB2 via `coverpage`→`<binary>`; FB2.ZIP via the inner `<binary>` or a loose image entry (e.g. `cover.jpg`); MOBI via EXTH record 201 (JPEG trimmed at EOI) |
-| `CoverLoader` | async cover bitmap + LruCache | hides letter badge once cover shows |
-| `BookAdapter` | list + grid/tile view modes | re-inflates on mode switch; grid loads covers |
+| `CoverCache` | durable file cache of cover bytes | `getExternalFilesDir("covers")/<path-hash>.img`, atomic `.tmp`→rename |
+| `CoverLoader` | async cover bitmap + LruCache | `CoverCache` first, in-file extraction second; hides letter badge once cover shows |
+| `BookAdapter` | `CursorAdapter`: list + grid/tile view modes | driven by the loader; re-inflates on mode switch; grid loads covers |
 | `Openers` | MIME map + `ACTION_VIEW` | `Uri.fromFile` (ok on KitKat) |
 
 ## Data flows (workflows)
 
-The main user paths:
+The main user paths. Library loading is three-stage: a fast file scan shows the
+catalog immediately, a background worker then fills in the in-file metadata and
+covers, and the user can interact with the library at any point.
 
-- **Scan** → `MainActivity.startScan()` → `AsyncTask` → `LibraryScanner.scan()` (recursive
-  walk + `MetaExtractor`) → `onPostExecute` upserts each book into `BookDatabase` → `reload()`.
-- **Open** → list click → `DetailActivity` loads `Book` by id → button → `Openers.openFile()`
-  returns `ACTION_VIEW` → `startActivity()` → `db.markRead(id)` (feeds "Recently read").
+- **Scan (stage 1, fast)** → `MainActivity.startScan()` → `AsyncTask` →
+  `LibraryScanner.scan()` (recursive walk, no in-file parsing — skeleton books with
+  file-name titles) → `onPostExecute` `db.upsertBasic()` per book → `notifyChange` →
+  the `CursorLoader` re-queries and the `CursorAdapter` shows the list immediately.
+- **Enrich (stage 2, background)** → `MetaEnricher.start()` — a single worker over
+  `db.needMeta()`: per book `MetaExtractor` + `CoverExtractor` → `db.updateMetadata()`
+  (respects `user_edited`, keeps `last_read`) + `CoverCache` (durable file cache of the
+  cover bytes) → `notifyChange` every batch → the cursor re-queries, rows refresh in
+  place, and a compact progress strip (visible only while the worker runs) reports
+  `done/total`.
+- **Open** → list click → `DetailActivity` loads `Book` by id → button →
+  `Openers.openFile()` returns `ACTION_VIEW` → `startActivity()` → `db.markRead(id)`
+  (feeds "Recently read"). If the book was not enriched yet (stage 2 has not reached
+  it), the detail screen runs `MetaEnricher.enrichOne` on a background thread as a fast
+  path and refreshes itself.
 - **Edit** → `EditMetaActivity` form → save in `AsyncTask`: if format is EPUB/FB2 and file
-  exists → `MetaWriter.write(file, md)` (in-file); **always** → `db.upsert(book)` (catalog).
+  exists → `MetaWriter.write(file, md)` (in-file); **always** → `db.upsert(book)`
+  (catalog, with `userEdited = true` so the enricher never clobbers those values).
 - **Import** → `ACTION_OPEN_DOCUMENT` (SAF) → validate via `Formats.isSupported()` → copy
-  the picked file into `getExternalFilesDir("books")` → `LibraryScanner.scanSingle()` → upsert.
+  the picked file into `getExternalFilesDir("books")` → `LibraryScanner.scanSingle()` →
+  `upsertBasic` → `MetaEnricher.enrichOne` on the same background thread → `notifyChange`
+  (the list picks the book up automatically — no manual reload anywhere).
 
 ## Invariants (do not break)
 
