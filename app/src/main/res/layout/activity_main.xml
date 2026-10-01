@@ -96,10 +96,10 @@
 
         <!-- Uniform tiles, sized in px for the ONYX Boox Volta 3 (6", 1024x758):
              each tile is a fixed 242px wide (stretchMode=none, columnWidth=242px),
-             32px between columns, 16px between rows, and the number of columns
-             AUTO-FITS the screen width: portrait 758px -> 2 per row (3x242 +
-             2x32 = 790px would not fit), landscape 1024px -> 3 per row (790px),
-             wider screens -> even more.
+             8px between columns and between rows, and the number of columns
+             AUTO-FITS the screen width: portrait 758px -> 3 per row (3x242 +
+             2x8 = 742px fits the 742px available width), landscape 1024px ->
+             4 per row (4x242 + 3x8 = 992px), wider screens -> even more.
              insideOverlay: the scrollbar floats above the content so it never
              steals width from the last column. -->
         <GridView

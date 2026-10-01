@@ -64,10 +64,12 @@ on top, a small uniform-width format label (`bg_format_badge`) at the cover's
 bottom-left corner, the book title under the cover (fixed two lines) — all tiles
 exactly the same size. The grid is sized in **px** for the ONYX Boox Volta 3
 (6", 1024x758): fixed 242px tiles (`stretchMode=none`, `columnWidth=242px`),
-32px gaps between columns and 16px between rows, and `numColumns="auto_fit"`
-so the columns fit the screen width — portrait 758px → 2 per row, landscape
-1024px → 3, wider → more. The books' container `FrameLayout` has a 32px top
-padding. Cover 242x387px (5:8), 155px red circle (`bg_circle_red`) with the
+8px gaps between columns and between rows, and `numColumns="auto_fit"`
+so the columns fit the screen width — portrait 758px → 3 per row
+(3×242 + 2×8 = 742px), landscape 1024px → 4 (4×242 + 3×8 = 992px),
+wider → more. The books' container `FrameLayout` has a 16px top padding
+and 8px left/right padding. Cover 242x387px (5:8), 155px red circle
+(`bg_circle_red`) with the
 title's initial for books without a cover; the scrollbar is `insideOverlay` so
 it never steals column width.
 
