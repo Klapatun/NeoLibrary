@@ -1,0 +1,22 @@
+%% Neo Library — двухслойная модель метаданных
+flowchart LR
+    subgraph FILE ["В файл (in-file) — только EPUB / FB2"]
+        direction TB
+        EPUB["EPUB: content.opf\n(OPT-документ)"]
+        FB2["FB2: XML-блок\n&lt;description&gt;"]
+    end
+
+    subgraph CATALOG ["В каталог (in-catalog) — ВСЕ 15 форматов"]
+        direction TB
+        DB[("SQLite: library.db\nтаблица books\n(1 строка = 1 файл)")]
+        CACHE["CoverCache\ngetExternalFilesDir('covers')/&lt;hash&gt;.img\n(байты обложки на диске)"]
+    end
+
+    EPUB -- "MetaWriter: перезапись in-place\n(.tmp → swap → .bak)" --> EPUB
+    FB2 -- "MetaWriter: перезапись in-place\n(.tmp → swap → .bak)" --> FB2
+
+    FILE -- "MetaExtractor читает из файла" --> DB
+    EPUB & FB2 -- "покрывает остальные\nформаты (CHM, PDF, MOBI...)" --> DB
+
+    DB -- "CursorLoader / BookProvider\n(read-only)" --> UI["UI: MainActivity\n(CursorAdapter: список / плитка)"]
+    CACHE -- "CoverLoader: сначала кэш,\nпотом in-file, LruCache" --> UI

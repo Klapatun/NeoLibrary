@@ -1,0 +1,56 @@
+%% Neo Library — ER-диаграмма каталога (SQLite, library.db)
+%% Одна таблица, одна строка = одна книга на диске.
+erDiagram
+
+    books {
+        INTEGER   _id          PK "AUTOINCREMENT; внутренний id строки; в Book = -1 до сохранения"
+        TEXT      path         UK "NOT NULL; абсолютный путь файла — логический ключ книги"
+        TEXT      format       "канонический id: EPUB, FB2, PDF... (из scan/Formats.ALL)"
+        TEXT      title        "заголовок для каталога (сначала — из имени файла)"
+        TEXT      author       "автор"
+        TEXT      publisher    "издатель"
+        TEXT      description  "описание / заметки"
+        TEXT      series       "серия (опц.)"
+        INTEGER   size_bytes   "размер файла, байты"
+        INTEGER   exported     "0/1: метаданные файла редактировались на диске (EPUB/FB2)"
+        INTEGER   meta_done    "0/1: этап-2 извлёк метаданные из файла (очередь enrich: meta_done=0)"
+        INTEGER   user_edited  "0/1: пользователь правил поля — фон их не затирает"
+        INTEGER   last_read    "epoch millis последнего чтения; NULL = не читали"
+    }
+
+    book_model {
+        long    id
+        String  path
+        String  format
+        String  title
+        String  author
+        String  publisher
+        String  description
+        String  series
+        long    sizeBytes
+        boolean exported
+        boolean metaDone
+        boolean userEdited
+    }
+
+    book_database {
+        SQLiteOpenHelper db "library.db, DB_VERSION=2"
+        long    upsert(b)        "INSERT/UPDATE по path; last_read не трогается"
+        long    upsertBasic(b)   "этап-1 скан; у существующей строки — только format+size"
+        void    updateMetadata(md) "этап-2 (по id); заполняет только пустые при user_edited=1"
+        void    markRead(id)     "last_read = now"
+        List    needMeta()       "SELECT * WHERE meta_done=0"
+        List    all(filter)      "ORDER BY title COLLATE NOCASE"
+        List    recent(limit)    "last_read IS NOT NULL DESC LIMIT n"
+    }
+
+    book_provider {
+        ContentProvider provider "read-only"
+        Uri CONTENT_URI  "content://com.example.mylibrary.books/books"
+        Uri RECENT_URI   "content://com.example.mylibrary.books/books/recent"
+        Cursor query(uri) "возвращает live-cursor из BookDatabase"
+    }
+
+    book_model ||--|| books : "fromCursor / upsert (1 к 1)"
+    book_database ||--|| books : "владелец схемы и всех записей"
+    book_provider }o--|| book_database : "query() (только чтение)"
