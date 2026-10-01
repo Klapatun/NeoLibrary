@@ -1,6 +1,7 @@
 package com.example.mylibrary;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
@@ -76,6 +77,9 @@ public class DetailActivityTest {
         b.publisher = "A Publisher";
         b.description = "a test book";
         b.sizeBytes = 1234;
+        // A title/author that the user set through the editor: the fast-path
+        // enrichment on open must not clobber them (see MetaEnricher's contract).
+        b.userEdited = true;
         bookId = db.upsert(b);
     }
 
@@ -102,6 +106,31 @@ public class DetailActivityTest {
         assertEquals("A", initial.getText().toString());
         assertEquals(View.VISIBLE, initial.getVisibility());
         assertEquals(View.GONE, cover.getVisibility());
+    }
+
+    @Test
+    public void fastPathEnrichesAnUnenrichedBookOnOpen() throws Exception {
+        // A fresh stage-1 row: file-name title, meta_done=0. Opening the detail must
+        // run the single-book enrichment on a background thread and mark the row done.
+        File f = new File(folder.getRoot(), "my_novel.txt");
+        TestFixtures.writeText(f, "story text\n");
+        Book b = new Book();
+        b.path = f.getAbsolutePath();
+        b.format = "TXT";
+        b.title = "my novel"; // what the fast stage stores (file name, pretty-printed)
+        long id = db.upsertBasic(b);
+        assertFalse("precondition: not yet enriched", db.getById(id).metaDone);
+
+        launch(id);
+
+        long deadline = System.currentTimeMillis() + 10000;
+        while (System.currentTimeMillis() < deadline && !db.getById(id).metaDone) {
+            shadowOf(Looper.getMainLooper()).idle();
+            Thread.sleep(10);
+        }
+        Book fresh = db.getById(id);
+        assertTrue("the fast path must mark the book enriched", fresh.metaDone);
+        assertEquals("my novel", fresh.title); // TXT: file-name title is preserved
     }
 
     @Test

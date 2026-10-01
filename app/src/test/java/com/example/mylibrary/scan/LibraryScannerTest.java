@@ -111,19 +111,19 @@ public class LibraryScannerTest {
     }
 
     @Test
-    public void scanPrefersEmbeddedTitleAndFallsBackToFileName() {
+    public void scanUsesFileNameTitleInTheFastStage() {
         List<Book> books = scan(root);
 
-        // HTML: <title> wins over the file name.
+        // HTML: the fast stage uses the file name; the embedded <title> is applied
+        // later by the background enricher (covered by MetaEnricherTest).
         Book html = byName(books, "guide.html");
-        assertEquals("My Guide", html.title);
+        assertEquals("guide", html.title);
 
-        // TXT: the extractor returns the file name without extension.
+        // TXT: file name without extension.
         Book txt = byName(books, "novel.txt");
         assertEquals("novel", txt.title);
 
-        // PDF: no embedded metadata -> file-name fallback with underscores
-        // converted to spaces.
+        // PDF: underscores converted to spaces.
         Book pdf = byName(books, "my_cool_book.pdf");
         assertEquals("my cool book", pdf.title);
     }
@@ -160,7 +160,7 @@ public class LibraryScannerTest {
             Book b = LibraryScanner.scanSingle(txt);
             assertNotNull(b);
             assertEquals("TXT", b.format);
-            assertEquals("scan_me", b.title);
+            assertEquals("scan me", b.title);
         } catch (Exception e) {
             throw new AssertionError(e);
         }

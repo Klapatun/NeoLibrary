@@ -12,6 +12,8 @@
     <string name="empty_filter">No books match the current filter.</string>
 
     <string name="scanning">Scanning storage for books…</string>
+    <string name="enriching">Fetching metadata…</string>
+    <string name="enriching_progress">Fetching metadata… %1$d/%2$d</string>
     <string name="open">Open</string>
     <string name="edit_meta">Edit metadata</string>
     <string name="delete">Remove from library</string>

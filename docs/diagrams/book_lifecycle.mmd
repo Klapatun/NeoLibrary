@@ -1,0 +1,24 @@
+%% Neo Library — жизненный цикл строки книги (флаги meta_done / user_edited / last_read)
+stateDiagram-v2
+    direction LR
+
+    [*] --> Found: файл найден сканером
+
+    Found --> Skeleton: этап-1: upsertBasic()\nINSERT скелета (path, format,\ntitle из имени, size)
+    Skeleton --> Enriched: этап-2 (фон): updateMetadata()\nmeta_done = 1
+
+    Enriched --> Enriched: повторный скан → upsertBasic()\nменяет только format + size_bytes
+
+    Skeleton --> Enriched: быстрый путь: книгу открыли\nдо этапа-2 → enrichOne()
+    Enriched --> Read: открыли книгу (ACTION_VIEW)\nmarkRead() → last_read = now
+    Read --> Read: открывали снова
+
+    Enriched --> UserEdited: пользователь правит метаданные\n(EPUB/FB2: также MetaWriter в файл)\nupsert() с userEdited = true
+    Read --> UserEdited: пользователь правит метаданные
+    UserEdited --> UserEdited: этап-2 в дальнейшем заполняет\nтолько ПУСТЫЕ поля — правки не затираются
+
+    note right of UserEdited
+        last_read при этом НЕ сбрасывается:
+        ни upsert, ни upsertBasic,
+        ни updateMetadata его не пишут
+    end note

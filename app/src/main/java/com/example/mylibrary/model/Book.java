@@ -24,6 +24,8 @@ public class Book implements Parcelable {
     public String series;       // optional series name
     public long sizeBytes;
     public boolean exported;    // true if the on-disk file metadata was edited
+    public boolean metaDone;    // true once the background stage extracted in-file metadata
+    public boolean userEdited;  // true once the user edited fields in the catalog
 
     public String displayFormat() {
         if (format == null) return "";
@@ -52,6 +54,8 @@ public class Book implements Parcelable {
         series = in.readString();
         sizeBytes = in.readLong();
         exported = in.readByte() != 0;
+        metaDone = in.readByte() != 0;
+        userEdited = in.readByte() != 0;
     }
 
     @Override
@@ -66,6 +70,8 @@ public class Book implements Parcelable {
         dest.writeString(series);
         dest.writeLong(sizeBytes);
         dest.writeByte((byte) (exported ? 1 : 0));
+        dest.writeByte((byte) (metaDone ? 1 : 0));
+        dest.writeByte((byte) (userEdited ? 1 : 0));
     }
 
     @Override

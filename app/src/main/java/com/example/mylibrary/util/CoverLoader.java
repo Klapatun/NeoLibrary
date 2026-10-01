@@ -91,7 +91,14 @@ public class CoverLoader {
         @Override protected Bitmap doInBackground(Book... params) {
             Book b = params[0];
             try {
-                byte[] bytes = CoverExtractor.extract(new File(b.path));
+                // Prefer the durable file cache (warmed by the background enricher);
+                // fall back to extracting from the book and cache the result.
+                android.content.Context ctx = imageView.getContext();
+                byte[] bytes = CoverCache.load(ctx, b.path);
+                if (bytes == null) {
+                    bytes = CoverExtractor.extract(new File(b.path));
+                    if (bytes != null && bytes.length > 0) CoverCache.save(ctx, b.path, bytes);
+                }
                 if (bytes == null || bytes.length == 0) return null;
                 Bitmap bmp = BitmapFactory.decodeByteArray(bytes, 0, bytes.length);
                 if (bmp == null) return null;

@@ -1,6 +1,7 @@
 package com.example.mylibrary.db;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
@@ -9,6 +10,7 @@ import android.content.Context;
 import android.database.Cursor;
 import android.database.sqlite.SQLiteDatabase;
 
+import com.example.mylibrary.meta.MetaData;
 import com.example.mylibrary.model.Book;
 
 import org.junit.Before;
@@ -246,6 +248,8 @@ public class BookDatabaseTest {
     @Test
     public void allFieldsRoundTripThroughCursor() {
         Book b = book("/storage/emulated/0/cyr.epub", "EPUB", "Мастер и Маргарита", "М. А. Булгаков");
+        b.metaDone = true;
+        b.userEdited = true;
         long id = db.upsert(b);
 
         Book got = db.getById(id);
@@ -258,5 +262,199 @@ public class BookDatabaseTest {
         assertEquals("A Series", got.series);
         assertEquals(12345, got.sizeBytes);
         assertTrue("exported flag must round-trip", got.exported);
+        assertTrue("meta_done flag must round-trip", got.metaDone);
+        assertTrue("user_edited flag must round-trip", got.userEdited);
+    }
+
+    // ------------------------------------------------------------------
+    // migration (v1 -> v2)
+    // ------------------------------------------------------------------
+
+    /** Old (v1) table definition, exactly as shipped in version 1. */
+    private static final String V1_CREATE =
+            "CREATE TABLE books ("
+            + "_id INTEGER PRIMARY KEY AUTOINCREMENT, "
+            + "path TEXT UNIQUE NOT NULL, "
+            + "format TEXT, "
+            + "title TEXT, "
+            + "author TEXT, "
+            + "publisher TEXT, "
+            + "description TEXT, "
+            + "series TEXT, "
+            + "size_bytes INTEGER, "
+            + "exported INTEGER DEFAULT 0, "
+            + "last_read INTEGER"
+            + ")";
+
+    /**
+     * Opening a v1 database (created with the old schema, holding a row with a
+     * last_read timestamp) must upgrade it in place: the two new columns appear and
+     * the existing row, including last_read, survives. The old onUpgrade dropped the
+     // table, so this test guards the invariant directly.
+     */
+    @Test
+    public void openingAV1DatabaseUpgradesInPlacePreservingData() {
+        db.close(); // release setUp()'s connection so the raw open below can proceed
+        java.io.File f = context.getDatabasePath("library.db");
+        // The helper normally creates this directory; do it explicitly for the raw open.
+        if (f.getParentFile() != null) f.getParentFile().mkdirs();
+        // Open the raw file with the PUBLIC API (no hidden classes) and create the
+        // old v1 schema + a row, leaving user_version at 0.
+        SQLiteDatabase rawDb = SQLiteDatabase.openOrCreateDatabase(f.getAbsolutePath(), null);
+        try {
+            rawDb.execSQL(V1_CREATE);
+            rawDb.execSQL("INSERT INTO books (path, format, title, last_read) VALUES "
+                    + "('/x/old.pdf', 'PDF', 'Old Title', 99999)");
+            // The old app's helper would have stamped version 1; without it the new
+            // helper treats the file as brand-new and runs onCreate (not onUpgrade).
+            rawDb.execSQL("PRAGMA user_version = 1");
+        } finally {
+            rawDb.close();
+        }
+
+        // First open at the new version: onUpgrade(db, 0 -> 2) must ALTER, not DROP.
+        BookDatabase upgraded = new BookDatabase(context);
+        SQLiteDatabase raw = upgraded.getReadableDatabase();
+        Cursor c = raw.rawQuery("SELECT title, last_read, meta_done, user_edited FROM books", null);
+        try {
+            assertTrue("row must survive the upgrade", c.moveToFirst());
+            assertEquals("Old Title", c.getString(0));
+            assertEquals(99999L, c.getLong(1));
+            assertEquals(0, c.getInt(2)); // meta_done defaults to 0
+            assertEquals(0, c.getInt(3)); // user_edited defaults to 0
+        } finally {
+            c.close();
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // stage-1 / stage-2 methods
+    // ------------------------------------------------------------------
+
+    @Test
+    public void upsertBasicInsertsSkeletonAndKeepsExistingMetadataOnRescan() {
+        Book b = book("/x/a.epub", "EPUB", "Filename Title", null);
+        long id = db.upsertBasic(b);
+        Book got = db.getById(id);
+        assertEquals("Filename Title", got.title);
+        assertFalse(got.metaDone);
+
+        // Simulate stage 2 having enriched the row...
+        MetaData md = new MetaData();
+        md.title = "Embedded Title";
+        md.author = "Embedded Author";
+        md.found = true;
+        db.updateMetadata(id, md, true);
+        Book enriched = db.getById(id);
+        assertEquals("Embedded Title", enriched.title);
+        assertTrue(enriched.metaDone);
+
+        // ...then a rescan (upsertBasic with the skeleton again) must not clobber it.
+        Book rescanned = book("/x/a.epub", "EPUB", "Filename Title", null);
+        assertEquals(id, db.upsertBasic(rescanned));
+        Book after = db.getById(id);
+        assertEquals("Embedded Title", after.title);
+        assertEquals("Embedded Author", after.author);
+        assertTrue(after.metaDone);
+    }
+
+    @Test
+    public void upsertBasicRefreshesOnlyFormatAndSizeOnExistingRow() {
+        db.upsertBasic(book("/x/a.pdf", "PDF", "T", null));
+        long id = db.getIdForPath("/x/a.pdf");
+        db.markRead(id);
+
+        Book b = book("/x/a.pdf", "PDF", "T", null);
+        b.sizeBytes = 777;
+        b.format = "PDF";
+        db.upsertBasic(b);
+
+        SQLiteDatabase raw = db.getReadableDatabase();
+        Cursor c = raw.rawQuery("SELECT title, size_bytes, last_read FROM books WHERE _id=?",
+                new String[]{String.valueOf(id)});
+        try {
+            assertTrue(c.moveToFirst());
+            assertEquals("T", c.getString(0));
+            assertEquals(777L, c.getLong(1));
+            assertTrue("last_read must survive upsertBasic", c.getLong(2) > 0);
+        } finally {
+            c.close();
+        }
+    }
+
+    @Test
+    public void updateMetadataPreservesLastReadAndMarksDone() {
+        long id = db.upsertBasic(book("/x/b.fb2", "FB2", "B", null));
+        db.markRead(id);
+
+        MetaData md = new MetaData();
+        md.title = "Real Title";
+        md.author = "Real Author";
+        md.found = true;
+        db.updateMetadata(id, md, true);
+
+        SQLiteDatabase raw = db.getReadableDatabase();
+        Cursor c = raw.rawQuery("SELECT title, author, last_read, meta_done FROM books WHERE _id=?",
+                new String[]{String.valueOf(id)});
+        try {
+            assertTrue(c.moveToFirst());
+            assertEquals("Real Title", c.getString(0));
+            assertEquals("Real Author", c.getString(1));
+            assertTrue("last_read must survive updateMetadata", c.getLong(2) > 0);
+            assertEquals(1, c.getInt(3));
+        } finally {
+            c.close();
+        }
+    }
+
+    @Test
+    public void updateMetadataNeverClobbersUserEditsButFillsEmptyFields() {
+        Book b = book("/x/c.epub", "EPUB", "User Title", "User Author");
+        b.publisher = null;   // left empty by the user -> the enricher may fill it
+        b.description = null; // left empty by the user -> the enricher may fill it
+        b.userEdited = true;
+        long id = db.upsert(b);
+
+        // Background extraction finds different in-file values.
+        MetaData md = new MetaData();
+        md.title = "File Title";
+        md.author = "File Author";
+        md.publisher = "File Publisher";
+        md.description = "File Desc";
+        md.found = true;
+        db.updateMetadata(id, md, true);
+
+        Book got = db.getById(id);
+        assertEquals("User Title", got.title);          // user value kept
+        assertEquals("User Author", got.author);        // user value kept
+        assertEquals("File Publisher", got.publisher);  // empty field filled
+        assertEquals("File Desc", got.description);     // empty field filled
+        assertTrue(got.metaDone);
+    }
+
+    @Test
+    public void updateMetadataWithoutFoundMetaLeavesTitleInPlaceAndMarksDone() {
+        long id = db.upsertBasic(book("/x/d.pdf", "PDF", "d", null));
+        MetaData md = new MetaData();
+        md.found = false;
+        db.updateMetadata(id, md, true);
+
+        Book got = db.getById(id);
+        assertEquals("d", got.title); // file-name title survives
+        assertTrue(got.metaDone);     // but the book is marked enriched
+    }
+
+    @Test
+    public void needMetaReturnsOnlyNotYetEnrichedBooks() {
+        long done = db.upsertBasic(book("/x/a.txt", "TXT", "A", null));
+        long pending = db.upsertBasic(book("/x/b.txt", "TXT", "B", null));
+        MetaData md = new MetaData();
+        md.title = "A2";
+        md.found = true;
+        db.updateMetadata(done, md, true);
+
+        List<Book> pendingBooks = db.needMeta();
+        assertEquals(1, pendingBooks.size());
+        assertEquals(pending, pendingBooks.get(0).id);
     }
 }

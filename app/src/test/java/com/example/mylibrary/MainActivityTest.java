@@ -1,6 +1,7 @@
 package com.example.mylibrary;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
@@ -42,20 +43,24 @@ import org.robolectric.shadows.ShadowToast;
 
 import java.io.File;
 import java.io.FileInputStream;
-import java.io.InputStream;
 import java.util.Arrays;
 import java.util.HashSet;
 import java.util.Set;
 
 /**
- * Robolectric smoke tests for {@link MainActivity} — the "Scan → Catalog" workflow.
+ * Robolectric smoke tests for {@link MainActivity} — the three-stage "Scan → Catalog →
+ * Enrich" workflow.
  *
- * <p>{@code ShadowEnvironment.setExternalStorageDirectory} points the scanner's default
- * root at a temp folder, so the real scan pipeline (AsyncTask → LibraryScanner → DB
- * upsert → reload) runs deterministically in the JVM. The SAF import is driven by
- * calling {@code onActivityResult} directly and feeding the ContentResolver a fake
- * cursor (display name) + input stream, exactly what a picked document would yield.
- * Run at {@code sdk = 19}.</p>
+ * <p>Stage 1 (the fast file scan) runs deterministically because
+ * {@code ShadowEnvironment.setExternalStorageDirectory} points the scanner's default
+ * root at a temp folder. Stage 2 (background metadata/covers) is driven by the real
+ * {@code MetaEnricher} worker. The list itself is cursor-driven: stage-1 writes and
+ * the enricher's {@code notifyChange} make the {@code CursorLoader} re-query, so the
+ * tests wait on the adapter's count the same way a user would wait on the screen.</p>
+ *
+ * <p>The SAF import is driven by calling {@code onActivityResult} directly and feeding
+ * the ContentResolver a fake cursor (display name) + input stream, exactly what a
+ * picked document would yield. Run at {@code sdk = 19}.</p>
  */
 @RunWith(RobolectricTestRunner.class)
 @Config(sdk = 19)
@@ -84,9 +89,11 @@ public class MainActivityTest {
         return c.setup().get();
     }
 
+    private static final long WAIT_MS = 15000;
+
     /** Waits until the (background) scan has upserted at least {@code expected} books. */
     private void awaitCatalogSize(int expected) throws InterruptedException {
-        long deadline = System.currentTimeMillis() + 10000;
+        long deadline = System.currentTimeMillis() + WAIT_MS;
         ShadowLooper looper = shadowOf(Looper.getMainLooper());
         while (System.currentTimeMillis() < deadline) {
             looper.idle();
@@ -94,6 +101,46 @@ public class MainActivityTest {
             Thread.sleep(10);
         }
         looper.idle();
+    }
+
+    /** Waits until the visible adapter shows exactly {@code expected} rows. The cursor
+     *  updates asynchronously (notifyChange -> loader re-query -> onLoadFinished), so
+     *  both the real worker threads and the main looper have to be given time. */
+    private void awaitAdapterCount(ListView list, int expected) throws InterruptedException {
+        long deadline = System.currentTimeMillis() + WAIT_MS;
+        ShadowLooper looper = shadowOf(Looper.getMainLooper());
+        while (System.currentTimeMillis() < deadline) {
+            looper.idle();
+            if (list.getAdapter().getCount() == expected) return;
+            Thread.sleep(10);
+        }
+        looper.idle();
+    }
+
+    /** A lazily-evaluated condition, so the wait loop can re-check it every round. */
+    private interface Cond {
+        boolean holds();
+    }
+
+    /** Generic bounded wait for a condition (pumping the main looper each round). */
+    private void awaitCondition(String what, Cond cond) throws InterruptedException {
+        long deadline = System.currentTimeMillis() + WAIT_MS;
+        ShadowLooper looper = shadowOf(Looper.getMainLooper());
+        boolean ok = false;
+        while (System.currentTimeMillis() < deadline) {
+            looper.idle();
+            if (cond.holds()) {
+                ok = true;
+                break;
+            }
+            Thread.sleep(10);
+        }
+        assertTrue("timed out waiting for: " + what, ok);
+        looper.idle();
+    }
+
+    private boolean adapterHasCount(ListView list, int expected) {
+        return list.getAdapter().getCount() == expected;
     }
 
     // ------------------------------------------------------------------
@@ -120,11 +167,37 @@ public class MainActivityTest {
         assertTrue(formats.contains("FB2ZIP"));
         assertEquals(3, formats.size()); // TXT counted once: {TXT, PDF, FB2ZIP}
 
-        // The UI reloaded with the found books and the progress bar went away.
+        // The list is now driven by the cursor loader: wait until it caught up with
+        // the stage-1 upserts (notifyChange -> re-query -> onLoadFinished).
         ListView list = a.findViewById(R.id.book_list);
+        awaitAdapterCount(list, 4);
         assertEquals(4, list.getAdapter().getCount());
         assertEquals(View.GONE, a.findViewById(R.id.progress).getVisibility());
         assertTrue(ShadowToast.showedToast("Found 4 book(s)"));
+    }
+
+    @Test
+    public void backgroundEnricherCompletesForAllBooks() throws Exception {
+        TestFixtures.writeText(new File(storage, "story_a.txt"), "alpha\n");
+        TestFixtures.writeText(new File(storage, "story_b.txt"), "beta\n");
+
+        MainActivity a = launchMain();
+        awaitCatalogSize(2);
+
+        // Stage 2 must drain its queue: every row becomes meta_done, and the
+        // progress strip goes away with it.
+        final MainActivity act = a;
+        final BookDatabase dbLocal = db;
+        awaitCondition("stage-2 to finish", new Cond() {
+            public boolean holds() {
+                return dbLocal.needMeta().isEmpty()
+                        && act.findViewById(R.id.enrich_bar).getVisibility() == View.GONE;
+            }
+        });
+
+        for (Book b : db.all(null)) {
+            assertTrue("book must be enriched: " + b.path, b.metaDone);
+        }
     }
 
     // ------------------------------------------------------------------
@@ -142,13 +215,14 @@ public class MainActivityTest {
         ListView list = a.findViewById(R.id.book_list);
         GridView grid = a.findViewById(R.id.book_grid);
 
-        // Initial state: list mode.
+        // Initial state: list mode, with the two books on the cursor.
+        awaitAdapterCount(list, 2);
         assertEquals(View.VISIBLE, list.getVisibility());
         assertEquals(View.GONE, grid.getVisibility());
         assertNotNull("adapter attached to list", list.getAdapter());
         assertNull("adapter not yet attached to grid", grid.getAdapter());
 
-        // Switch to grid: the adapter must move (a BaseAdapter cannot serve two views).
+        // Switch to grid: the adapter must move (a CursorAdapter cannot serve two views).
         ImageButton toggle = a.findViewById(R.id.toggle_view);
         toggle.performClick();
         assertEquals(View.GONE, list.getVisibility());
@@ -178,22 +252,35 @@ public class MainActivityTest {
         MainActivity a = launchMain();
         awaitCatalogSize(3);
 
-        Spinner spinner = a.findViewById(R.id.filter_spinner);
         ListView list = a.findViewById(R.id.book_list);
-        BookAdapter adapter = (BookAdapter) list.getAdapter();
+        awaitAdapterCount(list, 3);
+        Spinner spinner = a.findViewById(R.id.filter_spinner);
+        final BookAdapter adapter = (BookAdapter) list.getAdapter();
 
-        int txtPos = 2 + Arrays.asList(Formats.ALL).indexOf("TXT");
+        final int txtPos = 2 + Arrays.asList(Formats.ALL).indexOf("TXT");
         spinner.setSelection(txtPos);
-        shadowOf(Looper.getMainLooper()).idle();
 
-        assertEquals(2, adapter.getCount());
+        // The re-query for the filtered cursor is asynchronous; wait it out.
+        final ListView listRef = list;
+        awaitCondition("TXT filter to apply", new Cond() {
+            public boolean holds() {
+                return adapterHasCount(listRef, 2);
+            }
+        });
         for (int i = 0; i < adapter.getCount(); i++) {
             assertEquals("TXT", adapter.getItem(i).format);
         }
 
         // "Recently read" with nothing read yet: empty list + hint text.
         spinner.setSelection(1);
-        shadowOf(Looper.getMainLooper()).idle();
+        final MainActivity act = a;
+        awaitCondition("recent filter to apply", new Cond() {
+            public boolean holds() {
+                return adapterHasCount(listRef, 0)
+                        && "No books read yet.".equals(
+                        ((TextView) act.findViewById(R.id.empty_view)).getText().toString());
+            }
+        });
         assertEquals(0, adapter.getCount());
         TextView empty = a.findViewById(R.id.empty_view);
         assertEquals("No books read yet.", empty.getText().toString());
@@ -218,10 +305,12 @@ public class MainActivityTest {
         assertNotNull(target);
 
         ListView list = a.findViewById(R.id.book_list);
+        awaitAdapterCount(list, 2);
         BookAdapter adapter = (BookAdapter) list.getAdapter();
         int pos = -1;
         for (int i = 0; i < adapter.getCount(); i++) {
-            if (adapter.getItem(i).id == target.id) pos = i;
+            Book item = adapter.getItem(i);
+            if (item != null && item.id == target.id) pos = i;
         }
         assertTrue("target must be in the adapter", pos >= 0);
 
@@ -279,9 +368,10 @@ public class MainActivityTest {
 
         a.onActivityResult(REQ_IMPORT, Activity.RESULT_OK, new Intent().setData(uri));
 
-        // The import copies + upserts on a background thread; wait for the catalog row,
-        // then let the import's onPostExecute (toast + reload) run as well.
-        long deadline = System.currentTimeMillis() + 10000;
+        // The import copies + upserts + enriches on a background thread; wait for the
+        // catalog row, then let the import's onPostExecute (toast + notifyChange) run
+        // as well.
+        long deadline = System.currentTimeMillis() + WAIT_MS;
         while (System.currentTimeMillis() < deadline && db.all(null).isEmpty()) {
             shadowOf(Looper.getMainLooper()).idle();
             Thread.sleep(10);
@@ -299,13 +389,18 @@ public class MainActivityTest {
         assertEquals("imported text\n",
                 new String(TestFixtures.readAll(dest), "UTF-8"));
 
-        // ...and the catalog holds the scanned copy.
+        // ...and the catalog holds the scanned copy, enriched by stage 2.
         assertEquals(1, db.all(null).size());
         Book imported = db.all(null).get(0);
         assertEquals(dest.getAbsolutePath(), imported.path);
         assertEquals("TXT", imported.format);
-        assertEquals("imported_book", imported.title);
+        assertEquals("imported book", imported.title);
+        assertTrue("the imported book must be enriched", imported.metaDone);
         assertTrue(ShadowToast.showedToast("Imported imported_book.txt"));
+
+        // And the list picked it up through the loader.
+        ListView list = a.findViewById(R.id.book_list);
+        awaitAdapterCount(list, 1);
     }
 
     @Test

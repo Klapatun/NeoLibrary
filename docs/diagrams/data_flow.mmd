@@ -1,0 +1,45 @@
+%% Neo Library — «круговорот данных» каталога: записи → notifyChange → CursorLoader → UI
+sequenceDiagram
+    autonumber
+    participant UI as MainActivity (UI thread)
+    participant L as CursorLoader (LoaderManager)
+    participant P as BookProvider (ContentResolver)
+    participant DB as BookDatabase (SQLite, write-лок)
+    participant BG as MetaEnricher (worker thread)
+
+    Note over UI,BG: ЭТАП 1 — быстрый скан (AsyncTask)
+    UI->>BG: startScan()
+    BG->>DB: upsertBasic() по каждой книге (INSERT скелетов)
+    BG->>P: getContentResolver().notifyChange(CONTENT_URI)
+    P-->>L: ContentObserver сработал
+    L->>P: query(CONTENT_URI)
+    P->>DB: cursorAll(filter)
+    DB-->>L: live Cursor
+    L-->>UI: CursorAdapter обновляет строки — список на экране
+
+    Note over UI,BG: ЭТАП 2 — фоновое обогащение
+    BG->>DB: needMeta() (WHERE meta_done=0)
+    loop для каждой книги
+        BG->>BG: MetaExtractor + CoverExtractor
+        BG->>DB: updateMetadata() — meta_done=1, user_edited: только пустые, last_read не трогается
+    end
+    BG->>P: notifyChange() каждой партией
+    P-->>L: ContentObserver
+    L->>P: query()
+    P->>DB: cursorAll()
+    DB-->>L: Cursor
+    L-->>UI: строки обновляются на месте
+
+    Note over UI,BG: Открытие книги (DetailActivity)
+    UI->>DB: markRead(id) → last_read = now
+    UI->>P: notifyChange(RECENT_URI)
+    L->>P: query(RECENT_URI)
+    P->>DB: cursorRecent(200) (last_read DESC)
+    DB-->>L: Cursor
+    L-->>UI: вкладка «Недавно прочитанные» обновилась
+
+    Note over UI,BG: Редактирование метаданных (EditMetaActivity)
+    UI->>UI: MetaWriter.write() — только EPUB/FB2 (в файл)
+    UI->>DB: upsert() с userEdited = true
+    UI->>P: notifyChange(CONTENT_URI)
+    L-->>UI: список отобразил правку

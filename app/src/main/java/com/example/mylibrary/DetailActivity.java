@@ -3,6 +3,7 @@ package com.example.mylibrary;
 import android.app.Activity;
 import android.app.AlertDialog;
 import android.content.Intent;
+import android.os.AsyncTask;
 import android.os.Bundle;
 import android.view.View;
 import android.widget.Button;
@@ -12,6 +13,7 @@ import android.widget.Toast;
 
 import com.example.mylibrary.db.BookDatabase;
 import com.example.mylibrary.meta.CoverExtractor;
+import com.example.mylibrary.meta.MetaEnricher;
 import com.example.mylibrary.model.Book;
 import com.example.mylibrary.util.CoverLoader;
 import com.example.mylibrary.util.Openers;
@@ -42,9 +44,8 @@ public class DetailActivity extends Activity {
             return;
         }
 
-        ((TextView) findViewById(R.id.detail_title)).setText(nz(book.title));
-        ((TextView) findViewById(R.id.detail_author)).setText(nz(book.author));
         ((TextView) findViewById(R.id.detail_file)).setText(book.path);
+        showBook(book);
 
         // Full-format cover (no circular crop) with the letter badge as fallback; same
         // mechanism as the list rows, square variant.
@@ -60,14 +61,25 @@ public class DetailActivity extends Activity {
             initial.setVisibility(View.VISIBLE);
         }
 
-        StringBuilder other = new StringBuilder();
-        if (book.format != null) other.append("Format: ").append(book.format).append("\n");
-        if (book.publisher != null && book.publisher.length() > 0)
-            other.append("Publisher: ").append(book.publisher).append("\n");
-        other.append("Size: ").append(humanSize(book.sizeBytes)).append("\n");
-        if (book.description != null && book.description.length() > 0)
-            other.append("\n").append(book.description);
-        ((TextView) findViewById(R.id.detail_other)).setText(other.toString());
+        if (!book.metaDone) {
+            // Fast path: the background stage (running in MainActivity) may not have
+            // reached this book yet — extract it now on a background thread so the
+            // user sees real values instead of the file-name placeholder. The bulk
+            // worker and this call may parse the same file in parallel: both are
+            // read-only, and the DB update is idempotent.
+            final Book target = book;
+            new AsyncTask<Void, Void, Book>() {
+                @Override protected Book doInBackground(Void... v) {
+                    MetaEnricher.enrichOne(DetailActivity.this, db, target);
+                    return db.getById(target.id);
+                }
+                @Override protected void onPostExecute(Book fresh) {
+                    if (isFinishing() || fresh == null) return;
+                    book = fresh;
+                    showBook(fresh);
+                }
+            }.execute();
+        }
 
         ((Button) findViewById(R.id.btn_open)).setOnClickListener(new View.OnClickListener() {
             @Override public void onClick(View v) { openBook(); }
@@ -129,12 +141,26 @@ public class DetailActivity extends Activity {
         if (requestCode == 1 && resultCode == RESULT_OK) {
             book = db.getById(book.id);
             if (book != null) {
-                ((TextView) findViewById(R.id.detail_title)).setText(nz(book.title));
-                ((TextView) findViewById(R.id.detail_author)).setText(nz(book.author));
+                showBook(book);
             }
             setResult(RESULT_OK);
         }
         super.onActivityResult(requestCode, resultCode, data);
+    }
+
+    /** Refreshes the on-screen title, author and the "other" block from a book. */
+    private void showBook(Book b) {
+        ((TextView) findViewById(R.id.detail_title)).setText(nz(b.title));
+        ((TextView) findViewById(R.id.detail_author)).setText(nz(b.author));
+
+        StringBuilder other = new StringBuilder();
+        if (b.format != null) other.append("Format: ").append(b.format).append("\n");
+        if (b.publisher != null && b.publisher.length() > 0)
+            other.append("Publisher: ").append(b.publisher).append("\n");
+        other.append("Size: ").append(humanSize(b.sizeBytes)).append("\n");
+        if (b.description != null && b.description.length() > 0)
+            other.append("\n").append(b.description);
+        ((TextView) findViewById(R.id.detail_other)).setText(other.toString());
     }
 
     private static String nz(String s) {

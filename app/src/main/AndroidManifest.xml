@@ -26,5 +26,12 @@
         <activity
             android:name=".EditMetaActivity"
             android:exported="false" />
+
+        <!-- Read-only view over the catalog so the CursorLoader gets a real
+             ContentObserver channel (see BookProvider). -->
+        <provider
+            android:name=".db.BookProvider"
+            android:authorities="com.example.mylibrary.books"
+            android:exported="false" />
     </application>
 </manifest>

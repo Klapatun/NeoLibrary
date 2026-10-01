@@ -103,6 +103,9 @@ public class EditMetaActivity extends Activity {
                 updated.publisher = publisher;
                 updated.description = description;
                 updated.exported = ok && inline;
+                // Mark the row as user-edited so the background enricher never
+                // clobbers these values with the file's original metadata.
+                updated.userEdited = true;
                 db.upsert(updated);
                 return ok;
             }

@@ -291,11 +291,13 @@ public final class MetaExtractor {
 
     private static MetaData extractText(File file) throws Exception {
         MetaData md = new MetaData();
-        // Use the file name minus extension as title.
+        // Use the file name minus extension as title. Underscores are rendered as
+        // spaces so the background stage shows the same title the fast stage
+        // (LibraryScanner.titleFromName) already put on screen.
         String name = file.getName();
         int dot = name.lastIndexOf('.');
         if (dot > 0) name = name.substring(0, dot);
-        md.title = name;
+        md.title = name.replace('_', ' ');
         md.found = true;
         return md;
     }
