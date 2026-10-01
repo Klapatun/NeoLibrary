@@ -10,9 +10,13 @@ import java.util.ArrayList;
 import java.util.List;
 
 /**
- * Recursively walks the readable storage roots looking for supported book files,
- * and resolves a display {@link Book} for each one. Runs on a worker thread; the UI
- * only receives the resulting list.
+ * Stage 1 of library loading: recursively walks the readable storage roots looking
+ * for supported book files and builds a FAST skeleton {@link Book} for each one
+ * (path, format, size and a file-name title only). In-file metadata (title/author/...)
+ * is deliberately NOT extracted here — that is the job of the background stage
+ * ({@code MetaEnricher}), so the scan finishes quickly and the catalog is on screen
+ * while the user can already interact with it. Runs on a worker thread; the UI only
+ * receives the resulting list.
  */
 public class LibraryScanner {
 
@@ -64,19 +68,9 @@ public class LibraryScanner {
         b.path = f.getAbsolutePath();
         b.format = Formats.formatOf(f.getName());
         b.sizeBytes = f.length();
-        // Metadata extraction is cheap enough to do inline for supported formats;
-        // for others we fall back to file name below.
-        com.example.mylibrary.meta.MetaData md =
-                com.example.mylibrary.meta.MetaExtractor.extract(f);
-        if (md.found && md.title != null) {
-            b.title = md.title;
-            b.author = md.author;
-            b.publisher = md.publisher;
-            b.description = md.description;
-            b.series = md.series;
-        } else {
-            b.title = titleFromName(f.getName());
-        }
+        // Fast stage: file-name title only. In-file metadata is extracted later by
+        // the background enricher (MetaEnricher), which also updates the row in place.
+        b.title = titleFromName(f.getName());
         return b;
     }
 

@@ -232,7 +232,7 @@ public class MetaExtractorTest {
 
         MetaData md = MetaExtractor.extract(txt);
         assertTrue(md.found);
-        assertEquals("my_plain_novel", md.title);
+        assertEquals("my plain novel", md.title);
     }
 
     @Test
@@ -253,7 +253,7 @@ public class MetaExtractorTest {
 
         MetaData md = MetaExtractor.extract(html);
         assertTrue(md.found);
-        assertEquals("no_title_page", md.title);
+        assertEquals("no title page", md.title);
     }
 
     // ------------------------------------------------------------------
