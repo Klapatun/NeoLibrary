@@ -615,6 +615,21 @@ public class BookDatabaseTest {
         assertTrue(db.getById(id).userEdited);
     }
 
+    /** After the underlying file is overwritten (an import with the same name) the
+     *  row must be flagged for re-enrichment instead of trusting the old metadata. */
+    @Test
+    public void markMetaPendingClearsTheDoneFlag() {
+        long id = db.upsertBasic(book("/x/a.epub", "EPUB", "A", null));
+        MetaData md = new MetaData();
+        md.title = "Embedded";
+        md.found = true;
+        db.updateMetadata(id, md, true);
+        assertTrue(db.getById(id).metaDone);
+
+        db.markMetaPending(id);
+        assertFalse("the row must be pending enrichment again", db.getById(id).metaDone);
+    }
+
     @Test
     public void needMetaReturnsOnlyNotYetEnrichedBooks() {
         long done = db.upsertBasic(book("/x/a.txt", "TXT", "A", null));

@@ -31,6 +31,7 @@ import com.example.mylibrary.meta.MetaEnricher;
 import com.example.mylibrary.model.Book;
 import com.example.mylibrary.scan.Formats;
 import com.example.mylibrary.scan.LibraryScanner;
+import com.example.mylibrary.util.CoverCache;
 
 import java.io.File;
 import java.util.ArrayList;
@@ -402,7 +403,17 @@ public class MainActivity extends Activity implements LoaderManager.LoaderCallba
                     out.close();
                     Book b = LibraryScanner.scanSingle(dest);
                     if (b != null) {
+                        long existing = db.getIdForPath(dest.getAbsolutePath());
                         db.upsertBasic(b);
+                        if (existing >= 0) {
+                            // The import overwrote an existing file: the row still carries
+                            // the OLD in-file metadata and the cache the OLD cover (a new
+                            // file without a cover would keep the stale one forever).
+                            // Drop both — the re-extraction below refreshes them, and the
+                            // pending flag is the safety net for a later bulk pass.
+                            db.markMetaPending(existing);
+                            CoverCache.delete(MainActivity.this, dest.getAbsolutePath());
+                        }
                         // Stage 2 for this single book — already off the UI thread.
                         MetaEnricher.enrichOne(MainActivity.this, db, b);
                         getContentResolver().notifyChange(BookProvider.CONTENT_URI, null);

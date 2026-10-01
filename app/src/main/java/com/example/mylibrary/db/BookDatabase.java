@@ -303,6 +303,18 @@ public class BookDatabase extends SQLiteOpenHelper {
         }
     }
 
+    /** Marks the row as needing stage-2 enrichment again. Used after the underlying
+     *  file was overwritten (an import with the same name), so the old in-file
+     *  metadata is re-extracted instead of being trusted. */
+    public void markMetaPending(long id) {
+        synchronized (WRITE_LOCK) {
+            SQLiteDatabase db = getWritableDatabase();
+            ContentValues cv = new ContentValues();
+            cv.put("meta_done", 0);
+            db.update("books", cv, "_id=?", new String[]{String.valueOf(id)});
+        }
+    }
+
     /** Marks the row as user-edited (the enricher will then only fill still-blank
      *  fields and never clobber the user's values). Monotonic by design: once 1,
      *  it never goes back to 0. */

@@ -453,6 +453,55 @@ public class MainActivityTest {
         awaitAdapterCount(list, 1);
     }
 
+    /** Re-importing a file with the same name overwrites it: the catalog row must be
+     *  re-enriched with the NEW in-file metadata (not keep the old title from the
+     *  previous file of the same name). */
+    @Test
+    public void reimportingOverAnExistingFileReEnrichesTheBook() throws Exception {
+        ShadowContentResolver resolver = shadowOf(app.getContentResolver());
+        File dest = new File(app.getExternalFilesDir("books"), "novel.fb2");
+
+        // --- first edition ---
+        File picked1 = new File(folder.getRoot(), "picked1.fb2");
+        TestFixtures.writeText(picked1, TestFixtures.FB2_FULL);
+        Uri uri1 = Uri.parse("content://com.neo.librarytest.picked/e1");
+        resolver.setCursor(uri1, new DisplayNameCursor("novel.fb2"));
+        resolver.registerInputStream(uri1, new FileInputStream(picked1));
+
+        MainActivity a = launchMain();
+        awaitCatalogSize(0);
+        a.onActivityResult(REQ_IMPORT, Activity.RESULT_OK, new Intent().setData(uri1));
+
+        final BookDatabase dbLocal = db;
+        awaitCondition("first import to be enriched", new Cond() {
+            public boolean holds() {
+                Book b = dbLocal.getById(dbLocal.getIdForPath(dest.getAbsolutePath()));
+                return b != null && b.metaDone && "Original Title".equals(b.title);
+            }
+        });
+
+        // --- second edition: same name, different in-file title ---
+        String secondEdition =
+                TestFixtures.FB2_FULL.replace("Original Title", "Second Edition Title");
+        File picked2 = new File(folder.getRoot(), "picked2.fb2");
+        TestFixtures.writeText(picked2, secondEdition);
+        Uri uri2 = Uri.parse("content://com.neo.librarytest.picked/e2");
+        resolver.setCursor(uri2, new DisplayNameCursor("novel.fb2"));
+        resolver.registerInputStream(uri2, new FileInputStream(picked2));
+
+        a.onActivityResult(REQ_IMPORT, Activity.RESULT_OK, new Intent().setData(uri2));
+
+        // The re-extraction must have picked up the new in-file title.
+        awaitCondition("re-import to re-enrich the row", new Cond() {
+            public boolean holds() {
+                Book b = dbLocal.getById(dbLocal.getIdForPath(dest.getAbsolutePath()));
+                return b != null && b.metaDone && "Second Edition Title".equals(b.title);
+            }
+        });
+        assertEquals("the file on disk was overwritten",
+                secondEdition, new String(TestFixtures.readAll(dest), "UTF-8"));
+    }
+
     @Test
     public void importRejectsWhenThePickerYieldsNoUsableFile() throws Exception {
         // No fake results registered -> the display name is unresolvable -> the import
