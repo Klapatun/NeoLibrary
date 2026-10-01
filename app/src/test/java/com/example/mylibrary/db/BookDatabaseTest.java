@@ -20,6 +20,7 @@ import org.robolectric.RobolectricTestRunner;
 import org.robolectric.RuntimeEnvironment;
 import org.robolectric.annotation.Config;
 
+import java.util.ArrayList;
 import java.util.List;
 
 /**
@@ -325,6 +326,85 @@ public class BookDatabaseTest {
         } finally {
             c.close();
         }
+    }
+
+    // ------------------------------------------------------------------
+    // migration (v2 -> v3: indexes)
+    // ------------------------------------------------------------------
+
+    /** Old (v2) table definition, exactly as shipped in version 2 (with the
+     *  meta_done / user_edited columns, no indexes). */
+    private static final String V2_CREATE =
+            "CREATE TABLE books ("
+            + "_id INTEGER PRIMARY KEY AUTOINCREMENT, "
+            + "path TEXT UNIQUE NOT NULL, "
+            + "format TEXT, "
+            + "title TEXT, "
+            + "author TEXT, "
+            + "publisher TEXT, "
+            + "description TEXT, "
+            + "series TEXT, "
+            + "size_bytes INTEGER, "
+            + "exported INTEGER DEFAULT 0, "
+            + "meta_done INTEGER NOT NULL DEFAULT 0, "
+            + "user_edited INTEGER NOT NULL DEFAULT 0, "
+            + "last_read INTEGER"
+            + ")";
+
+    /**
+     * Opening a v2 database must upgrade it in place to v3: the existing row (with
+     * last_read) survives and both hot-path indexes are created.
+     */
+    @Test
+    public void openingAV2DatabaseUpgradesInPlaceAndAddsIndexes() {
+        db.close(); // release setUp()'s connection so the raw open below can proceed
+        java.io.File f = context.getDatabasePath("library.db");
+        if (f.getParentFile() != null) f.getParentFile().mkdirs();
+        SQLiteDatabase rawDb = SQLiteDatabase.openOrCreateDatabase(f.getAbsolutePath(), null);
+        try {
+            rawDb.execSQL(V2_CREATE);
+            rawDb.execSQL("INSERT INTO books (path, format, title, last_read) VALUES "
+                    + "('/x/v2.pdf', 'PDF', 'V2 Title', 42424)");
+            rawDb.execSQL("PRAGMA user_version = 2");
+        } finally {
+            rawDb.close();
+        }
+
+        BookDatabase upgraded = new BookDatabase(context);
+        SQLiteDatabase raw = upgraded.getReadableDatabase();
+        Cursor c = raw.rawQuery("SELECT title, last_read FROM books", null);
+        try {
+            assertTrue("row must survive the upgrade", c.moveToFirst());
+            assertEquals("V2 Title", c.getString(0));
+            assertEquals(42424L, c.getLong(1));
+        } finally {
+            c.close();
+        }
+        List<String> indexes = indexNames(raw);
+        assertTrue("meta_done index must be created on upgrade",
+                indexes.contains("idx_books_meta_done"));
+        assertTrue("last_read index must be created on upgrade",
+                indexes.contains("idx_books_last_read"));
+    }
+
+    /** A brand-new database (onCreate path) must have both hot-path indexes. */
+    @Test
+    public void freshDatabaseHasIndexesOnMetaDoneAndLastRead() {
+        List<String> indexes = indexNames(db.getReadableDatabase());
+        assertTrue(indexes.contains("idx_books_meta_done"));
+        assertTrue(indexes.contains("idx_books_last_read"));
+    }
+
+    /** The index names of the books table (PRAGMA index_list, name = column 1). */
+    private static List<String> indexNames(SQLiteDatabase db) {
+        List<String> names = new ArrayList<String>();
+        Cursor c = db.rawQuery("PRAGMA index_list(books)", null);
+        try {
+            while (c.moveToNext()) names.add(c.getString(1));
+        } finally {
+            c.close();
+        }
+        return names;
     }
 
     // ------------------------------------------------------------------

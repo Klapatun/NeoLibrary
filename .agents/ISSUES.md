@@ -110,7 +110,7 @@ final class ZipUtil {
 
 ### 1. База данных (`db/BookDatabase`)
 
-#### 1.1 Нет индексов, кроме `UNIQUE(path)` — [ ] (высокий)
+#### 1.1 Нет индексов, кроме `UNIQUE(path)` — [x] (высокий) — сделано 2026-10-02
 - **Где:** `CREATE` / `onUpgrade`.
 - **Проблема:** `needMeta()` (`WHERE meta_done=0` — очередь enrich) и `cursorRecent()`
   (`WHERE last_read IS NOT NULL ORDER BY last_read DESC`) делают полный перебор таблицы.
@@ -119,6 +119,10 @@ final class ZipUtil {
 - **Доработка:** `DB_VERSION = 3` + `CREATE INDEX` на `meta_done` и `last_read`
   (в `onCreate` для новых установок и в `onUpgrade` — по образцу миграции v1→v2:
   идемпотентно, без DROP).
+- **Сделано:** `DB_VERSION = 3`; `createIndexes()` создаёт `idx_books_meta_done` и
+  `idx_books_last_read` в `onCreate` и в `onUpgrade` (ветка `oldVersion < 3`,
+  идемпотентно try/catch). Тесты: `openingAV2DatabaseUpgradesInPlaceAndAddsIndexes`
+  (v2→v3, данные + `PRAGMA index_list`) и `freshDatabaseHasIndexesOnMetaDoneAndLastRead`.
 
 #### 1.2 `updateMetadata`: 5 лишних SELECT на книгу — [ ] (высокий)
 - **Где:** `updateMetadata()` + `isBlankValue()`.

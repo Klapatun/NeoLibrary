@@ -20,7 +20,7 @@ import java.util.List;
 public class BookDatabase extends SQLiteOpenHelper {
 
     private static final String DB_NAME = "library.db";
-    private static final int DB_VERSION = 2;
+    private static final int DB_VERSION = 3;
 
     /** Serializes all write operations. A static lock (not an instance monitor) so
      *  that concurrent writers from different BookDatabase instances (each Activity
@@ -51,6 +51,7 @@ public class BookDatabase extends SQLiteOpenHelper {
     @Override
     public void onCreate(SQLiteDatabase db) {
         db.execSQL(CREATE);
+        createIndexes(db);
     }
 
     @Override
@@ -67,6 +68,26 @@ public class BookDatabase extends SQLiteOpenHelper {
                 db.execSQL("ALTER TABLE books ADD COLUMN user_edited INTEGER NOT NULL DEFAULT 0");
             } catch (Exception ignored) {
             }
+        }
+        if (oldVersion < 3) {
+            createIndexes(db);
+        }
+    }
+
+    /** Indexes for the two hot query paths: the stage-2 queue
+     *  ({@link #needMeta()}, {@code WHERE meta_done = 0}) and the "Recently read"
+     *  view ({@code WHERE last_read IS NOT NULL ORDER BY last_read DESC}). Without
+     *  them both walk the whole table on a large library. Non-unique on purpose
+     *  (many books share a value); CREATE INDEX is idempotency-guarded like the
+     *  ALTER statements above, so a re-run of a partial upgrade is safe. */
+    private static void createIndexes(SQLiteDatabase db) {
+        try {
+            db.execSQL("CREATE INDEX idx_books_meta_done ON books (meta_done)");
+        } catch (Exception ignored) { // index already present (partial upgrade)
+        }
+        try {
+            db.execSQL("CREATE INDEX idx_books_last_read ON books (last_read)");
+        } catch (Exception ignored) {
         }
     }
 
