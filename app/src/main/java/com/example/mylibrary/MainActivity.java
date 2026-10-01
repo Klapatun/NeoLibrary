@@ -1,5 +1,6 @@
 package com.example.mylibrary;
 
+import android.annotation.SuppressLint;
 import android.app.Activity;
 import android.app.LoaderManager;
 import android.app.ProgressDialog;
@@ -267,6 +268,7 @@ public class MainActivity extends Activity implements LoaderManager.LoaderCallba
     // Stage 1: fast scan
     // -----------------------------------------------------------------
 
+    @SuppressLint("StaticFieldLeak")
     private void startScan() {
         progressBar.setVisibility(View.VISIBLE);
         new AsyncTask<Void, Void, List<Book>>() {
