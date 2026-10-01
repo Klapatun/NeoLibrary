@@ -108,7 +108,7 @@
             android:layout_height="match_parent"
             android:numColumns="auto_fit"
             android:verticalSpacing="8px"
-            android:horizontalSpacing="16px"
+            android:horizontalSpacing="8px"
             android:stretchMode="none"
             android:columnWidth="242px"
             android:scrollbarStyle="insideOverlay"
