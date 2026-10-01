@@ -250,6 +250,48 @@ public class MainActivityTest {
         });
     }
 
+    /** The reported bug scenario: the first load finds no books (storage was empty),
+     *  the user then drops books onto storage while the app stays open, and picks
+     *  "Rescan" from the menu. The new books must be DRAWN in the list, not just
+     *  written to the catalog — without a manual app restart, and without relying on
+     *  the CursorLoader's ContentObserver being alive (on API 19 it can be lost after
+     *  loader cancel/restart cycles, which is why the rescan's own write must refresh
+     *  the list directly). */
+    @Test
+    public void rescanAfterEmptyFirstScanDrawsTheNewBooks() throws Exception {
+        MainActivity a = launchMain();
+        final BookDatabase dbLocal = db;
+
+        // First load: storage is empty -> the catalog and the list stay empty.
+        awaitCondition("the first scan to finish on empty storage", new Cond() {
+            public boolean holds() {
+                return a.findViewById(R.id.progress).getVisibility() == View.GONE
+                        && dbLocal.all(null).isEmpty();
+            }
+        });
+        ListView list = a.findViewById(R.id.book_list);
+        assertEquals("no books after the first (empty) scan", 0, list.getAdapter().getCount());
+
+        // The user drops two books onto storage while the app is still open...
+        TestFixtures.writeText(new File(storage, "story_a.txt"), "alpha\n");
+        TestFixtures.writeText(new File(storage, "story_b.txt"), "beta\n");
+
+        // ...and picks "Rescan" from the options menu. The menu item's handler
+        // (onOptionsItemSelected) calls startScan() 1:1, so drive that same entry
+        // point (reflection: it is private, and the internal MenuBuilder is not on
+        // the compile classpath).
+        java.lang.reflect.Method rescan = MainActivity.class.getDeclaredMethod("startScan");
+        rescan.setAccessible(true);
+        rescan.invoke(a);
+
+        // The new books land in the catalog...
+        awaitCatalogSize(2);
+        // ...and must be drawn in the list (the original bug: catalog updated,
+        // list stayed empty until the app was restarted).
+        awaitAdapterCount(list, 2);
+        assertEquals(2, list.getAdapter().getCount());
+    }
+
     // ------------------------------------------------------------------
     // list / grid toggle
     // ------------------------------------------------------------------

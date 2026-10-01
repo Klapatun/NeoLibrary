@@ -271,6 +271,16 @@ public class MainActivity extends Activity implements LoaderManager.LoaderCallba
         }
     }
 
+    /** The catalog cursor the current view expects for {@link #currentFilter} — the
+     *  same query {@link #onCreateLoader} would ask the provider for. Used for the
+     *  direct rebind in {@link #startScan} after a rescan. */
+    private Cursor currentCatalogCursor() {
+        if ("__recent__".equals(currentFilter)) {
+            return db.cursorRecent(200);
+        }
+        return db.cursorAll(currentFilter);
+    }
+
     private void openDetails(long id) {
         Intent i = new Intent(this, DetailActivity.class);
         i.putExtra(DetailActivity.EXTRA_BOOK_ID, id);
@@ -296,8 +306,17 @@ public class MainActivity extends Activity implements LoaderManager.LoaderCallba
                 // metadata, enrichment state and last_read timestamps in sync.
                 if (found != null) {
                     for (Book b : found) db.upsertBasic(b);
-                    // Tell the loader the catalog changed; it re-queries and the
-                    // list refreshes itself — no manual reload, no blocking.
+                    // The upserts above were committed on this (UI) thread, just now —
+                    // so re-query the catalog ourselves and rebind the adapter.
+                    // Deterministic: it does not rely on the CursorLoader's
+                    // ContentObserver being alive (on API 19 it can be lost after a
+                    // loader cancel/restart cycle — without this rebind the list
+                    // would stay empty after a rescan that finds new books). The
+                    // loader's next delivery simply replaces this cursor.
+                    adapter.changeCursor(currentCatalogCursor());
+                    updateEmptyView();
+                    // Also announce through the normal channel (the "recently read"
+                    // observer and any other listeners).
                     getContentResolver().notifyChange(BookProvider.CONTENT_URI, null);
                 }
                 Toast.makeText(MainActivity.this,
@@ -312,10 +331,10 @@ public class MainActivity extends Activity implements LoaderManager.LoaderCallba
     // Stage 2: background metadata + covers
     // -----------------------------------------------------------------
 
-    /** Starts the background enrichment worker if any book still needs it. */
+    /** Starts the background enrichment worker if any book still needs it. List
+     *  refresh is NOT the worker's job: stage-1 writes rebind the adapter directly
+     *  (see {@link #startScan}) and stage-2 announces itself via {@code notifyChange}. */
     private void startEnrichment() {
-        getLoaderManager().restartLoader(LOADER_BOOKS, null, this);
-
         if (isFinishing()) return;
         if (db.needMeta().isEmpty()) return;
         enrichBar.setVisibility(View.VISIBLE);
