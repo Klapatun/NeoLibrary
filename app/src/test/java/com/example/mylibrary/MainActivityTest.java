@@ -11,6 +11,7 @@ import android.app.Activity;
 import android.content.Intent;
 import android.content.Context;
 import android.net.Uri;
+import android.os.Bundle;
 import android.os.Looper;
 import android.provider.OpenableColumns;
 import android.view.View;
@@ -198,6 +199,55 @@ public class MainActivityTest {
         for (Book b : db.all(null)) {
             assertTrue("book must be enriched: " + b.path, b.metaDone);
         }
+    }
+
+    /** A configuration change (rotation) must NOT re-run the full storage scan —
+     *  the catalog is already there — but it MUST resume the enrichment worker over
+     *  the remaining queue (the previous worker was cancelled in onDestroy). */
+    @Test
+    public void recreationSkipsTheRescanButResumesEnrichment() throws Exception {
+        TestFixtures.writeText(new File(storage, "story_a.txt"), "alpha\n");
+        TestFixtures.writeText(new File(storage, "story_b.txt"), "beta\n");
+
+        ActivityController<MainActivity> c = Robolectric.buildActivity(MainActivity.class);
+        MainActivity a = c.setup().get();
+        awaitCatalogSize(2);
+        final BookDatabase dbLocal = db;
+        awaitCondition("stage-2 to finish", new Cond() {
+            public boolean holds() {
+                return dbLocal.needMeta().isEmpty();
+            }
+        });
+
+        // Simulate the worker having been cut off mid-work: make one row need
+        // enrichment again.
+        Book first = db.all(null).get(0);
+        db.getWritableDatabase().execSQL("UPDATE books SET meta_done = 0 WHERE _id = " + first.id);
+        assertFalse("precondition: one book is pending again", db.needMeta().isEmpty());
+
+        // Simulate a rotation: save the instance state, destroy the activity, and
+        // build a new one with the saved state.
+        Bundle saved = new Bundle();
+        c.saveInstanceState(saved);
+        c.destroy();
+        int toastsAfterColdStart = ShadowToast.shownToastCount();
+
+        MainActivity a2 = Robolectric.buildActivity(MainActivity.class).setup(saved).get();
+
+        // No rescan: the scan's progress bar is shown only while a scan is running.
+        assertEquals("the full rescan must not restart on recreation",
+                View.GONE, a2.findViewById(R.id.progress).getVisibility());
+        shadowOf(Looper.getMainLooper()).idle();
+        assertEquals("a second scan would toast 'Found N book(s)' again",
+                toastsAfterColdStart, ShadowToast.shownToastCount());
+        assertEquals(2, db.all(null).size());
+
+        // The enrichment worker must have resumed over the remaining queue.
+        awaitCondition("stage-2 to resume after recreation", new Cond() {
+            public boolean holds() {
+                return dbLocal.needMeta().isEmpty();
+            }
+        });
     }
 
     // ------------------------------------------------------------------

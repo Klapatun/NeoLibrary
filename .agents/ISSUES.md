@@ -139,12 +139,12 @@ final class ZipUtil {
   приведение 5 старых тестов к новому API (`BookDatabaseTest` ×3,
   `MetaEnricherTest`, `DetailActivityTest.setUp`).
 
-### 6.3 Полный рескан и рестарт воркера при каждом `onCreate` — [ ] (средний)
+### 6.3 Полный рескан и рестарт воркера при каждом `onCreate` — [x] (средний) — сделано 2026-10-02
 - **Где:** `MainActivity.onCreate` (`startScan()` вызывался безусловно).
 - **Проблема:** любое пересоздание activity (ротация, low-memory) = полный
   обход дисков + `MetaEnricher.start()` (cancel + рестарт воркера с начала
   очереди) — минуты лишней работы на большой библиотеке, прогресс сбрасывался.
-- **План:** `startScan()` только при `savedInstanceState == null` (холодный
+- **Сделано:** `startScan()` только при `savedInstanceState == null` (холодный
   старт — как раньше подхватывает новые файлы с диска); при пересоздании —
   `startEnrichment()` (воркер уже остановлен в `onDestroy`, `needMeta()` даёт
   остаток очереди). Тест: `recreationSkipsTheRescanButResumesEnrichment`.

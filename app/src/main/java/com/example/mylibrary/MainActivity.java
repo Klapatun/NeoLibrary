@@ -135,7 +135,19 @@ public class MainActivity extends Activity implements LoaderManager.LoaderCallba
         // The framework Activity (unlike AndroidX's FragmentActivity) has no loader
         // shortcuts of its own — go through the LoaderManager explicitly.
         getLoaderManager().initLoader(LOADER_BOOKS, null, this);
-        startScan();
+        if (savedInstanceState == null) {
+            // Cold start (first launch of this task): walk storage and (re)build the
+            // catalog. This is also what picks up files added outside the app
+            // between sessions.
+            startScan();
+        } else {
+            // Recreation (rotation / configuration change): the catalog and the
+            // loaders already have the data — a full rescan would be pure waste
+            // (and would reset the enrichment worker from the top of the queue).
+            // The worker was cancelled in onDestroy; if any books still need stage
+            // 2, resume it over the remaining queue (needMeta()).
+            startEnrichment();
+        }
     }
 
     @Override
