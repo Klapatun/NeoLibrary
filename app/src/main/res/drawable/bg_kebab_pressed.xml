@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Circular press feedback for the per-book kebab button: a translucent dark
+     oval that shows while the button is pressed. A plain <selector>/<shape>
+     on purpose — the <ripple> drawable needs API 21, and this app keeps minSdk
+     19 (Holo, no AndroidX). Replaces ?android:attr/selectableItemBackground,
+     whose rectangular ripple looked square on the round button. -->
+<selector xmlns:android="http://schemas.android.com/apk/res/android">
+    <item android:state_pressed="true">
+        <shape android:shape="oval">
+            <solid android:color="#80000000" />
+        </shape>
+    </item>
+</selector>

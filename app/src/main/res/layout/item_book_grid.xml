@@ -62,13 +62,13 @@
             android:maxLines="1" />
 
         <!-- Per-book kebab (Details / Edit metadata / Remove). Grid mode: top-right
-             corner of the cover. Same 48dp button (icon + translucent circle
-             backdrop) as the list row, so both view modes look identical. dp (not
+             corner of the cover. Same 24dp button (icon + translucent circle
+             backdrop) as the list row, so both view modes match in size. dp (not
              px) on purpose: the tile sizes its text in px for the target hardware,
-             but the kebab must match the list row's 48dp footprint. -->
+             but the kebab must match the list row's 24dp footprint. -->
         <FrameLayout
-            android:layout_width="48dp"
-            android:layout_height="48dp"
+            android:layout_width="24dp"
+            android:layout_height="24dp"
             android:layout_gravity="top|end"
             android:layout_marginEnd="8dp"
             android:layout_marginTop="8dp"
@@ -78,7 +78,7 @@
                 android:id="@+id/book_more"
                 android:layout_width="match_parent"
                 android:layout_height="match_parent"
-                android:background="?android:attr/selectableItemBackground"
+                android:background="@drawable/bg_kebab_pressed"
                 android:scaleType="centerInside"
                 android:src="@drawable/ic_kebab"
                 android:contentDescription="@string/more_options" />
