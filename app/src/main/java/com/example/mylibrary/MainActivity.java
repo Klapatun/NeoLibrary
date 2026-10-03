@@ -373,8 +373,18 @@ public class MainActivity extends Activity
                 .setPositiveButton(R.string.delete_yes, new DialogInterface.OnClickListener() {
                     @Override public void onClick(DialogInterface d, int w) {
                         db.deleteByPath(book.path);
-                        // Both catalog views may still be showing the row — tell
-                        // their cursors it is gone (no other code path re-queries).
+                        // The delete was committed on this (UI) thread, just now —
+                        // re-query the catalog ourselves and rebind the adapter.
+                        // Deterministic: it does not rely on the CursorLoader's
+                        // ContentObserver being alive (on API 19 it can be lost after
+                        // a loader cancel/restart cycle — without this rebind the
+                        // removed row could stay on screen until some unrelated
+                        // loader event, same class of bug as the rescan fix in
+                        // startScan and the import fix after it).
+                        adapter.changeCursor(currentCatalogCursor());
+                        updateEmptyView();
+                        // Also announce through the normal channel (the "recently
+                        // read" observer and any other listeners).
                         BookProvider.notifyChangeAll(MainActivity.this);
                     }
                 })
