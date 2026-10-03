@@ -2,7 +2,6 @@ package com.example.mylibrary;
 
 import android.app.Activity;
 import android.app.AlertDialog;
-import android.content.Intent;
 import android.os.AsyncTask;
 import android.os.Bundle;
 import android.view.View;
@@ -91,28 +90,31 @@ public class DetailActivity extends Activity {
     }
 
     private void openBook() {
-        File f = new File(book.path);
-        if (!f.exists()) {
-            Toast.makeText(this, "File not found", Toast.LENGTH_LONG).show();
-            return;
-        }
-        try {
-            Intent i = Openers.openFile(f);
-            startActivity(i);
-            db.markRead(book.id);
-            // The list is cursor-driven: announce the new last_read so the
-            // "recently read" view (and the list, if it is on screen) re-queries.
-            BookProvider.notifyChangeAll(this);
-        } catch (Exception e) {
-            showNoViewer();
-        }
+        // The shared "file there? viewer there?" logic lives in Openers (the same
+        // entry point the list's tap confirmation uses); the catalog side effects
+        // (markRead, notify) stay here.
+        Openers.openFile(new File(book.path), this, new Openers.OpenOutcome() {
+            @Override public void onLaunched() {
+                db.markRead(book.id);
+                // The list is cursor-driven: announce the new last_read so the
+                // "recently read" view (and the list, if it is on screen) re-queries.
+                BookProvider.notifyChangeAll(DetailActivity.this);
+            }
+            @Override public void onMissingFile() {
+                Toast.makeText(DetailActivity.this, R.string.file_not_found,
+                        Toast.LENGTH_LONG).show();
+            }
+            @Override public void onNoViewer() {
+                showNoViewer();
+            }
+        });
     }
 
     private void showNoViewer() {
         new AlertDialog.Builder(this)
-                .setTitle("No reader found")
-                .setMessage("Neo Reader 3.0 does not appear to be installed, or it cannot open this file type.")
-                .setPositiveButton("OK", null)
+                .setTitle(R.string.no_viewer_title)
+                .setMessage(R.string.no_viewer_message)
+                .setPositiveButton(R.string.ok, null)
                 .show();
     }
 

@@ -38,6 +38,7 @@ import org.robolectric.android.controller.ActivityController;
 import org.robolectric.annotation.Config;
 import org.robolectric.fakes.BaseCursor;
 import org.robolectric.shadows.ShadowContentResolver;
+import org.robolectric.shadows.ShadowDialog;
 import org.robolectric.shadows.ShadowEnvironment;
 import org.robolectric.shadows.ShadowLooper;
 import org.robolectric.shadows.ShadowToast;
@@ -379,39 +380,149 @@ public class MainActivityTest {
     }
 
     // ------------------------------------------------------------------
-    // row click -> details
+    // tap -> open confirmation (Open / Cancel)
     // ------------------------------------------------------------------
 
+    /** Finds a book in the catalog by the tail of its path, or null. */
+    private Book findBook(String pathSuffix) {
+        for (Book b : db.all(null)) {
+            if (b.path.endsWith(pathSuffix)) return b;
+        }
+        return null;
+    }
+
+    /**
+     * Taps the row of {@code target} in the visible list. The tap goes through the
+     * row view's own OnClickListener (BookAdapter binds it, because a row with a
+     * clickable kebab never fires ListView.onItemClick) — the same listener a real
+     * finger triggers.
+     */
+    private void tapBook(ListView list, Book target) throws InterruptedException {
+        final BookAdapter adapter = (BookAdapter) list.getAdapter();
+        int pos = -1;
+        for (int i = 0; i < adapter.getCount(); i++) {
+            Book item = adapter.getItem(i);
+            if (item != null && item.id == target.id) {
+                pos = i;
+                break;
+            }
+        }
+        assertTrue("the book must be in the visible list", pos >= 0);
+
+        // ListView materializes its rows on a layout pass — pump until the row exists.
+        View row = null;
+        long deadline = System.currentTimeMillis() + WAIT_MS;
+        while (System.currentTimeMillis() < deadline && row == null) {
+            shadowOf(Looper.getMainLooper()).idle();
+            int index = pos - list.getFirstVisiblePosition();
+            if (index >= 0 && index < list.getChildCount()) {
+                row = list.getChildAt(index);
+            } else {
+                Thread.sleep(10);
+            }
+        }
+        assertNotNull("the row view must be laid out", row);
+        row.performClick();
+    }
+
     @Test
-    public void clickingABookOpensDetailsWithItsId() throws Exception {
+    public void tappingABookShowsTheOpenConfirmationAndStartsNothing() throws Exception {
         TestFixtures.writeText(new File(storage, "story_a.txt"), "alpha\n");
         TestFixtures.writeText(new File(storage, "story_b.txt"), "beta\n");
 
         MainActivity a = launchMain();
         awaitCatalogSize(2);
-
-        Book target = null;
-        for (Book b : db.all(null)) {
-            if (b.path.endsWith("story_a.txt")) target = b;
-        }
-        assertNotNull(target);
-
         ListView list = a.findViewById(R.id.book_list);
         awaitAdapterCount(list, 2);
-        BookAdapter adapter = (BookAdapter) list.getAdapter();
-        int pos = -1;
-        for (int i = 0; i < adapter.getCount(); i++) {
-            Book item = adapter.getItem(i);
-            if (item != null && item.id == target.id) pos = i;
-        }
-        assertTrue("target must be in the adapter", pos >= 0);
 
-        list.performItemClick(new View(a), pos, adapter.getItemId(pos));
+        Book target = findBook("story_a.txt");
+        assertNotNull(target);
+        tapBook(list, target);
+
+        // The tap must not open anything — it only asks first.
+        android.app.Dialog d = ShadowDialog.getLatestDialog();
+        assertNotNull("the tap must show the confirmation dialog", d);
+        // The framework Dialog/AlertDialog (API 19) have no public title/message
+        // getters — read the window title via the shadow and the message via the
+        // standard alert message view (android.R.id.message).
+        assertEquals(a.getString(R.string.open_confirm_title),
+                shadowOf(d).getTitle());
+        TextView msgView = d.getWindow().getDecorView().findViewById(android.R.id.message);
+        assertNotNull("the dialog must carry a message view", msgView);
+        String msg = msgView.getText().toString();
+        assertTrue("the dialog must name the book: " + msg, msg.contains(target.title));
+        assertTrue("the dialog must name the reader: " + msg,
+                msg.contains("Neo Reader 3.0"));
+        assertNull("no intent may be started by the tap",
+                shadowOf(a).getNextStartedActivity());
+    }
+
+    @Test
+    public void confirmingTheOpenConfirmationLaunchesTheReaderAndMarksTheBookRead()
+            throws Exception {
+        TestFixtures.writeText(new File(storage, "story_a.txt"), "alpha\n");
+        TestFixtures.writeText(new File(storage, "story_b.txt"), "beta\n");
+
+        MainActivity a = launchMain();
+        awaitCatalogSize(2);
+        ListView list = a.findViewById(R.id.book_list);
+        awaitAdapterCount(list, 2);
+
+        Book target = findBook("story_a.txt");
+        assertNotNull(target);
+        tapBook(list, target);
+        android.app.Dialog d = ShadowDialog.getLatestDialog();
+        assertNotNull("the tap must show the confirmation dialog", d);
+
+        // "Open" — the positive button (the standard alert button-1 view).
+        shadowOf(d).clickOn(android.R.id.button1);
+        // The paused main looper must run: the activity launch is recorded when its
+        // handler message is processed (Robolectric PAUSED-looper mode).
+        shadowOf(Looper.getMainLooper()).idle();
 
         Intent started = shadowOf(a).getNextStartedActivity();
-        assertNotNull(started);
-        assertEquals(DetailActivity.class.getName(), started.getComponent().getClassName());
-        assertEquals(target.id, started.getLongExtra(DetailActivity.EXTRA_BOOK_ID, -1));
+        assertNotNull("the Open button must start the viewer intent", started);
+        assertEquals(Intent.ACTION_VIEW, started.getAction());
+        assertEquals("text/plain", started.getType());
+        assertEquals(Uri.fromFile(new File(target.path)), started.getData());
+
+        // The markRead side effect must have hit the catalog.
+        android.database.Cursor c = db.getReadableDatabase().rawQuery(
+                "SELECT last_read FROM books WHERE _id=?",
+                new String[]{String.valueOf(target.id)});
+        assertTrue("row must exist", c.moveToFirst());
+        assertTrue("last_read must be set", c.getLong(0) > 0);
+    }
+
+    @Test
+    public void cancellingTheOpenConfirmationStartsNothingAndDoesNotMarkRead()
+            throws Exception {
+        TestFixtures.writeText(new File(storage, "story_a.txt"), "alpha\n");
+        TestFixtures.writeText(new File(storage, "story_b.txt"), "beta\n");
+
+        MainActivity a = launchMain();
+        awaitCatalogSize(2);
+        ListView list = a.findViewById(R.id.book_list);
+        awaitAdapterCount(list, 2);
+
+        Book target = findBook("story_a.txt");
+        assertNotNull(target);
+        tapBook(list, target);
+        android.app.Dialog d = ShadowDialog.getLatestDialog();
+        assertNotNull("the tap must show the confirmation dialog", d);
+
+        // "Cancel" — the negative button (the standard alert button-2 view).
+        shadowOf(d).clickOn(android.R.id.button2);
+        shadowOf(Looper.getMainLooper()).idle();
+
+        assertFalse("the dialog must be dismissed", d.isShowing());
+        assertNull("no intent may be started", shadowOf(a).getNextStartedActivity());
+
+        android.database.Cursor c = db.getReadableDatabase().rawQuery(
+                "SELECT last_read FROM books WHERE _id=?",
+                new String[]{String.valueOf(target.id)});
+        assertTrue("row must exist", c.moveToFirst());
+        assertEquals("last_read must stay 0", 0L, c.getLong(0));
     }
 
     // ------------------------------------------------------------------

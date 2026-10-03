@@ -34,6 +34,7 @@ import com.example.mylibrary.model.Book;
 import com.example.mylibrary.scan.Formats;
 import com.example.mylibrary.scan.LibraryScanner;
 import com.example.mylibrary.util.CoverCache;
+import com.example.mylibrary.util.Openers;
 
 import java.io.File;
 import java.util.ArrayList;
@@ -302,6 +303,63 @@ public class MainActivity extends Activity
     @Override
     public void onRemove(Book book) {
         confirmRemove(book);
+    }
+
+    @Override
+    public void onBookTapped(Book book) {
+        // A plain tap on a row/tile no longer goes to the detail screen — it asks
+        // first (Open / Cancel). The detail page stays reachable through the kebab
+        // (onDetails only).
+        confirmOpen(book);
+    }
+
+    // -----------------------------------------------------------------
+    // Opening a book: the tap confirmation (Open / Cancel)
+    // -----------------------------------------------------------------
+
+    /** The tap's "Open this book?": on confirm the book is launched in the reader
+     *  with the same side effects the detail screen's Open button had (viewer
+     *  intent, markRead, notify); on cancel nothing happens. */
+    private void confirmOpen(final Book book) {
+        new AlertDialog.Builder(this)
+                .setTitle(R.string.open_confirm_title)
+                .setMessage(getString(R.string.open_confirm_message, BookAdapter.titleOf(book)))
+                .setNegativeButton(R.string.cancel, null)
+                .setPositiveButton(R.string.open, new DialogInterface.OnClickListener() {
+                    @Override public void onClick(DialogInterface d, int w) {
+                        openBook(book);
+                    }
+                })
+                .show();
+    }
+
+    /** Launches the book in Neo Reader. The shared "file there? viewer there?" logic
+     *  lives in {@link Openers#openFile(File, Activity, OpenOutcome)}; the catalog
+     *  side effects (markRead, notify) stay here. */
+    private void openBook(final Book book) {
+        Openers.openFile(new File(book.path), this, new Openers.OpenOutcome() {
+            @Override public void onLaunched() {
+                db.markRead(book.id);
+                // The list is cursor-driven: announce the new last_read so the
+                // "recently read" view (and the list, if it is on screen) re-queries.
+                BookProvider.notifyChangeAll(MainActivity.this);
+            }
+            @Override public void onMissingFile() {
+                Toast.makeText(MainActivity.this, R.string.file_not_found,
+                        Toast.LENGTH_LONG).show();
+            }
+            @Override public void onNoViewer() {
+                showNoViewer();
+            }
+        });
+    }
+
+    private void showNoViewer() {
+        new AlertDialog.Builder(this)
+                .setTitle(R.string.no_viewer_title)
+                .setMessage(R.string.no_viewer_message)
+                .setPositiveButton(R.string.ok, null)
+                .show();
     }
 
     /** The kebab's "Remove": same confirmation and same effect as the detail screen

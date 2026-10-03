@@ -147,9 +147,11 @@ public class BookAdapterTest {
         Book details;
         Book edited;
         Book removed;
+        Book tapped;
         @Override public void onDetails(Book book) { details = book; }
         @Override public void onEditMetadata(Book book) { edited = book; }
         @Override public void onRemove(Book book) { removed = book; }
+        @Override public void onBookTapped(Book book) { tapped = book; }
     }
 
     @Test

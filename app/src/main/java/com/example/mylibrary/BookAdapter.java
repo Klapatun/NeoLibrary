@@ -57,6 +57,13 @@ public class BookAdapter extends CursorAdapter {
 
         /** "Remove": remove the book from the library (the file itself stays). */
         void onRemove(Book book);
+
+        /**
+         * A plain tap on the row/tile (not the kebab). The screen decides what a tap
+         * does — currently the "Open this book?" confirmation on the main screen; the
+         * detail page is reachable through the kebab only.
+         */
+        void onBookTapped(Book book);
     }
 
     private final LayoutInflater inflater;
@@ -149,7 +156,7 @@ public class BookAdapter extends CursorAdapter {
         view.setOnClickListener(new View.OnClickListener() {
             @Override public void onClick(View row) {
                 if (menuActions != null) {
-                    menuActions.onDetails(b);
+                    menuActions.onBookTapped(b);
                 }
             }
         });
