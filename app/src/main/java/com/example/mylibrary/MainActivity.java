@@ -2,8 +2,10 @@ package com.example.mylibrary;
 
 import android.annotation.SuppressLint;
 import android.app.Activity;
+import android.app.AlertDialog;
 import android.app.LoaderManager;
 import android.app.ProgressDialog;
+import android.content.DialogInterface;
 import android.content.CursorLoader;
 import android.content.Intent;
 import android.content.Loader;
@@ -52,7 +54,8 @@ import java.util.List;
  * driven by {@code content://...books} so any catalog change (scan, enrichment,
  * import) shows up without manual reloads or blocking the interface.</p>
  */
-public class MainActivity extends Activity implements LoaderManager.LoaderCallbacks<Cursor> {
+public class MainActivity extends Activity
+        implements LoaderManager.LoaderCallbacks<Cursor>, BookAdapter.BookMenuActions {
 
     private static final int REQ_IMPORT = 100;
     private static final int LOADER_BOOKS = 1;
@@ -110,7 +113,10 @@ public class MainActivity extends Activity implements LoaderManager.LoaderCallba
         // it: detaches it from the view going away and attaches it to the one coming
         // forward (guarded by getAdapter() == null so the move happens only on the
         // first toggle each way).
-        adapter = new BookAdapter(this, db.cursorAll(null));
+        // "this" as BookMenuActions: the per-book kebab (Details / Edit metadata /
+        // Remove) dispatches its picks here — the navigation and the delete
+        // confirmation live on the screen, not in the row binding.
+        adapter = new BookAdapter(this, db.cursorAll(null), this);
         list.setAdapter(adapter);
 
         list.setOnItemClickListener(new AdapterView.OnItemClickListener() {
@@ -285,6 +291,48 @@ public class MainActivity extends Activity implements LoaderManager.LoaderCallba
         Intent i = new Intent(this, DetailActivity.class);
         i.putExtra(DetailActivity.EXTRA_BOOK_ID, id);
         startActivity(i);
+    }
+
+    // -----------------------------------------------------------------
+    // Per-book kebab picks (BookAdapter.BookMenuActions)
+    // -----------------------------------------------------------------
+
+    @Override
+    public void onDetails(Book book) {
+        openDetails(book.id);
+    }
+
+    @Override
+    public void onEditMetadata(Book book) {
+        // The list is cursor-driven: the editor announces its own save through
+        // notifyChangeAll, so a plain startActivity (no result round-trip) suffices.
+        Intent i = new Intent(this, EditMetaActivity.class);
+        i.putExtra(EditMetaActivity.EXTRA_BOOK, book);
+        startActivity(i);
+    }
+
+    @Override
+    public void onRemove(Book book) {
+        confirmRemove(book);
+    }
+
+    /** The kebab's "Remove": same confirmation and same effect as the detail screen
+     *  had (catalog row gone, file on disk untouched, both catalog views notified). */
+    private void confirmRemove(final Book book) {
+        new AlertDialog.Builder(this)
+                .setTitle(R.string.delete)
+                .setMessage(getString(R.string.delete_confirm) + "\n\n"
+                        + getString(R.string.remove_file_note))
+                .setNegativeButton(R.string.delete_no, null)
+                .setPositiveButton(R.string.delete_yes, new DialogInterface.OnClickListener() {
+                    @Override public void onClick(DialogInterface d, int w) {
+                        db.deleteByPath(book.path);
+                        // Both catalog views may still be showing the row — tell
+                        // their cursors it is gone (no other code path re-queries).
+                        BookProvider.notifyChangeAll(MainActivity.this);
+                    }
+                })
+                .show();
     }
 
     // -----------------------------------------------------------------

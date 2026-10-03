@@ -3,11 +3,14 @@ package com.example.mylibrary;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNotSame;
 import static org.junit.Assert.assertNotNull;
+import static org.junit.Assert.assertNull;
+import static org.junit.Assert.assertTrue;
 
 import android.content.Context;
 import android.view.View;
 import android.widget.FrameLayout;
 import android.widget.ImageView;
+import android.widget.PopupMenu;
 import android.widget.TextView;
 
 import com.example.mylibrary.model.Book;
@@ -125,13 +128,28 @@ public class BookAdapterTest {
     }
 
     private static BookAdapter adapterWith(Context app, Book... books) {
+        return adapterWith(app, null, books);
+    }
+
+    private static BookAdapter adapterWith(Context app, BookAdapter.BookMenuActions actions,
+            Book... books) {
         // The adapter is built with a null cursor first (like the activity does
         // before its first loader load) and then driven by changeCursor() — the same
         // path the CursorLoader uses. This also keeps the test off CursorAdapter's
         // constructor auto-requery, which would demand a real cursor window.
-        BookAdapter adapter = new BookAdapter(app, null);
+        BookAdapter adapter = new BookAdapter(app, null, actions);
         adapter.changeCursor(new BooksCursor(books));
         return adapter;
+    }
+
+    /** A {@link BookAdapter.BookMenuActions} that records which pick arrived. */
+    private static final class RecordingActions implements BookAdapter.BookMenuActions {
+        Book details;
+        Book edited;
+        Book removed;
+        @Override public void onDetails(Book book) { details = book; }
+        @Override public void onEditMetadata(Book book) { edited = book; }
+        @Override public void onRemove(Book book) { removed = book; }
     }
 
     @Test
@@ -232,5 +250,82 @@ public class BookAdapterTest {
         assertNotNull(got);
         assertEquals("/sdcard/b.epub", got.path);
         assertEquals("Beta", got.title);
+    }
+
+    // ------------------------------------------------------------------
+    // per-book kebab (Details / Edit metadata / Remove)
+    // ------------------------------------------------------------------
+
+    @Test
+    public void kebabIsPresentAndClickableInListRowsAndGridTiles() {
+        BookAdapter adapter = adapterWith(app, new RecordingActions(),
+                book("/sdcard/a.pdf", "PDF", "Alpha", null));
+        FrameLayout parent = new FrameLayout(app);
+
+        View listRow = adapter.getView(0, null, parent);
+        View kebabInList = listRow.findViewById(R.id.book_more);
+        assertNotNull("the list row must carry the kebab button", kebabInList);
+        assertTrue("the kebab must be clickable", kebabInList.isClickable());
+
+        adapter.setMode(BookAdapter.MODE_GRID);
+        View tile = adapter.getView(0, listRow, parent);
+        View kebabInTile = tile.findViewById(R.id.book_more);
+        assertNotNull("the grid tile must carry the kebab button", kebabInTile);
+        assertTrue("the kebab must be clickable", kebabInTile.isClickable());
+    }
+
+    @Test
+    public void kebabClickOpensThePerBookMenu() {
+        BookAdapter adapter = adapterWith(app, new RecordingActions(),
+                book("/sdcard/a.pdf", "PDF", "Alpha", null));
+        View row = adapter.getView(0, null, new FrameLayout(app));
+        View kebab = row.findViewById(R.id.book_more);
+
+        assertNull("no menu shown yet", adapter.getLastPopupMenu());
+        kebab.performClick();
+
+        assertNotNull("the kebab click must open the menu", adapter.getLastPopupMenu());
+    }
+
+    @Test
+    public void kebabMenuOffersDetailsEditAndRemoveAndDispatchesToActions() {
+        Book b = book("/sdcard/a.pdf", "PDF", "Alpha", null);
+        RecordingActions rec = new RecordingActions();
+        BookAdapter adapter = adapterWith(app, rec, b);
+        View row = adapter.getView(0, null, new FrameLayout(app));
+        View kebab = row.findViewById(R.id.book_more);
+
+        PopupMenu menu = adapter.showBookMenu(kebab, b);
+
+        assertEquals("Details",
+                menu.getMenu().findItem(R.id.book_menu_details).getTitle().toString());
+        assertEquals("Edit metadata",
+                menu.getMenu().findItem(R.id.book_menu_edit).getTitle().toString());
+        assertEquals("Remove",
+                menu.getMenu().findItem(R.id.book_menu_remove).getTitle().toString());
+
+        // The framework MenuItem has no public click method — drive the pick through
+        // Menu.performIdentifierAction, the same path a popup item tap goes through.
+        menu.getMenu().performIdentifierAction(R.id.book_menu_details, 0);
+        menu.getMenu().performIdentifierAction(R.id.book_menu_edit, 0);
+        menu.getMenu().performIdentifierAction(R.id.book_menu_remove, 0);
+
+        assertEquals(b, rec.details);
+        assertEquals(b, rec.edited);
+        assertEquals(b, rec.removed);
+    }
+
+    @Test
+    public void kebabMenuPicksAreDroppedSilentlyWithoutAnActionsListener() {
+        // The 2-arg constructor (no actions wired) must not crash on a menu pick —
+        // the pick is simply dropped, not NPE'd.
+        Book b = book("/sdcard/a.pdf", "PDF", "Alpha", null);
+        BookAdapter adapter = new BookAdapter(app, null);
+        adapter.changeCursor(new BooksCursor(b));
+        View row = adapter.getView(0, null, new FrameLayout(app));
+        View kebab = row.findViewById(R.id.book_more);
+
+        adapter.showBookMenu(kebab, b)
+                .getMenu().performIdentifierAction(R.id.book_menu_remove, 0);
     }
 }

@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Per-book overflow (kebab) menu: the same three actions in the list row and
+     the grid tile. Details / Edit metadata / Remove. -->
+<menu xmlns:android="http://schemas.android.com/apk/res/android">
+    <item
+        android:id="@+id/book_menu_details"
+        android:title="@string/book_menu_details" />
+    <item
+        android:id="@+id/book_menu_edit"
+        android:title="@string/edit_meta" />
+    <item
+        android:id="@+id/book_menu_remove"
+        android:title="@string/book_menu_remove" />
+</menu>

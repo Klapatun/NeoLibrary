@@ -63,4 +63,24 @@
         android:textColor="@color/colorPrimary"
         android:textSize="12sp"
         android:maxLines="1" />
+
+    <!-- Per-book kebab (Details / Edit metadata / Remove). List mode: at the row's
+         right end, after the format label. The button (icon + translucent circle
+         backdrop) is pixel-identical to the grid tile's kebab. -->
+    <FrameLayout
+        android:layout_width="48dp"
+        android:layout_height="48dp"
+        android:layout_gravity="center_vertical"
+        android:layout_marginStart="8dp"
+        android:background="@drawable/bg_kebab_circle">
+
+        <ImageButton
+            android:id="@+id/book_more"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:background="?android:attr/selectableItemBackground"
+            android:scaleType="centerInside"
+            android:src="@drawable/ic_kebab"
+            android:contentDescription="@string/more_options" />
+    </FrameLayout>
 </LinearLayout>

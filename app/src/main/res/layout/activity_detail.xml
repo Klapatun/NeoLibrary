@@ -69,25 +69,14 @@
             android:textColor="#707070"
             android:layout_marginTop="8dp" />
 
+        <!-- Edit metadata / Remove now live in the per-book kebab menu of the main
+             screen (same actions, one entry point); the detail screen keeps only
+             the display and the "open in reader" action. -->
         <Button
             android:id="@+id/btn_open"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:text="@string/open"
             android:layout_marginTop="24dp" />
-
-        <Button
-            android:id="@+id/btn_edit"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:text="@string/edit_meta"
-            android:layout_marginTop="8dp" />
-
-        <Button
-            android:id="@+id/btn_delete"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:text="@string/delete"
-            android:layout_marginTop="8dp" />
     </LinearLayout>
 </ScrollView>

@@ -17,7 +17,11 @@
     <string name="open">Open</string>
     <string name="edit_meta">Edit metadata</string>
     <string name="delete">Remove from library</string>
+    <string name="more_options">More options</string>
+    <string name="book_menu_details">Details</string>
+    <string name="book_menu_remove">Remove</string>
     <string name="delete_confirm">Remove this book from the library?</string>
+    <string name="remove_file_note">The file itself will not be deleted.</string>
     <string name="delete_yes">Remove</string>
     <string name="delete_no">Cancel</string>
 

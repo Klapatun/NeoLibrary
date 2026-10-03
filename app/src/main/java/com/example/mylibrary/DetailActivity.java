@@ -22,8 +22,11 @@ import com.example.mylibrary.util.Openers;
 import java.io.File;
 
 /**
- * Shows a single book's details and offers: open in Neo Reader, edit metadata, and
- * remove from the library.
+ * Shows a single book's details and offers to open it in Neo Reader.
+ *
+ * <p>Editing the metadata and removing the book from the library were moved to the
+ * per-book kebab menu of the main screen ({@code BookAdapter} popup) — one entry
+ * point from the list or the tile, without the extra hop through this screen.</p>
  */
 public class DetailActivity extends Activity {
 
@@ -85,12 +88,6 @@ public class DetailActivity extends Activity {
         ((Button) findViewById(R.id.btn_open)).setOnClickListener(new View.OnClickListener() {
             @Override public void onClick(View v) { openBook(); }
         });
-        ((Button) findViewById(R.id.btn_edit)).setOnClickListener(new View.OnClickListener() {
-            @Override public void onClick(View v) { editMeta(); }
-        });
-        ((Button) findViewById(R.id.btn_delete)).setOnClickListener(new View.OnClickListener() {
-            @Override public void onClick(View v) { confirmDelete(); }
-        });
     }
 
     private void openBook() {
@@ -117,42 +114,6 @@ public class DetailActivity extends Activity {
                 .setMessage("Neo Reader 3.0 does not appear to be installed, or it cannot open this file type.")
                 .setPositiveButton("OK", null)
                 .show();
-    }
-
-    private void editMeta() {
-        Intent i = new Intent(this, EditMetaActivity.class);
-        i.putExtra(EditMetaActivity.EXTRA_BOOK, book);
-        startActivityForResult(i, 1);
-    }
-
-    private void confirmDelete() {
-        new AlertDialog.Builder(this)
-                .setTitle("Remove from library")
-                .setMessage("Remove this book from the library?\n\nThe file itself will not be deleted.")
-                .setNegativeButton("Cancel", null)
-                .setPositiveButton("Remove", new android.content.DialogInterface.OnClickListener() {
-                    @Override public void onClick(android.content.DialogInterface d, int w) {
-                        db.deleteByPath(book.path);
-                        // Both catalog views may still be showing the row — tell
-                        // their cursors it is gone (no other code path re-queries).
-                        BookProvider.notifyChangeAll(DetailActivity.this);
-                        setResult(RESULT_OK);
-                        finish();
-                    }
-                })
-                .show();
-    }
-
-    @Override
-    protected void onActivityResult(int requestCode, int resultCode, Intent data) {
-        if (requestCode == 1 && resultCode == RESULT_OK) {
-            book = db.getById(book.id);
-            if (book != null) {
-                showBook(book);
-            }
-            setResult(RESULT_OK);
-        }
-        super.onActivityResult(requestCode, resultCode, data);
     }
 
     /** Refreshes the on-screen title, author and the "other" block from a book. */
