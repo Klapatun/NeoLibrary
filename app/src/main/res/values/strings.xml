@@ -27,10 +27,10 @@
 
     <!-- Tap confirmation: "Open this book?" (Open / Cancel) -->
     <string name="open_confirm_title">Open this book?</string>
-    <string name="open_confirm_message">Open %1$s in Neo Reader 3.0?</string>
+    <string name="open_confirm_message">Open %1$s?</string>
     <string name="file_not_found">File not found</string>
     <string name="no_viewer_title">No reader found</string>
-    <string name="no_viewer_message">Neo Reader 3.0 does not appear to be installed, or it cannot open this file type.</string>
+    <string name="no_viewer_message">Reader does not appear to be installed, or it cannot open this file type.</string>
     <string name="ok">OK</string>
 
     <string name="save">Save</string>
