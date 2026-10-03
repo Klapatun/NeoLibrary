@@ -494,10 +494,24 @@ public class MainActivity extends Activity
             }
             @Override protected void onPostExecute(Boolean ok) {
                 pd.dismiss();
-                if (ok) Toast.makeText(MainActivity.this, "Imported " + displayName, Toast.LENGTH_SHORT).show();
-                else Toast.makeText(MainActivity.this, "Import failed", Toast.LENGTH_LONG).show();
-                // No manual reload: the notifyChange above made the CursorLoader
-                // re-query and the list refreshed itself.
+                if (ok) {
+                    Toast.makeText(MainActivity.this, "Imported " + displayName, Toast.LENGTH_SHORT).show();
+                    // The upsert above was committed on the background thread, just
+                    // before this callback — so re-query the catalog ourselves and
+                    // rebind the adapter. Deterministic: it does not rely on the
+                    // CursorLoader's ContentObserver being alive (on API 19 it can be
+                    // lost after a loader cancel/restart cycle — without this rebind
+                    // the list could stay empty after an import, same class of bug as
+                    // the rescan fix in startScan). The loader's next delivery simply
+                    // replaces this cursor.
+                    adapter.changeCursor(currentCatalogCursor());
+                    updateEmptyView();
+                } else {
+                    Toast.makeText(MainActivity.this, "Import failed", Toast.LENGTH_LONG).show();
+                }
+                // The notifyChange in doInBackground still goes out for the other
+                // listeners (e.g. the "recently read" view); this rebind only
+                // guarantees that the list in front of the user catches up.
             }
         }.execute();
     }
