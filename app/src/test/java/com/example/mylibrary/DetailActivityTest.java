@@ -7,9 +7,6 @@ import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 import static org.robolectric.Shadows.shadowOf;
 
-import android.app.Activity;
-import android.app.AlertDialog;
-import android.content.DialogInterface;
 import android.content.Intent;
 import android.content.Context;
 import android.database.ContentObserver;
@@ -35,16 +32,15 @@ import org.robolectric.Robolectric;
 import org.robolectric.RobolectricTestRunner;
 import org.robolectric.RuntimeEnvironment;
 import org.robolectric.annotation.Config;
-import org.robolectric.shadows.ShadowAlertDialog;
 import org.robolectric.shadows.ShadowToast;
 
 import java.io.File;
 
 /**
- * Robolectric smoke tests for {@link DetailActivity}: the fields it shows, the
- * "open in reader" intent (+ mark-as-read side effect), the two-layer delete
- * confirmation (catalog row gone, file untouched), and the hand-off to
- * {@link EditMetaActivity}.
+ * Robolectric smoke tests for {@link DetailActivity}: the fields it shows and the
+ * "open in reader" intent (+ mark-as-read side effect). The edit-metadata and
+ * remove actions live in the per-book kebab of the main screen now — those flows
+ * are covered by {@link MainActivityTest}.
  *
  * <p>No viewer app is installed in the Robolectric environment, but Robolectric's
  * shadow {@code startActivity} is lenient: it records the intent instead of throwing
@@ -167,30 +163,6 @@ public class DetailActivityTest {
     }
 
     @Test
-    public void deleteFlowRemovesCatalogRowFinishesAndKeepsTheFile() {
-        DetailActivity a = launch(bookId);
-
-        ((Button) a.findViewById(R.id.btn_delete)).performClick();
-
-        AlertDialog dialog = ShadowAlertDialog.getLatestAlertDialog();
-        assertNotNull("a confirmation dialog must be shown", dialog);
-        assertEquals("Remove from library", shadowOf(dialog).getTitle().toString());
-        // The AlertDialog wires its button listeners from runnables posted to the main
-        // looper; in Robolectric those only run when the looper idles (and the wiring
-        // may take a couple of idle passes). So: idle, click, and repeat until the
-        // handler actually ran.
-        for (int attempt = 0; attempt < 5 && !a.isFinishing(); attempt++) {
-            shadowOf(Looper.getMainLooper()).idle();
-            dialog.getButton(DialogInterface.BUTTON_POSITIVE).performClick();
-        }
-
-        assertNull("catalog row must be gone", db.getById(bookId));
-        assertTrue(a.isFinishing());
-        assertEquals(Activity.RESULT_OK, shadowOf(a).getResultCode());
-        assertTrue("the file itself must not be deleted", bookFile.exists());
-    }
-
-    @Test
     public void unknownBookIdFinishesImmediately() {
         DetailActivity a = launch(424242);
         assertTrue(a.isFinishing());
@@ -205,30 +177,6 @@ public class DetailActivityTest {
         private boolean fired;
         FiringObserver() { super(new Handler(Looper.getMainLooper())); }
         @Override public void onChange(boolean selfChange, Uri uri) { fired = true; }
-    }
-
-    /** A delete must announce the change to the cursors of BOTH views (the row may
-     *  be visible in the list or in the "recently read" view). */
-    @Test
-    public void deleteNotifiesTheCatalogObservers() {
-        FiringObserver onBooks = new FiringObserver();
-        FiringObserver onRecent = new FiringObserver();
-        app.getContentResolver().registerContentObserver(BookProvider.CONTENT_URI, true, onBooks);
-        app.getContentResolver().registerContentObserver(BookProvider.RECENT_URI, true, onRecent);
-
-        DetailActivity a = launch(bookId);
-        ((Button) a.findViewById(R.id.btn_delete)).performClick();
-        AlertDialog dialog = ShadowAlertDialog.getLatestAlertDialog();
-        for (int attempt = 0; attempt < 5 && !a.isFinishing(); attempt++) {
-            shadowOf(Looper.getMainLooper()).idle();
-            dialog.getButton(DialogInterface.BUTTON_POSITIVE).performClick();
-        }
-        shadowOf(Looper.getMainLooper()).idle();
-
-        assertTrue("the all-books cursor must be told the row is gone", onBooks.fired);
-        assertTrue("the recently-read cursor must be told as well", onRecent.fired);
-        app.getContentResolver().unregisterContentObserver(onBooks);
-        app.getContentResolver().unregisterContentObserver(onRecent);
     }
 
     /** Opening a book (markRead) must announce the change too — otherwise the
@@ -248,19 +196,5 @@ public class DetailActivityTest {
         assertTrue("... and to the recently-read cursor", onRecent.fired);
         app.getContentResolver().unregisterContentObserver(onBooks);
         app.getContentResolver().unregisterContentObserver(onRecent);
-    }
-
-    @Test
-    public void editButtonLaunchesEditorWithTheBookExtra() {
-        DetailActivity a = launch(bookId);
-
-        ((Button) a.findViewById(R.id.btn_edit)).performClick();
-
-        Intent started = shadowOf(a).getNextStartedActivity();
-        assertNotNull(started);
-        assertEquals(EditMetaActivity.class.getName(), started.getComponent().getClassName());
-        Book extra = started.getParcelableExtra(EditMetaActivity.EXTRA_BOOK);
-        assertNotNull(extra);
-        assertEquals(bookId, extra.id);
     }
 }

@@ -3,10 +3,13 @@ package com.example.mylibrary;
 import android.content.Context;
 import android.database.Cursor;
 import android.view.LayoutInflater;
+import android.view.MenuInflater;
+import android.view.MenuItem;
 import android.view.View;
 import android.view.ViewGroup;
 import android.widget.CursorAdapter;
 import android.widget.ImageView;
+import android.widget.PopupMenu;
 import android.widget.TextView;
 
 import com.example.mylibrary.db.BookDatabase;
@@ -23,7 +26,14 @@ import com.example.mylibrary.util.CoverLoader;
  *   <li>{@link #MODE_GRID} — a tile with a cover preview ({@code item_book_grid});
  *       the letter badge is shown when the format has no extractable cover.</li>
  * </ul>
- * Extends {@link CursorAdapter} so the {@code CursorLoader} in the main screen can
+ * Both rows carry the same per-book kebab button ({@code book_more}): in the list it
+ * sits at the row's right end after the format label, in the tile at the top-right
+ * corner of the cover. Tapping it opens the {@code book_menu} popup (Details / Edit
+ * metadata / Remove); the adapter only shows the menu — the picks are dispatched to
+ * the {@link BookMenuActions} supplied by the screen (currently {@code MainActivity}),
+ * which owns the navigation and the delete confirmation.
+ *
+ * <p>Extends {@link CursorAdapter} so the {@code CursorLoader} in the main screen can
  * drive it: the loader re-queries whenever the catalog changes (scan, background
  * enrichment, import) and the adapter re-binds the rows. When switching modes, views
  * whose layout type no longer matches are re-inflated.
@@ -33,11 +43,42 @@ public class BookAdapter extends CursorAdapter {
     public static final int MODE_LIST = 0;
     public static final int MODE_GRID = 1;
 
+    /**
+     * Receives the per-book kebab-menu picks. Kept separate from the adapter so the
+     * row/tile bindings stay free of navigation and deletion logic (and so the menu
+     * can be exercised in tests with a recording stub).
+     */
+    public interface BookMenuActions {
+        /** "Details": show the book's detail page. */
+        void onDetails(Book book);
+
+        /** "Edit metadata": open the metadata editor for the book. */
+        void onEditMetadata(Book book);
+
+        /** "Remove": remove the book from the library (the file itself stays). */
+        void onRemove(Book book);
+
+        /**
+         * A plain tap on the row/tile (not the kebab). The screen decides what a tap
+         * does — currently the "Open this book?" confirmation on the main screen; the
+         * detail page is reachable through the kebab only.
+         */
+        void onBookTapped(Book book);
+    }
+
     private final LayoutInflater inflater;
+    private final BookMenuActions menuActions;
     private int mode = MODE_LIST;
+    /** The popup last built by {@link #showBookMenu}; exposed for unit tests. */
+    private PopupMenu lastPopupMenu;
 
     public BookAdapter(Context context, Cursor c) {
-        super(context, c);
+        this(context, c, (BookMenuActions) null);
+    }
+
+    public BookAdapter(Context context, Cursor c, BookMenuActions menuActions) {
+        super(context, c, 0);
+        this.menuActions = menuActions;
         inflater = LayoutInflater.from(context);
     }
 
@@ -98,6 +139,86 @@ public class BookAdapter extends CursorAdapter {
         } else {
             bindList(view, b);
         }
+        bindKebab(view, b);
+        bindRowClick(view, b);
+    }
+
+    /**
+     * Row-level click. Attached to the itemView instead of relying on
+     * ListView.onItemClick because the row contains a clickable ImageButton
+     * (book_more): ListView refuses to fire onItemClick for any row that has
+     * a clickable descendant, so the row click would be dead otherwise.
+     *
+     * <p>The kebab has its own OnClickListener, so a tap on it is consumed
+     * there and never reaches this listener — the two clicks stay independent.</p>
+     */
+    private void bindRowClick(View view, final Book b) {
+        view.setOnClickListener(new View.OnClickListener() {
+            @Override public void onClick(View row) {
+                if (menuActions != null) {
+                    menuActions.onBookTapped(b);
+                }
+            }
+        });
+        // Optional: keep long-press as a no-op so the framework doesn't try to
+        // open a context menu (harmless, but keeps behaviour predictable).
+        view.setOnLongClickListener(new View.OnLongClickListener() {
+            @Override public boolean onLongClick(View row) {
+                return false;
+            }
+        });
+    }
+
+    // ------------------------------------------------------------------
+    // per-book kebab (present in both row layouts)
+    // ------------------------------------------------------------------
+
+    /** Wires the kebab button ({@code book_more}) to the per-book menu. The button
+     *  is a plain {@code View} on purpose: its only job here is the click wiring. */
+    private void bindKebab(View v, Book b) {
+        View kebab = v.findViewById(R.id.book_more);
+        kebab.setOnClickListener(new View.OnClickListener() {
+            @Override public void onClick(View anchor) {
+                showBookMenu(anchor, b);
+            }
+        });
+    }
+
+    /**
+     * Shows the per-book overflow menu (Details / Edit metadata / Remove) anchored to
+     * the kebab button — exactly the same popup for the list row and the grid tile.
+     * Package-private and returns the menu so unit tests can pick items without
+     * driving the popup window.
+     */
+    PopupMenu showBookMenu(View anchor, Book b) {
+        final PopupMenu menu = new PopupMenu(anchor.getContext(), anchor);
+        // The framework Menu interface has no inflate() of its own — go through
+        // MenuInflater (the plain-framework equivalent of the AppCompat one-liner).
+        new MenuInflater(anchor.getContext()).inflate(R.menu.book_menu, menu.getMenu());
+        menu.setOnMenuItemClickListener(new PopupMenu.OnMenuItemClickListener() {
+            @Override public boolean onMenuItemClick(MenuItem item) {
+                if (menuActions != null) {
+                    int id = item.getItemId();
+                    if (id == R.id.book_menu_details) {
+                        menuActions.onDetails(b);
+                    } else if (id == R.id.book_menu_edit) {
+                        menuActions.onEditMetadata(b);
+                    } else if (id == R.id.book_menu_remove) {
+                        menuActions.onRemove(b);
+                    }
+                }
+                menu.dismiss();
+                return true;
+            }
+        });
+        lastPopupMenu = menu;
+        menu.show();
+        return menu;
+    }
+
+    /** The popup last built by {@link #showBookMenu} (for unit tests). */
+    PopupMenu getLastPopupMenu() {
+        return lastPopupMenu;
     }
 
     // ------------------------------------------------------------------
@@ -163,7 +284,8 @@ public class BookAdapter extends CursorAdapter {
         }
     }
 
-    private static String titleOf(Book b) {
+    /** The row/dialog display title; "(untitled)" when the book has none yet. */
+    public static String titleOf(Book b) {
         return (b.title == null || b.title.length() == 0) ? "(untitled)" : b.title;
     }
 }

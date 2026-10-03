@@ -2,8 +2,10 @@ package com.example.mylibrary;
 
 import android.annotation.SuppressLint;
 import android.app.Activity;
+import android.app.AlertDialog;
 import android.app.LoaderManager;
 import android.app.ProgressDialog;
+import android.content.DialogInterface;
 import android.content.CursorLoader;
 import android.content.Intent;
 import android.content.Loader;
@@ -32,6 +34,7 @@ import com.example.mylibrary.model.Book;
 import com.example.mylibrary.scan.Formats;
 import com.example.mylibrary.scan.LibraryScanner;
 import com.example.mylibrary.util.CoverCache;
+import com.example.mylibrary.util.Openers;
 
 import java.io.File;
 import java.util.ArrayList;
@@ -52,7 +55,8 @@ import java.util.List;
  * driven by {@code content://...books} so any catalog change (scan, enrichment,
  * import) shows up without manual reloads or blocking the interface.</p>
  */
-public class MainActivity extends Activity implements LoaderManager.LoaderCallbacks<Cursor> {
+public class MainActivity extends Activity
+        implements LoaderManager.LoaderCallbacks<Cursor>, BookAdapter.BookMenuActions {
 
     private static final int REQ_IMPORT = 100;
     private static final int LOADER_BOOKS = 1;
@@ -110,21 +114,12 @@ public class MainActivity extends Activity implements LoaderManager.LoaderCallba
         // it: detaches it from the view going away and attaches it to the one coming
         // forward (guarded by getAdapter() == null so the move happens only on the
         // first toggle each way).
-        adapter = new BookAdapter(this, db.cursorAll(null));
+        // "this" as BookMenuActions: the per-book kebab (Details / Edit metadata /
+        // Remove) dispatches its picks here — the navigation and the delete
+        // confirmation live on the screen, not in the row binding.
+        adapter = new BookAdapter(this, db.cursorAll(null), this);
         list.setAdapter(adapter);
 
-        list.setOnItemClickListener(new AdapterView.OnItemClickListener() {
-            @Override public void onItemClick(AdapterView<?> p, View v, int pos, long id) {
-                Book b = adapter.getItem(pos);
-                if (b != null) openDetails(b.id);
-            }
-        });
-        grid.setOnItemClickListener(new AdapterView.OnItemClickListener() {
-            @Override public void onItemClick(AdapterView<?> p, View v, int pos, long id) {
-                Book b = adapter.getItem(pos);
-                if (b != null) openDetails(b.id);
-            }
-        });
         toggleView.setOnClickListener(new View.OnClickListener() {
             @Override public void onClick(View v) {
                 setViewMode(viewMode == BookAdapter.MODE_LIST ? BookAdapter.MODE_GRID : BookAdapter.MODE_LIST);
@@ -288,6 +283,115 @@ public class MainActivity extends Activity implements LoaderManager.LoaderCallba
     }
 
     // -----------------------------------------------------------------
+    // Per-book kebab picks (BookAdapter.BookMenuActions)
+    // -----------------------------------------------------------------
+
+    @Override
+    public void onDetails(Book book) {
+        openDetails(book.id);
+    }
+
+    @Override
+    public void onEditMetadata(Book book) {
+        // The list is cursor-driven: the editor announces its own save through
+        // notifyChangeAll, so a plain startActivity (no result round-trip) suffices.
+        Intent i = new Intent(this, EditMetaActivity.class);
+        i.putExtra(EditMetaActivity.EXTRA_BOOK, book);
+        startActivity(i);
+    }
+
+    @Override
+    public void onRemove(Book book) {
+        confirmRemove(book);
+    }
+
+    @Override
+    public void onBookTapped(Book book) {
+        // A plain tap on a row/tile no longer goes to the detail screen — it asks
+        // first (Open / Cancel). The detail page stays reachable through the kebab
+        // (onDetails only).
+        confirmOpen(book);
+    }
+
+    // -----------------------------------------------------------------
+    // Opening a book: the tap confirmation (Open / Cancel)
+    // -----------------------------------------------------------------
+
+    /** The tap's "Open this book?": on confirm the book is launched in the reader
+     *  with the same side effects the detail screen's Open button had (viewer
+     *  intent, markRead, notify); on cancel nothing happens. */
+    private void confirmOpen(final Book book) {
+        new AlertDialog.Builder(this)
+                .setTitle(R.string.open_confirm_title)
+                .setMessage(getString(R.string.open_confirm_message, BookAdapter.titleOf(book)))
+                .setNegativeButton(R.string.cancel, null)
+                .setPositiveButton(R.string.open, new DialogInterface.OnClickListener() {
+                    @Override public void onClick(DialogInterface d, int w) {
+                        openBook(book);
+                    }
+                })
+                .show();
+    }
+
+    /** Launches the book in Neo Reader. The shared "file there? viewer there?" logic
+     *  lives in {@link Openers#openFile(File, Activity, OpenOutcome)}; the catalog
+     *  side effects (markRead, notify) stay here. */
+    private void openBook(final Book book) {
+        Openers.openFile(new File(book.path), this, new Openers.OpenOutcome() {
+            @Override public void onLaunched() {
+                db.markRead(book.id);
+                // The list is cursor-driven: announce the new last_read so the
+                // "recently read" view (and the list, if it is on screen) re-queries.
+                BookProvider.notifyChangeAll(MainActivity.this);
+            }
+            @Override public void onMissingFile() {
+                Toast.makeText(MainActivity.this, R.string.file_not_found,
+                        Toast.LENGTH_LONG).show();
+            }
+            @Override public void onNoViewer() {
+                showNoViewer();
+            }
+        });
+    }
+
+    private void showNoViewer() {
+        new AlertDialog.Builder(this)
+                .setTitle(R.string.no_viewer_title)
+                .setMessage(R.string.no_viewer_message)
+                .setPositiveButton(R.string.ok, null)
+                .show();
+    }
+
+    /** The kebab's "Remove": same confirmation and same effect as the detail screen
+     *  had (catalog row gone, file on disk untouched, both catalog views notified). */
+    private void confirmRemove(final Book book) {
+        new AlertDialog.Builder(this)
+                .setTitle(R.string.delete)
+                .setMessage(getString(R.string.delete_confirm) + "\n\n"
+                        + getString(R.string.remove_file_note))
+                .setNegativeButton(R.string.delete_no, null)
+                .setPositiveButton(R.string.delete_yes, new DialogInterface.OnClickListener() {
+                    @Override public void onClick(DialogInterface d, int w) {
+                        db.deleteByPath(book.path);
+                        // The delete was committed on this (UI) thread, just now —
+                        // re-query the catalog ourselves and rebind the adapter.
+                        // Deterministic: it does not rely on the CursorLoader's
+                        // ContentObserver being alive (on API 19 it can be lost after
+                        // a loader cancel/restart cycle — without this rebind the
+                        // removed row could stay on screen until some unrelated
+                        // loader event, same class of bug as the rescan fix in
+                        // startScan and the import fix after it).
+                        adapter.changeCursor(currentCatalogCursor());
+                        updateEmptyView();
+                        // Also announce through the normal channel (the "recently
+                        // read" observer and any other listeners).
+                        BookProvider.notifyChangeAll(MainActivity.this);
+                    }
+                })
+                .show();
+    }
+
+    // -----------------------------------------------------------------
     // Stage 1: fast scan
     // -----------------------------------------------------------------
 
@@ -446,10 +550,24 @@ public class MainActivity extends Activity implements LoaderManager.LoaderCallba
             }
             @Override protected void onPostExecute(Boolean ok) {
                 pd.dismiss();
-                if (ok) Toast.makeText(MainActivity.this, "Imported " + displayName, Toast.LENGTH_SHORT).show();
-                else Toast.makeText(MainActivity.this, "Import failed", Toast.LENGTH_LONG).show();
-                // No manual reload: the notifyChange above made the CursorLoader
-                // re-query and the list refreshed itself.
+                if (ok) {
+                    Toast.makeText(MainActivity.this, "Imported " + displayName, Toast.LENGTH_SHORT).show();
+                    // The upsert above was committed on the background thread, just
+                    // before this callback — so re-query the catalog ourselves and
+                    // rebind the adapter. Deterministic: it does not rely on the
+                    // CursorLoader's ContentObserver being alive (on API 19 it can be
+                    // lost after a loader cancel/restart cycle — without this rebind
+                    // the list could stay empty after an import, same class of bug as
+                    // the rescan fix in startScan). The loader's next delivery simply
+                    // replaces this cursor.
+                    adapter.changeCursor(currentCatalogCursor());
+                    updateEmptyView();
+                } else {
+                    Toast.makeText(MainActivity.this, "Import failed", Toast.LENGTH_LONG).show();
+                }
+                // The notifyChange in doInBackground still goes out for the other
+                // listeners (e.g. the "recently read" view); this rebind only
+                // guarantees that the list in front of the user catches up.
             }
         }.execute();
     }

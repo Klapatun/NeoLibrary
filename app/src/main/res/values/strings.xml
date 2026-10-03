@@ -17,9 +17,21 @@
     <string name="open">Open</string>
     <string name="edit_meta">Edit metadata</string>
     <string name="delete">Remove from library</string>
+    <string name="more_options">More options</string>
+    <string name="book_menu_details">Details</string>
+    <string name="book_menu_remove">Remove</string>
     <string name="delete_confirm">Remove this book from the library?</string>
+    <string name="remove_file_note">The file itself will not be deleted.</string>
     <string name="delete_yes">Remove</string>
     <string name="delete_no">Cancel</string>
+
+    <!-- Tap confirmation: "Open this book?" (Open / Cancel) -->
+    <string name="open_confirm_title">Open this book?</string>
+    <string name="open_confirm_message">Open %1$s?</string>
+    <string name="file_not_found">File not found</string>
+    <string name="no_viewer_title">No reader found</string>
+    <string name="no_viewer_message">Reader does not appear to be installed, or it cannot open this file type.</string>
+    <string name="ok">OK</string>
 
     <string name="save">Save</string>
     <string name="cancel">Cancel</string>

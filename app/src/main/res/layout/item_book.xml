@@ -63,4 +63,24 @@
         android:textColor="@color/colorPrimary"
         android:textSize="12sp"
         android:maxLines="1" />
+
+    <!-- Per-book kebab (Details / Edit metadata / Remove). List mode: at the row's
+         right end, after the format label. Same 24dp footprint as the grid kebab.
+         The icon lives in the stateful button background (bg_kebab_list_pressed):
+         gray at rest, white over a darker circle when pressed — a plain dark
+         ripple would hide the gray icon, so the pressed state flips it to white
+         (the grid's pressed look) to keep it visible. -->
+    <FrameLayout
+        android:layout_width="24dp"
+        android:layout_height="24dp"
+        android:layout_gravity="center_vertical"
+        android:layout_marginStart="8dp">
+
+        <ImageButton
+            android:id="@+id/book_more"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:background="@drawable/bg_kebab_list_pressed"
+            android:contentDescription="@string/more_options" />
+    </FrameLayout>
 </LinearLayout>

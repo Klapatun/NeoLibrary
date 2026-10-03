@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Stateful background for the list-mode kebab button. The icon lives here
+     (not in the button's src) so the pressed state can flip it to white:
+     - at rest: the gray kebab on the plain row background,
+     - pressed: a dark circle (#B3000000) appears and the icon goes white — the
+       same look as the grid kebab's pressed state, so the gray icon never loses
+       contrast under the press feedback (a plain dark ripple would hide it).
+     Plain <selector>/<layer-list>/<shape>: <ripple> needs API 21 and this app
+     keeps minSdk 19 (Holo, no AndroidX). The 96px kebab bitmaps are scaled to
+     the 24dp button, keeping the dots centered. -->
+<selector xmlns:android="http://schemas.android.com/apk/res/android">
+    <item android:state_pressed="true">
+        <layer-list>
+            <item>
+                <shape android:shape="oval">
+                    <solid android:color="#B3000000" />
+                </shape>
+            </item>
+            <item android:drawable="@drawable/ic_kebab" />
+        </layer-list>
+    </item>
+    <item android:drawable="@drawable/ic_kebab_gray" />
+</selector>

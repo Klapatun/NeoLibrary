@@ -1,5 +1,6 @@
 package com.example.mylibrary.util;
 
+import android.app.Activity;
 import android.content.ComponentName;
 import android.content.Context;
 import android.content.Intent;
@@ -21,6 +22,23 @@ import java.util.Locale;
  */
 public final class Openers {
 
+    /**
+     * The three outcomes of an open attempt. The shared "is the file still on disk?
+     * is there a viewer?" logic lives in {@link #openFile(File, Activity,
+     * OpenOutcome)} and reports through these callbacks; the caller keeps its own
+     * catalog side effects (markRead, notifyChange) and reacts to the outcome.
+     */
+    public interface OpenOutcome {
+        /** The viewer intent was launched — the book is being opened in the reader. */
+        void onLaunched();
+
+        /** The book's file is gone from disk. */
+        void onMissingFile();
+
+        /** No app can open this file type (no viewer installed / resolvable). */
+        void onNoViewer();
+    }
+
     private Openers() {}
 
     /** Returns an ACTION_VIEW intent to open {@code file} in any capable reader. */
@@ -35,6 +53,27 @@ public final class Openers {
         }
         i.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
         return i;
+    }
+
+    /**
+     * Opens {@code file} in a reader from {@code activity}, reporting what happened
+     * through {@code outcome} instead of throwing. Both entries — the list's
+     * "Open this book?" confirmation and the detail screen's Open button — go
+     * through here, so "is the file there? is there a viewer?" is answered in one
+     * place only. The catalog side effects (markRead, notifyChange) stay with the
+     * caller: it owns the database.
+     */
+    public static void openFile(File file, Activity activity, OpenOutcome outcome) {
+        if (!file.exists()) {
+            outcome.onMissingFile();
+            return;
+        }
+        try {
+            activity.startActivity(openFile(file));
+            outcome.onLaunched();
+        } catch (Exception e) {
+            outcome.onNoViewer();
+        }
     }
 
     /**

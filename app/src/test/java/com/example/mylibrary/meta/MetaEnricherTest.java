@@ -41,7 +41,9 @@ import java.util.List;
 @Config(sdk = 19)
 public class MetaEnricherTest {
 
-    private static final long WAIT_MS = 15000;
+    // Same 30s documented background-starvation bound as in MainActivityTest
+    // (the enricher worker is an AsyncTask on the shared pool).
+    private static final long WAIT_MS = 30000;
 
     @Rule
     public TemporaryFolder folder = new TemporaryFolder();

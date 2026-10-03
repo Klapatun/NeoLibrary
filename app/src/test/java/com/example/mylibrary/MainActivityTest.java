@@ -10,8 +10,10 @@ import static org.robolectric.Shadows.shadowOf;
 import android.app.Activity;
 import android.content.Intent;
 import android.content.Context;
+import android.database.ContentObserver;
 import android.net.Uri;
 import android.os.Bundle;
+import android.os.Handler;
 import android.os.Looper;
 import android.provider.OpenableColumns;
 import android.view.View;
@@ -22,6 +24,7 @@ import android.widget.Spinner;
 import android.widget.TextView;
 
 import com.example.mylibrary.db.BookDatabase;
+import com.example.mylibrary.db.BookProvider;
 import com.example.mylibrary.model.Book;
 import com.example.mylibrary.scan.Formats;
 import com.example.mylibrary.testutil.TestFixtures;
@@ -38,6 +41,7 @@ import org.robolectric.android.controller.ActivityController;
 import org.robolectric.annotation.Config;
 import org.robolectric.fakes.BaseCursor;
 import org.robolectric.shadows.ShadowContentResolver;
+import org.robolectric.shadows.ShadowDialog;
 import org.robolectric.shadows.ShadowEnvironment;
 import org.robolectric.shadows.ShadowLooper;
 import org.robolectric.shadows.ShadowToast;
@@ -90,7 +94,13 @@ public class MainActivityTest {
         return c.setup().get();
     }
 
-    private static final long WAIT_MS = 15000;
+    // The project's own flake notes document background-thread starvation of up
+    // to ~30s on a loaded machine (Android Studio + Chrome + Steam): all the
+    // app's background work runs on the shared AsyncTask pool, whose threads
+    // simply do not get scheduled. The wait windows cover that documented worst
+    // case; under heavier, ad-hoc load a healthy test can still lose (the
+    // victims rotate) — re-run the failing test in isolation before acting.
+    private static final long WAIT_MS = 30000;
 
     /** Waits until the (background) scan has upserted at least {@code expected} books. */
     private void awaitCatalogSize(int expected) throws InterruptedException {
@@ -102,6 +112,8 @@ public class MainActivityTest {
             Thread.sleep(10);
         }
         looper.idle();
+        assertTrue("timed out waiting for the catalog to hold " + expected
+                + " book(s), got " + db.all(null).size(), db.all(null).size() >= expected);
     }
 
     /** Waits until the visible adapter shows exactly {@code expected} rows. The cursor
@@ -116,6 +128,9 @@ public class MainActivityTest {
             Thread.sleep(10);
         }
         looper.idle();
+        assertTrue("timed out waiting for the adapter to show " + expected
+                + " row(s), got " + list.getAdapter().getCount(),
+                list.getAdapter().getCount() == expected);
     }
 
     /** A lazily-evaluated condition, so the wait loop can re-check it every round. */
@@ -379,39 +394,317 @@ public class MainActivityTest {
     }
 
     // ------------------------------------------------------------------
-    // row click -> details
+    // tap -> open confirmation (Open / Cancel)
     // ------------------------------------------------------------------
 
+    /** Finds a book in the catalog by the tail of its path, or null. */
+    private Book findBook(String pathSuffix) {
+        for (Book b : db.all(null)) {
+            if (b.path.endsWith(pathSuffix)) return b;
+        }
+        return null;
+    }
+
+    /** The adapter position of {@code target}, or -1. */
+    private int positionOf(BookAdapter adapter, Book target) {
+        for (int i = 0; i < adapter.getCount(); i++) {
+            Book item = adapter.getItem(i);
+            if (item != null && item.id == target.id) {
+                return i;
+            }
+        }
+        return -1;
+    }
+
+    /** The laid-out row view of adapter position {@code pos}: ListView materializes
+     *  its rows on a layout pass, so pump the main looper until the row exists. */
+    private View rowAt(ListView list, int pos) throws InterruptedException {
+        View row = null;
+        long deadline = System.currentTimeMillis() + WAIT_MS;
+        while (System.currentTimeMillis() < deadline && row == null) {
+            shadowOf(Looper.getMainLooper()).idle();
+            int index = pos - list.getFirstVisiblePosition();
+            if (index >= 0 && index < list.getChildCount()) {
+                row = list.getChildAt(index);
+            } else {
+                Thread.sleep(10);
+            }
+        }
+        assertNotNull("the row view must be laid out", row);
+        return row;
+    }
+
+    /**
+     * Taps the row of {@code target} in the visible list. The tap goes through the
+     * row view's own OnClickListener (BookAdapter binds it, because a row with a
+     * clickable kebab never fires ListView.onItemClick) — the same listener a real
+     * finger triggers.
+     */
+    private void tapBook(ListView list, Book target) throws InterruptedException {
+        BookAdapter adapter = (BookAdapter) list.getAdapter();
+        int pos = positionOf(adapter, target);
+        assertTrue("the book must be in the visible list", pos >= 0);
+        rowAt(list, pos).performClick();
+    }
+
+    /** Opens the kebab menu for the book at adapter position {@code pos} (row view
+     *  built by the adapter, kebab click) and returns the popup — so the test can
+     *  pick an item exactly like a tap on the popup window would. */
+    private android.widget.PopupMenu openKebabFor(ListView list, int pos)
+            throws InterruptedException {
+        BookAdapter adapter = (BookAdapter) list.getAdapter();
+        rowAt(list, pos).findViewById(R.id.book_more).performClick();
+        android.widget.PopupMenu menu = adapter.getLastPopupMenu();
+        assertNotNull("the kebab click must open the menu", menu);
+        return menu;
+    }
+
+    /** Records whether the observer fired (for one registered URI). */
+    private static final class FiringObserver extends ContentObserver {
+        private boolean fired;
+        FiringObserver() {
+            super(new Handler(Looper.getMainLooper()));
+        }
+        @Override public void onChange(boolean selfChange, Uri uri) {
+            fired = true;
+        }
+    }
+
     @Test
-    public void clickingABookOpensDetailsWithItsId() throws Exception {
+    public void tappingABookShowsTheOpenConfirmationAndStartsNothing() throws Exception {
         TestFixtures.writeText(new File(storage, "story_a.txt"), "alpha\n");
         TestFixtures.writeText(new File(storage, "story_b.txt"), "beta\n");
 
         MainActivity a = launchMain();
         awaitCatalogSize(2);
+        ListView list = a.findViewById(R.id.book_list);
+        awaitAdapterCount(list, 2);
 
-        Book target = null;
-        for (Book b : db.all(null)) {
-            if (b.path.endsWith("story_a.txt")) target = b;
-        }
+        Book target = findBook("story_a.txt");
         assertNotNull(target);
+        tapBook(list, target);
 
+        // The tap must not open anything — it only asks first.
+        android.app.Dialog d = ShadowDialog.getLatestDialog();
+        assertNotNull("the tap must show the confirmation dialog", d);
+        // The framework Dialog/AlertDialog (API 19) have no public title/message
+        // getters — read the window title via the shadow and the message via the
+        // standard alert message view (android.R.id.message).
+        assertEquals(a.getString(R.string.open_confirm_title),
+                shadowOf(d).getTitle());
+        TextView msgView = d.getWindow().getDecorView().findViewById(android.R.id.message);
+        assertNotNull("the dialog must carry a message view", msgView);
+        String msg = msgView.getText().toString();
+        assertTrue("the dialog must name the book: " + msg, msg.contains(target.title));
+        assertNull("no intent may be started by the tap",
+                shadowOf(a).getNextStartedActivity());
+    }
+
+    @Test
+    public void confirmingTheOpenConfirmationLaunchesTheReaderAndMarksTheBookRead()
+            throws Exception {
+        TestFixtures.writeText(new File(storage, "story_a.txt"), "alpha\n");
+        TestFixtures.writeText(new File(storage, "story_b.txt"), "beta\n");
+
+        MainActivity a = launchMain();
+        awaitCatalogSize(2);
+        ListView list = a.findViewById(R.id.book_list);
+        awaitAdapterCount(list, 2);
+
+        Book target = findBook("story_a.txt");
+        assertNotNull(target);
+        tapBook(list, target);
+        android.app.Dialog d = ShadowDialog.getLatestDialog();
+        assertNotNull("the tap must show the confirmation dialog", d);
+
+        // "Open" — the positive button (the standard alert button-1 view).
+        shadowOf(d).clickOn(android.R.id.button1);
+        // The paused main looper must run: the activity launch is recorded when its
+        // handler message is processed (Robolectric PAUSED-looper mode).
+        shadowOf(Looper.getMainLooper()).idle();
+
+        Intent started = shadowOf(a).getNextStartedActivity();
+        assertNotNull("the Open button must start the viewer intent", started);
+        assertEquals(Intent.ACTION_VIEW, started.getAction());
+        assertEquals("text/plain", started.getType());
+        assertEquals(Uri.fromFile(new File(target.path)), started.getData());
+
+        // The markRead side effect must have hit the catalog.
+        android.database.Cursor c = db.getReadableDatabase().rawQuery(
+                "SELECT last_read FROM books WHERE _id=?",
+                new String[]{String.valueOf(target.id)});
+        assertTrue("row must exist", c.moveToFirst());
+        assertTrue("last_read must be set", c.getLong(0) > 0);
+    }
+
+    @Test
+    public void cancellingTheOpenConfirmationStartsNothingAndDoesNotMarkRead()
+            throws Exception {
+        TestFixtures.writeText(new File(storage, "story_a.txt"), "alpha\n");
+        TestFixtures.writeText(new File(storage, "story_b.txt"), "beta\n");
+
+        MainActivity a = launchMain();
+        awaitCatalogSize(2);
+        ListView list = a.findViewById(R.id.book_list);
+        awaitAdapterCount(list, 2);
+
+        Book target = findBook("story_a.txt");
+        assertNotNull(target);
+        tapBook(list, target);
+        android.app.Dialog d = ShadowDialog.getLatestDialog();
+        assertNotNull("the tap must show the confirmation dialog", d);
+
+        // "Cancel" — the negative button (the standard alert button-2 view).
+        shadowOf(d).clickOn(android.R.id.button2);
+        shadowOf(Looper.getMainLooper()).idle();
+
+        assertFalse("the dialog must be dismissed", d.isShowing());
+        assertNull("no intent may be started", shadowOf(a).getNextStartedActivity());
+
+        android.database.Cursor c = db.getReadableDatabase().rawQuery(
+                "SELECT last_read FROM books WHERE _id=?",
+                new String[]{String.valueOf(target.id)});
+        assertTrue("row must exist", c.moveToFirst());
+        assertEquals("last_read must stay 0", 0L, c.getLong(0));
+    }
+
+    // ------------------------------------------------------------------
+    // kebab end-to-end (through the real screen: row -> kebab -> popup pick)
+    // ------------------------------------------------------------------
+
+    @Test
+    public void kebabDetailsOpensTheDetailScreenForThatBook() throws Exception {
+        TestFixtures.writeText(new File(storage, "story_a.txt"), "alpha\n");
+        TestFixtures.writeText(new File(storage, "story_b.txt"), "beta\n");
+
+        MainActivity a = launchMain();
+        awaitCatalogSize(2);
         ListView list = a.findViewById(R.id.book_list);
         awaitAdapterCount(list, 2);
         BookAdapter adapter = (BookAdapter) list.getAdapter();
-        int pos = -1;
-        for (int i = 0; i < adapter.getCount(); i++) {
-            Book item = adapter.getItem(i);
-            if (item != null && item.id == target.id) pos = i;
-        }
-        assertTrue("target must be in the adapter", pos >= 0);
 
-        list.performItemClick(new View(a), pos, adapter.getItemId(pos));
+        Book target = findBook("story_a.txt");
+        assertNotNull(target);
+        int pos = positionOf(adapter, target);
+        assertTrue("the book must be in the visible list", pos >= 0);
+
+        android.widget.PopupMenu menu = openKebabFor(list, pos);
+        // The framework MenuItem has no public click method — performIdentifierAction
+        // goes through the same path a real tap on the popup item would.
+        menu.getMenu().performIdentifierAction(R.id.book_menu_details, 0);
+        // The paused main looper must run before the launch record is readable.
+        shadowOf(Looper.getMainLooper()).idle();
 
         Intent started = shadowOf(a).getNextStartedActivity();
-        assertNotNull(started);
+        assertNotNull("the Details pick must start the detail screen", started);
         assertEquals(DetailActivity.class.getName(), started.getComponent().getClassName());
         assertEquals(target.id, started.getLongExtra(DetailActivity.EXTRA_BOOK_ID, -1));
+    }
+
+    @Test
+    public void kebabEditMetadataOpensTheEditorWithTheBookParcel() throws Exception {
+        TestFixtures.writeText(new File(storage, "story_a.txt"), "alpha\n");
+        TestFixtures.writeText(new File(storage, "story_b.txt"), "beta\n");
+
+        MainActivity a = launchMain();
+        awaitCatalogSize(2);
+        ListView list = a.findViewById(R.id.book_list);
+        awaitAdapterCount(list, 2);
+        BookAdapter adapter = (BookAdapter) list.getAdapter();
+
+        Book target = findBook("story_a.txt");
+        assertNotNull(target);
+        int pos = positionOf(adapter, target);
+        assertTrue("the book must be in the visible list", pos >= 0);
+
+        android.widget.PopupMenu menu = openKebabFor(list, pos);
+        menu.getMenu().performIdentifierAction(R.id.book_menu_edit, 0);
+        shadowOf(Looper.getMainLooper()).idle();
+
+        Intent started = shadowOf(a).getNextStartedActivity();
+        assertNotNull("the Edit metadata pick must start the editor", started);
+        assertEquals(EditMetaActivity.class.getName(), started.getComponent().getClassName());
+        Book parcel = started.getParcelableExtra(EditMetaActivity.EXTRA_BOOK);
+        assertNotNull("the editor must receive the book parcel", parcel);
+        assertEquals(target.id, parcel.id);
+        assertEquals(target.path, parcel.path);
+        assertEquals(target.title, parcel.title);
+    }
+
+    @Test
+    public void kebabRemoveAsksForConfirmationAndRemovesTheRowKeepingTheFile()
+            throws Exception {
+        TestFixtures.writeText(new File(storage, "story_a.txt"), "alpha\n");
+        TestFixtures.writeText(new File(storage, "story_b.txt"), "beta\n");
+
+        MainActivity a = launchMain();
+        awaitCatalogSize(2);
+        ListView list = a.findViewById(R.id.book_list);
+        awaitAdapterCount(list, 2);
+        BookAdapter adapter = (BookAdapter) list.getAdapter();
+
+        Book target = findBook("story_a.txt");
+        assertNotNull(target);
+        File targetFile = new File(target.path);
+        assertTrue("precondition: the file is on disk", targetFile.exists());
+        int pos = positionOf(adapter, target);
+        assertTrue("the book must be in the visible list", pos >= 0);
+
+        FiringObserver onBooks = new FiringObserver();
+        FiringObserver onRecent = new FiringObserver();
+        app.getContentResolver().registerContentObserver(BookProvider.CONTENT_URI, true, onBooks);
+        app.getContentResolver().registerContentObserver(BookProvider.RECENT_URI, true, onRecent);
+
+        android.widget.PopupMenu menu = openKebabFor(list, pos);
+        menu.getMenu().performIdentifierAction(R.id.book_menu_remove, 0);
+
+        // The Remove pick must ask for confirmation (the same texts the old
+        // detail-screen dialog had, plus the "the file stays" note).
+        android.app.Dialog d = ShadowDialog.getLatestDialog();
+        assertNotNull("the Remove pick must ask for confirmation", d);
+        assertEquals(a.getString(R.string.delete), shadowOf(d).getTitle());
+        TextView msgView = d.getWindow().getDecorView().findViewById(android.R.id.message);
+        assertNotNull("the dialog must carry a message view", msgView);
+        String msg = msgView.getText().toString();
+        assertTrue("the message must be the removal confirmation: " + msg,
+                msg.contains(a.getString(R.string.delete_confirm)));
+        assertTrue("the message must note the file stays: " + msg,
+                msg.contains(a.getString(R.string.remove_file_note)));
+
+        // Confirm ("Remove" — the positive button, the standard alert button-1 view).
+        shadowOf(d).clickOn(android.R.id.button1);
+        shadowOf(Looper.getMainLooper()).idle();
+
+        // The row is gone from the catalog (the delete ran synchronously above).
+        boolean stillThere = false;
+        for (Book b : db.all(null)) {
+            if (b.id == target.id) stillThere = true;
+        }
+        assertFalse("the book must be removed from the catalog", stillThere);
+
+        // ...and from the visible list: the direct rebind removes the row
+        // immediately, but on a loaded machine the loader may still deliver a
+        // stale cursor in the gap, so wait for the list to settle on the one book
+        // that remains (the same convergence wait the other list tests use).
+        final BookAdapter adapterRef = adapter;
+        final long removedId = target.id;
+        awaitCondition("the list to settle on the remaining book after the remove",
+                new Cond() {
+                    public boolean holds() {
+                        Book first = adapterRef.getItem(0);
+                        return adapterRef.getCount() == 1
+                                && first != null && first.id != removedId;
+                    }
+                });
+
+        // The file itself must not be touched.
+        assertTrue("the file must stay on disk", targetFile.exists());
+
+        // Both catalog cursors must have been notified.
+        assertTrue("the all-books cursor must be notified", onBooks.fired);
+        assertTrue("the recently-read cursor must be notified", onRecent.fired);
+        app.getContentResolver().unregisterContentObserver(onBooks);
+        app.getContentResolver().unregisterContentObserver(onRecent);
     }
 
     // ------------------------------------------------------------------
