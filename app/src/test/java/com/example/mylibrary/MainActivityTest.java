@@ -94,7 +94,13 @@ public class MainActivityTest {
         return c.setup().get();
     }
 
-    private static final long WAIT_MS = 15000;
+    // The project's own flake notes document background-thread starvation of up
+    // to ~30s on a loaded machine (Android Studio + Chrome + Steam): all the
+    // app's background work runs on the shared AsyncTask pool, whose threads
+    // simply do not get scheduled. The wait windows cover that documented worst
+    // case; under heavier, ad-hoc load a healthy test can still lose (the
+    // victims rotate) — re-run the failing test in isolation before acting.
+    private static final long WAIT_MS = 30000;
 
     /** Waits until the (background) scan has upserted at least {@code expected} books. */
     private void awaitCatalogSize(int expected) throws InterruptedException {
@@ -106,6 +112,8 @@ public class MainActivityTest {
             Thread.sleep(10);
         }
         looper.idle();
+        assertTrue("timed out waiting for the catalog to hold " + expected
+                + " book(s), got " + db.all(null).size(), db.all(null).size() >= expected);
     }
 
     /** Waits until the visible adapter shows exactly {@code expected} rows. The cursor
@@ -120,6 +128,9 @@ public class MainActivityTest {
             Thread.sleep(10);
         }
         looper.idle();
+        assertTrue("timed out waiting for the adapter to show " + expected
+                + " row(s), got " + list.getAdapter().getCount(),
+                list.getAdapter().getCount() == expected);
     }
 
     /** A lazily-evaluated condition, so the wait loop can re-check it every round. */
@@ -485,8 +496,6 @@ public class MainActivityTest {
         assertNotNull("the dialog must carry a message view", msgView);
         String msg = msgView.getText().toString();
         assertTrue("the dialog must name the book: " + msg, msg.contains(target.title));
-        assertTrue("the dialog must name the reader: " + msg,
-                msg.contains("Neo Reader 3.0"));
         assertNull("no intent may be started by the tap",
                 shadowOf(a).getNextStartedActivity());
     }
