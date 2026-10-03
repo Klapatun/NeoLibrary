@@ -66,11 +66,11 @@ public class BookAdapter extends CursorAdapter {
     private PopupMenu lastPopupMenu;
 
     public BookAdapter(Context context, Cursor c) {
-        this(context, c, null);
+        this(context, c, (BookMenuActions) null);
     }
 
     public BookAdapter(Context context, Cursor c, BookMenuActions menuActions) {
-        super(context, c);
+        super(context, c, 0);
         this.menuActions = menuActions;
         inflater = LayoutInflater.from(context);
     }
@@ -133,6 +133,33 @@ public class BookAdapter extends CursorAdapter {
             bindList(view, b);
         }
         bindKebab(view, b);
+        bindRowClick(view, b);
+    }
+
+    /**
+     * Row-level click. Attached to the itemView instead of relying on
+     * ListView.onItemClick because the row contains a clickable ImageButton
+     * (book_more): ListView refuses to fire onItemClick for any row that has
+     * a clickable descendant, so the row click would be dead otherwise.
+     *
+     * <p>The kebab has its own OnClickListener, so a tap on it is consumed
+     * there and never reaches this listener — the two clicks stay independent.</p>
+     */
+    private void bindRowClick(View view, final Book b) {
+        view.setOnClickListener(new View.OnClickListener() {
+            @Override public void onClick(View row) {
+                if (menuActions != null) {
+                    menuActions.onDetails(b);
+                }
+            }
+        });
+        // Optional: keep long-press as a no-op so the framework doesn't try to
+        // open a context menu (harmless, but keeps behaviour predictable).
+        view.setOnLongClickListener(new View.OnLongClickListener() {
+            @Override public boolean onLongClick(View row) {
+                return false;
+            }
+        });
     }
 
     // ------------------------------------------------------------------

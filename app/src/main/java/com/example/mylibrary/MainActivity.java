@@ -119,18 +119,6 @@ public class MainActivity extends Activity
         adapter = new BookAdapter(this, db.cursorAll(null), this);
         list.setAdapter(adapter);
 
-        list.setOnItemClickListener(new AdapterView.OnItemClickListener() {
-            @Override public void onItemClick(AdapterView<?> p, View v, int pos, long id) {
-                Book b = adapter.getItem(pos);
-                if (b != null) openDetails(b.id);
-            }
-        });
-        grid.setOnItemClickListener(new AdapterView.OnItemClickListener() {
-            @Override public void onItemClick(AdapterView<?> p, View v, int pos, long id) {
-                Book b = adapter.getItem(pos);
-                if (b != null) openDetails(b.id);
-            }
-        });
         toggleView.setOnClickListener(new View.OnClickListener() {
             @Override public void onClick(View v) {
                 setViewMode(viewMode == BookAdapter.MODE_LIST ? BookAdapter.MODE_GRID : BookAdapter.MODE_LIST);
