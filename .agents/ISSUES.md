@@ -268,3 +268,56 @@ final class ZipUtil {
   и миграционный тест через `PRAGMA user_version` — при апгрейде Robolectric (сейчас
   4.12.2) перепроверить; `SQLiteFactory`/`SQLiteConnection` — hidden API, в тестах
   не используются намеренно.
+
+---
+
+## [REFAC] Kebab-рефакторинг
+
+**Создано:** 2026-10-03. Локальный журнал — `tmp/REFACTORING.md` (gitignored).
+Коммиты ветки: `3772d74` (шаг 1, kebab) → `980e406` (шаг 2, подтверждение открытия)
+→ `91be6e0` (фикс Remove-ребайнда) → тесты шага 3. Сьют 160/160,
+lint 0 errors.
+
+### 8.1 Паттерн прямого ребайнда после собственной записи в каталог — [x] (знание)
+- **Где:** `MainActivity` — `startScan` (rescan), `importToLibrary` (import),
+  `confirmRemove` (Remove из кебаба).
+- **Суть:** на API 19 ContentObserver CursorLoader'а может потеряться после цикла
+  cancel/restart лоадера (задокументировано в комментарии `startScan`). Если
+  запись в каталог (upsert/delete) объявлять только через `notifyChange`, список
+  может не обновиться. Паттерн: та ветка, которая сама записала, сама делает
+  `adapter.changeCursor(currentCatalogCursor()) + updateEmptyView()` (синхронно, в
+  `onPostExecute`/хандлере кнопки подтверждения), а `notifyChange`/`notifyChangeAll`
+  уходит «для остальных слушателей» (Recently read и т.п.). Реализовано во всех трёх
+  путях: rescan — исходно, import — `30f2088`, Remove — `91be6e0`.
+
+### 8.2 Тестовый хук `BookAdapter.getLastPopupMenu()` — [ ] (низкий)
+- **Где:** `BookAdapter` (prod-код): package-private getter на pop-up, собранный
+  `showBookMenu` — юнит-тестам нужно выбирать пункты меню без окна popup.
+- **Доработка:** вынести шов в DI (конструктор/сеттер) или перейти на реальное
+  нажатие / `ShadowPopupMenu`, когда Robolectric позволит.
+
+### 8.3 Дублирование диалога «No reader found» — [ ] (низкий)
+- **Где:** `showNoViewer()` в `MainActivity` и `DetailActivity`.
+- **Суть:** логика «файл есть? читалка есть?» теперь общая (`Openers.openFile` +
+  `OpenOutcome`, строки `no_viewer_title`/`no_viewer_message`/`ok` общие), но сам
+  AlertDialog написан в двух местах.
+- **Доработка:** вынести `showNoViewer` в `Openers` (нужен только `Context`)
+  либо в маленький общий хелпер.
+
+### 8.4 Подводные камни Robolectric в этом сьите (4.12.2, sdk 19) — [x] (знание)
+- `ShadowActivity.getNextStartedActivity()` **деструктивна** (списывает интент из
+  очереди): второй вызов подряд получит null — в тесте читать один раз и
+  использовать сохранённый объект.
+- `ShadowDialog.clickOn(viewId)` принимает **id вью** (`android.R.id.button1` /
+  `button2`), а НЕ константы `AlertDialog.BUTTON_*` (по ним — NPE на
+  `Dialog.findViewById`).
+- В режиме PAUSED-лоопера запись запущенного интента откладывается до
+  `shadowOf(Looper.getMainLooper()).idle()` — после клика по кнопке диалога
+  обязательно idle, и только потом `getNextStartedActivity()`.
+- API 19: у `Dialog`/`AlertDialog` НЕТ публичных геттеров title/message.
+  Title — `shadowOf(dialog).getTitle()` (window title); message —
+  `dialog.getWindow().getDecorView().findViewById(android.R.id.message)`.
+- Загруженная машина (Android Studio + Chrome + Steam) может ронять случайный
+  тест по 15-30-с таймауту из-за голода фоновых тредов (жертва менялась:
+  `filterSpinner...`, `kebabDetails...`, `backgroundEnricher...`); изолированный
+  прогон — секунды. Сначала перепроверять изолированно, потом чинить.
