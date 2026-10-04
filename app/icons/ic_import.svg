@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Source of res/drawable/ic_import.png. "Import a book into the library":
+     a down arrow into a tray. Regenerate the PNG with tools/generate-icons.ps1. -->
+<svg xmlns="http://www.w3.org/2000/svg" width="48" height="48" viewBox="0 0 48 48">
+    <g fill="none" stroke="#fff" stroke-width="4" stroke-linecap="round" stroke-linejoin="round">
+        <line x1="24" y1="6" x2="24" y2="30"/>
+        <line x1="14" y1="20" x2="24" y2="30"/>
+        <line x1="34" y1="20" x2="24" y2="30"/>
+        <line x1="10" y1="34" x2="10" y2="42"/>
+        <line x1="10" y1="42" x2="38" y2="42"/>
+        <line x1="38" y1="42" x2="38" y2="34"/>
+    </g>
+</svg>

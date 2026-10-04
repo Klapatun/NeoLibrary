@@ -1,0 +1,15 @@
+D:\Projects\myLibrary\tools\SvgToPng\bin\Debug\net9.0-windows\SvgToPng.exe
+D:\Projects\myLibrary\tools\SvgToPng\bin\Debug\net9.0-windows\SvgToPng.deps.json
+D:\Projects\myLibrary\tools\SvgToPng\bin\Debug\net9.0-windows\SvgToPng.runtimeconfig.json
+D:\Projects\myLibrary\tools\SvgToPng\bin\Debug\net9.0-windows\SvgToPng.dll
+D:\Projects\myLibrary\tools\SvgToPng\bin\Debug\net9.0-windows\SvgToPng.pdb
+D:\Projects\myLibrary\tools\SvgToPng\obj\Debug\net9.0-windows\SvgToPng.GeneratedMSBuildEditorConfig.editorconfig
+D:\Projects\myLibrary\tools\SvgToPng\obj\Debug\net9.0-windows\SvgToPng.AssemblyInfoInputs.cache
+D:\Projects\myLibrary\tools\SvgToPng\obj\Debug\net9.0-windows\SvgToPng.AssemblyInfo.cs
+D:\Projects\myLibrary\tools\SvgToPng\obj\Debug\net9.0-windows\SvgToPng.csproj.CoreCompileInputs.cache
+D:\Projects\myLibrary\tools\SvgToPng\obj\Debug\net9.0-windows\SvgToPng.sourcelink.json
+D:\Projects\myLibrary\tools\SvgToPng\obj\Debug\net9.0-windows\SvgToPng.dll
+D:\Projects\myLibrary\tools\SvgToPng\obj\Debug\net9.0-windows\refint\SvgToPng.dll
+D:\Projects\myLibrary\tools\SvgToPng\obj\Debug\net9.0-windows\SvgToPng.pdb
+D:\Projects\myLibrary\tools\SvgToPng\obj\Debug\net9.0-windows\SvgToPng.genruntimeconfig.cache
+D:\Projects\myLibrary\tools\SvgToPng\obj\Debug\net9.0-windows\ref\SvgToPng.dll

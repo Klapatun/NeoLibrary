@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Source of res/drawable/ic_refresh.png. "Rescan": a 270-degree circular arrow
+     (gap on the right, arrowhead at top-right pointing clockwise).
+     Regenerate the PNG with tools/generate-icons.ps1. -->
+<svg xmlns="http://www.w3.org/2000/svg" width="48" height="48" viewBox="0 0 48 48">
+    <g fill="none" stroke="#fff" stroke-width="4" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M 33.9 33.9 A 14 14 0 1 1 33.9 14.1"/>
+        <line x1="33.9" y1="14.1" x2="31.4" y2="3.8"/>
+        <line x1="33.9" y1="14.1" x2="23.6" y2="11.6"/>
+    </g>
+</svg>

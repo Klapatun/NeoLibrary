@@ -18,28 +18,61 @@
             android:paddingLeft="16dp"
             android:paddingRight="8dp">
 
+            <!-- The title is pinned to the start and bounded by the action row on
+                 its right (one-way only: the row stays alignParentEnd, so there is
+                 no circular dependency) — a long localized title can never run
+                 under the buttons. -->
             <TextView
                 android:id="@+id/toolbar_title"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
                 android:layout_alignParentStart="true"
                 android:layout_centerVertical="true"
+                android:layout_toStartOf="@id/header_actions"
                 android:text="@string/app_name"
                 android:textColor="@color/white"
                 android:textSize="20sp"
                 android:paddingTop="16dp"
                 android:paddingBottom="8dp" />
 
-            <ImageButton
-                android:id="@+id/toggle_view"
+            <!-- Header actions in one row: import, rescan, then the list/tiles
+                 toggle (rightmost, as before). All icons are 48x48 white PNGs on
+                 the indigo bar; each button keeps the selectable ripple. -->
+            <LinearLayout
+                android:id="@+id/header_actions"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
                 android:layout_alignParentEnd="true"
                 android:layout_centerVertical="true"
-                android:src="@drawable/ic_grid"
-                android:background="?android:attr/selectableItemBackground"
-                android:contentDescription="@string/view_grid"
-                android:padding="8dp" />
+                android:orientation="horizontal">
+
+                <ImageButton
+                    android:id="@+id/btn_import"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:src="@drawable/ic_import"
+                    android:background="?android:attr/selectableItemBackground"
+                    android:contentDescription="@string/menu_import"
+                    android:padding="8dp" />
+
+                <ImageButton
+                    android:id="@+id/btn_rescan"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:src="@drawable/ic_refresh"
+                    android:background="?android:attr/selectableItemBackground"
+                    android:contentDescription="@string/menu_refresh"
+                    android:padding="8dp" />
+
+                <ImageButton
+                    android:id="@+id/toggle_view"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:src="@drawable/ic_grid"
+                    android:background="?android:attr/selectableItemBackground"
+                    android:contentDescription="@string/view_grid"
+                    android:padding="8dp" />
+            </LinearLayout>
         </RelativeLayout>
 
         <Spinner

@@ -291,10 +291,10 @@ public class MainActivityTest {
         TestFixtures.writeText(new File(storage, "story_a.txt"), "alpha\n");
         TestFixtures.writeText(new File(storage, "story_b.txt"), "beta\n");
 
-        // ...and picks "Rescan" from the options menu. The menu item's handler
-        // (onOptionsItemSelected) calls startScan() 1:1, so drive that same entry
-        // point (reflection: it is private, and the internal MenuBuilder is not on
-        // the compile classpath).
+        // ...and taps "Rescan" in the indigo header. The button's listener calls
+        // startScan() 1:1, so drive that same entry point (reflection: it is
+        // private, and the listener is an inline anonymous class not reachable
+        // from the test).
         java.lang.reflect.Method rescan = MainActivity.class.getDeclaredMethod("startScan");
         rescan.setAccessible(true);
         rescan.invoke(a);
