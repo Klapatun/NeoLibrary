@@ -1,8 +1,9 @@
 # Regenerates the PNG header icons in app/src/main/res/drawable from their SVG
 # sources in app/icons.
 #
-# Requirements: .NET 9 SDK on PATH (the tool uses the OS's built-in SVG decoder
-# and has zero NuGet dependencies, so it works offline).
+# Requirements: .NET SDK on PATH. The rasterizer (tools/SvgToPng) is a small
+# self-contained C# program with zero NuGet dependencies, so the first build
+# and every run work offline.
 #
 # The generated PNGs are committed to the repository: the Android build itself
 # never needs this tool, it stays 100% offline.

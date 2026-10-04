@@ -1,10 +1,9 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
-  <!-- Tiny offline SVG->PNG rasterizer for the app's header icons.
-       Decoding goes through WIC (System.Drawing on .NET uses the Windows
-       Imaging Component under the hood, which ships a built-in SVG codec) -
-       no third-party codec or NuGet package, so the "no extra deps" rule
-       and offline builds hold for the tooling as well. -->
+  <!-- Tiny offline SVG -> PNG rasterizer for the app's header icons.
+       The renderer is self-contained (System.Drawing / GDI+ only, no OS
+       image codecs) and has zero NuGet dependencies, so the "no extra
+       deps" rule and offline builds hold for the tooling as well. -->
   <PropertyGroup>
     <OutputType>Exe</OutputType>
     <TargetFramework>net9.0-windows</TargetFramework>
@@ -16,6 +15,7 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <!-- Pulls in System.Drawing.Common (GDI+) from the installed framework. -->
     <FrameworkReference Include="Microsoft.WindowsDesktop.App" />
   </ItemGroup>
 

@@ -1,381 +1,436 @@
-// SvgToPng - renders an SVG icon to a fixed-size transparent PNG.
+// SvgToPng - renders an SVG icon to a transparent PNG.
 //
 // Usage:  SvgToPng <input.svg> <output.png> [size]
+//         SvgToPng <input.svg> --dump          (print the parsed element tree)
 //
-// A small, dependency-free rasterizer for the practical SVG subset the app's
-// icon sources use. No third-party packages and no OS codecs (the built-in
-// WIC SVG path crashes on some Windows builds), so the tool builds and runs
-// offline anywhere a .NET SDK is present.
+// A small, dependency-free rasterizer covering the practical SVG subset the
+// app's icon sources use. It deliberately does not use the OS image codecs:
+// the built-in WIC SVG path crashes (Out of memory) on some Windows builds,
+// and a third-party rasterizer would break the project's "no extra deps"
+// rule. The tool builds and runs offline anywhere a .NET SDK is installed.
 //
-// Supported:
+// Supported markup:
 //   <svg width height viewBox>
-//   <g>  (state grouping)
-//   presentation attrs: fill, stroke, stroke-width, stroke-linecap,
-//        stroke-linejoin, fill-opacity, stroke-opacity
-//        colors: "none", "white", "black", #rgb, #rrggbb
-//   <rect x y width height rx ry>
-//   <line x1 y1 x2 y2>
-//   <circle cx cy r>
-//   <ellipse cx cy rx ry>
-//   <path d="...">  commands: M m L l H h V v C c Q q S s T t A a Z z
+//   <g> element groups with inherited presentation attributes
+//   <rect x y width height rx ry>   <line x1 y1 x2 y2>
+//   <circle cx cy r>                 <ellipse cx cy rx ry>
+//   <path d="...">  commands M m L l H h V v C c Q q S s T t A a Z z
+//   colors: "none", CSS color names, #rgb, #rrggbb
 //
-// Everything else (transforms, gradients, <use>, text, filters, clip paths,
+// Anything else (transforms, gradients, <use>, <text>, filters, clip paths,
 // ...) makes the tool fail with a clear message instead of guessing.
 
+using System;
 using System.Collections.Generic;
 using System.Drawing;
 using System.Drawing.Drawing2D;
 using System.Drawing.Imaging;
 using System.Globalization;
-using System.Text.RegularExpressions;
+using System.IO;
 using System.Xml;
 
-if (args.Length < 2)
+internal static class Program
 {
-    Console.Error.WriteLine("usage: SvgToPng <input.svg> <output.png> [size]");
-    return 2;
-}
-
-string inPath = args[0];
-string outPath = args[1];
-int size = args.Length > 2 && int.TryParse(args[2], out int parsed) ? parsed : 48;
-
-// ---------------------------------------------------------------- parse ----
-
-XmlReaderSettings xs = new()
-{
-    IgnoreComments = true,
-    IgnoreWhitespace = true,
-    DtdConformance = DtdConformanceMode.Ignore,
-};
-
-Node root;
-using (XmlReader xr = XmlReader.Create(inPath, xs))
-{
-    root = ReadTree(xr);
-    if (root == null)
+    static int Main(string[] args)
     {
-        Console.Error.WriteLine("no elements found in " + inPath);
-        return 1;
-    }
-}
-
-float canvasW = F(root.A("width"), 48);
-float canvasH = F(root.A("height"), 48);
-float[] vb = ParseViewBox(root.A("viewBox"));
-float vbW = vb[2], vbH = vb[3];
-
-Renderer r = new();
-r.Render(root, canvasW, canvasH, vb);
-
-// ---------------------------------------------------------------- output ----
-
-using (Bitmap bmp = new((int)canvasW, (int)canvasH, PixelFormat.Format32bppArgb))
-{
-    using (Graphics g = Graphics.FromImage(bmp))
-    {
-        g.SmoothingMode = SmoothingMode.AntiAlias;
-        g.Clear(Color.Transparent);
-        // Map the viewBox onto the canvas (covers viewBox != width/height too).
-        g.TranslateTransform(vb[0], vb[1]);
-        g.ScaleTransform((float)canvasW / vbW, (float)canvasH / vbH);
-        g = g; // (no-op; keep the transformed graphics below)
-    }
-}
-
-// (rendering happens against the real bitmap below; the block above only
-//  validates the numbers)
-
-using (Bitmap bmp = new((int)canvasW, (int)canvasH, PixelFormat.Format32bppArgb))
-{
-    using (Graphics g = Graphics.FromImage(bmp))
-    {
-        g.SmoothingMode = SmoothingMode.AntiAlias;
-        g.Clear(Color.Transparent);
-        g.TranslateTransform(vb[0], vb[1]);
-        g.ScaleTransform((float)canvasW / vbW, (float)canvasH / vbH);
-        r.Render(g, root);
-    }
-    if (bmp.Width == size && bmp.Height == size)
-    {
-        bmp.Save(outPath, ImageFormat.Png);
-    }
-    else
-    {
-        using Bitmap canvas = new(size, size);
-        using Graphics g = Graphics.FromImage(canvas);
-        g.SmoothingMode = SmoothingMode.AntiAlias;
-        g.InterpolationMode = InterpolationMode.HighQualityBicubic;
-        g.PixelOffsetMode = PixelOffsetMode.Half;
-        g.DrawImage(bmp, 0, 0, size, size);
-        canvas.Save(outPath, ImageFormat.Png);
-    }
-}
-
-Console.WriteLine($"{System.IO.Path.GetFileName(inPath)} -> {outPath} ({size}x{size})");
-return 0;
-
-// --------------------------------------------------------------- helpers ----
-
-static Node ReadTree(XmlReader xr)
-{
-    Node current = null;
-    Node first = null;
-    while (xr.Read())
-    {
-        switch (xr.NodeType)
+        if (args.Length == 2 && args[1] == "--dump")
         {
-            case XmlNodeType.Element:
-                Node n = new(xr.LocalName, new Dictionary<string, string>());
-                while (xr.MoveToNextAttribute())
+            Dump(SvgParser.Parse(args[0]), 0);
+            return 0;
+        }
+
+        if (args.Length < 2)
+        {
+            Console.Error.WriteLine("usage: SvgToPng <input.svg> <output.png> [size]");
+            return 2;
+        }
+
+        string inPath = args[0];
+        string outPath = args[1];
+        int size = args.Length > 2 && int.TryParse(args[2], out int parsed) ? parsed : 48;
+
+        Node root;
+        try
+        {
+            root = SvgParser.Parse(inPath);
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine("parse error in " + inPath + ": " + ex.Message);
+            return 1;
+        }
+
+        float canvasW = Util.F(root.A("width"), 48);
+        float canvasH = Util.F(root.A("height"), 48);
+        float[] vb = SvgParser.ParseViewBox(root.A("viewBox"), canvasW, canvasH);
+
+        Renderer renderer = new();
+
+        try
+        {
+            using (Bitmap bmp = new((int)Math.Round(canvasW), (int)Math.Round(canvasH), PixelFormat.Format32bppArgb))
+            {
+                using (Graphics g = Graphics.FromImage(bmp))
                 {
-                    n.Atr.Add(xr.LocalName, xr.Value);
+                    g.SmoothingMode = SmoothingMode.AntiAlias;
+                    g.PixelOffsetMode = PixelOffsetMode.Half;
+                    g.Clear(Color.Transparent);
+                    g.TranslateTransform(vb[0], vb[1]);
+                    if (vb[2] > 0 && vb[3] > 0)
+                    {
+                        g.ScaleTransform(canvasW / vb[2], canvasH / vb[3]);
+                    }
+                    renderer.Draw(g, root);
                 }
-                xr.MoveToElement();
-                if (current == null)
+
+                if (bmp.Width == size && bmp.Height == size)
                 {
-                    first = n;
+                    bmp.Save(outPath, ImageFormat.Png);
                 }
                 else
                 {
-                    current.Children.Add(n);
+                    // Re-sample onto the requested canvas (icons are 48x48, so this
+                    // path is only hit if someone regenerates at a different size).
+                    using (Bitmap canvas = new(size, size))
+                    {
+                        using (Graphics g = Graphics.FromImage(canvas))
+                        {
+                            g.SmoothingMode = SmoothingMode.AntiAlias;
+                            g.InterpolationMode = InterpolationMode.HighQualityBicubic;
+                            g.PixelOffsetMode = PixelOffsetMode.Half;
+                            g.DrawImage(bmp, 0, 0, size, size);
+                        }
+                        canvas.Save(outPath, ImageFormat.Png);
+                    }
                 }
-                current = n;
-                break;
-            case XmlNodeType.EndElement:
-                current = (current == first) ? null : FindParent(first, current);
-                break;
-            case XmlNodeType.Document:
-                if (first == null && xr.HasNodes)
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine("render error in " + inPath + ": " + ex.Message);
+            return 1;
+        }
+
+        Console.WriteLine(Path.GetFileName(inPath) + " -> " + outPath + " (" + size + "x" + size + ")");
+        return 0;
+    }
+
+    static void Dump(Node n, int depth)
+    {
+        Console.WriteLine(new string(' ', depth * 2) + n.Name
+            + " [attrs=" + n.Attrs.Count + ", children=" + n.Children.Count + "]");
+        foreach (Node c in n.Children)
+        {
+            Dump(c, depth + 1);
+        }
+    }
+}
+
+// ------------------------------------------------------------ XML model ----
+
+static class SvgParser
+{
+    public static Node Parse(string path)
+    {
+        XmlReaderSettings settings = new()
+        {
+            IgnoreComments = true,
+            IgnoreWhitespace = true,
+        };
+
+        Node root = null;
+        Stack<Node> stack = new();
+        bool skipPhantomEnd = false;
+
+        using (XmlReader xr = XmlReader.Create(path, settings))
+        {
+            while (xr.Read())
+            {
+                if (xr.NodeType == XmlNodeType.Element)
                 {
-                    // fall through: the first element will be read next
+                    // A new start tag means the EndElement promised by a
+                    // self-closing tag is either already consumed or will
+                    // never come — see the note below.
+                    skipPhantomEnd = false;
+
+                    Node n = new(xr.LocalName, new Dictionary<string, string>());
+                    while (xr.MoveToNextAttribute())
+                    {
+                        n.Attrs[xr.LocalName] = xr.Value;
+                    }
+                    xr.MoveToElement();
+                    if (stack.Count == 0)
+                    {
+                        root = n;
+                    }
+                    else
+                    {
+                        stack.Peek().Children.Add(n);
+                    }
+                    if (xr.IsEmptyElement)
+                    {
+                        // Self-closing: never a parent, so never pushed. On .NET
+                        // builds whose reader still emits its EndElement, the
+                        // flag below swallows exactly that one EndElement.
+                        // (Empirically, some Windows .NET 9 builds emit no
+                        // EndElement for self-closing tags at all — both shapes
+                        // are handled here.)
+                        skipPhantomEnd = true;
+                    }
+                    else
+                    {
+                        stack.Push(n);
+                    }
                 }
-                break;
+                else if (xr.NodeType == XmlNodeType.EndElement)
+                {
+                    if (skipPhantomEnd)
+                    {
+                        skipPhantomEnd = false;
+                    }
+                    else if (stack.Count > 0)
+                    {
+                        stack.Pop();
+                    }
+                }
+            }
         }
-    }
-    return first;
-}
 
-static Node FindParent(Node root, Node child)
-{
-    return ParentOf(root, child);
-}
-
-static Node ParentOf(Node node, Node target)
-{
-    foreach (Node c in node.Children)
-    {
-        if (c == target)
+        if (root == null || root.Name != "svg")
         {
-            return node;
+            throw new FormatException("root element must be <svg>");
         }
-        Node p = ParentOf(c, target);
-        if (p != null)
+        return root;
+    }
+
+    public static float[] ParseViewBox(string s, float w, float h)
+    {
+        if (string.IsNullOrWhiteSpace(s))
         {
-            return p;
+            return new float[] { 0, 0, w, h };
         }
+        string[] parts = s.Split(new[] { ' ', ',', '\t', '\n', '\r' }, StringSplitOptions.RemoveEmptyEntries);
+        if (parts.Length != 4)
+        {
+            throw new FormatException("bad viewBox value: '" + s + "'");
+        }
+        return new float[]
+        {
+            Util.F(parts[0], 0),
+            Util.F(parts[1], 0),
+            Util.F(parts[2], 0),
+            Util.F(parts[3], 0),
+        };
     }
-    return null;
 }
 
-static float F(string s, float dflt)
+sealed class Node
 {
-    return float.TryParse(s, NumberStyles.Float, CultureInfo.InvariantCulture, out float v) ? v : dflt;
-}
+    public readonly string Name;
+    public readonly Dictionary<string, string> Attrs;
+    public readonly List<Node> Children = new();
 
-static float[] ParseViewBox(string s)
-{
-    if (string.IsNullOrEmpty(s))
-    {
-        return new float[] { 0, 0, 0, 0 };
-    }
-    Match m = Regex.Match(s, @"[\d.\-]+");
-    List<float> nums = new();
-    MatchCollection mc = Regex.Matches(s, @"-?[\d.]+");
-    foreach (Match mm in mc)
-    {
-        nums.Add(float.Parse(mm.Value, CultureInfo.InvariantCulture));
-    }
-    if (nums.Count != 4)
-    {
-        throw new FormatException("bad viewBox: " + s);
-    }
-    return nums.ToArray();
-}
-
-// ------------------------------------------------------------------ model ----
-
-class Node
-{
-    public string Name;
-    public Dictionary<string, string> Atr;
-    public List<Node> Children = new();
-
-    public Node(string name, Dictionary<string, string> atr)
+    public Node(string name, Dictionary<string, string> attrs)
     {
         Name = name;
-        Atr = atr;
+        Attrs = attrs;
     }
 
     public string A(string key)
     {
-        return Atr.TryGetValue(key, out string v) ? v : null;
+        return Attrs.TryGetValue(key, out string v) ? v : null;
     }
 }
 
-// ---------------------------------------------------------------- render ----
-
-class Renderer
+static class Util
 {
-    Color? _fill;
-    Color? _stroke;
-    float _strokeW = 1;
-    LineCap _cap = LineCap.Flat;
-    LineJoin _join = LineJoin.Miter;
-
-    public void Render(Node root, float w, float h, float[] vb)
+    // Parses "48", "48.5" or "48px" into a float; falls back to dflt.
+    public static float F(string s, float dflt)
     {
-        // no-op entry point kept for the validation pass above
+        if (string.IsNullOrWhiteSpace(s))
+        {
+            return dflt;
+        }
+        string t = s.Trim();
+        if (t.EndsWith("px", StringComparison.OrdinalIgnoreCase))
+        {
+            t = t.Substring(0, t.Length - 2);
+        }
+        return float.TryParse(t, NumberStyles.Float, CultureInfo.InvariantCulture, out float v) ? v : dflt;
+    }
+}
+
+// -------------------------------------------------------------- render -----
+
+sealed class Renderer
+{
+    struct State
+    {
+        public Color? Fill;
+        public Color? Stroke;
+        public float StrokeWidth;
+        public LineCap Cap;
+        public LineJoin Join;
     }
 
-    public void Render(Graphics g, Node root)
+    // SVG defaults: fill black, no stroke. <g> scopes inherit, then override.
+    readonly Stack<State> _stack = new();
+    State _state = new()
     {
-        if (root.Name != "svg")
-        {
-            throw new NotSupportedException("root element must be <svg>, got <" + root.Name + ">");
-        }
+        Fill = Color.Black,
+        Stroke = null,
+        StrokeWidth = 1,
+        Cap = LineCap.Flat,
+        Join = LineJoin.Miter,
+    };
+
+    public void Draw(Graphics g, Node root)
+    {
         foreach (Node child in root.Children)
         {
-            Draw(g, child);
+            DrawElement(g, child);
         }
     }
 
-    void Draw(Graphics g, Node n)
+    void DrawElement(Graphics g, Node n)
     {
-        SaveState();
+        _stack.Push(_state);
         ApplyAttributes(n);
-
-        switch (n.Name)
+        try
         {
-            case "g":
-                foreach (Node c in n.Children)
+            switch (n.Name)
+            {
+                case "rect":
+                    DrawRect(g, n);
+                    break;
+                case "line":
+                    DrawLine(g, n);
+                    break;
+                case "circle":
                 {
-                    Draw(g, c);
+                    float r = Util.F(n.A("r"), 0);
+                    DrawEllipse(g, Util.F(n.A("cx"), 0), Util.F(n.A("cy"), 0), r, r);
+                    break;
                 }
-                break;
-            case "rect":
-                DrawRect(g, n);
-                break;
-            case "line":
-                DrawLine(g, n);
-                break;
-            case "circle":
-                DrawEllipse(g, F(n.A("cx"), 0), F(n.A("cy"), 0), F(n.A("r"), 0), F(n.A("r"), 0));
-                break;
-            case "ellipse":
-                DrawEllipse(g, F(n.A("cx"), 0), F(n.A("cy"), 0), F(n.A("rx"), 0), F(n.A("ry"), 0));
-                break;
-            case "path":
-                DrawPath(g, n);
-                break;
-            default:
-                if (n.Children.Count > 0)
-                {
-                    foreach (Node c in n.Children)
+                case "ellipse":
+                    DrawEllipse(g, Util.F(n.A("cx"), 0), Util.F(n.A("cy"), 0), Util.F(n.A("rx"), 0), Util.F(n.A("ry"), 0));
+                    break;
+                case "path":
+                    DrawPath(g, n);
+                    break;
+                case "defs":
+                    // Per the SVG spec, <defs> content is not drawn directly.
+                    break;
+                case "g":
+                case "svg":
+                    foreach (Node child in n.Children)
                     {
-                        Draw(g, c);
+                        DrawElement(g, child);
                     }
-                }
-                else
-                {
-                    throw new NotSupportedException(
-                        "unsupported element <" + n.Name + "> (this tool renders only " +
-                        "svg/g/rect/line/circle/ellipse/path with a basic attribute set)");
-                }
-                break;
+                    break;
+                default:
+                    if (n.Children.Count > 0)
+                    {
+                        foreach (Node child in n.Children)
+                        {
+                            DrawElement(g, child);
+                        }
+                    }
+                    else
+                    {
+                        throw new NotSupportedException(
+                            "unsupported element <" + n.Name +
+                            ">: this tool renders svg, g, defs, rect, line, circle, ellipse and path only");
+                    }
+                    break;
+            }
         }
-
-        RestoreState();
+        finally
+        {
+            _state = _stack.Pop();
+        }
     }
-
-    void SaveState()
-    {
-        _fillSaved = _fill;
-        _strokeSaved = _stroke;
-        _strokeWSaved = _strokeW;
-        _capSaved = _cap;
-        _joinSaved = _join;
-    }
-
-    void RestoreState()
-    {
-        _fill = _fillSaved;
-        _stroke = _strokeSaved;
-        _strokeW = _strokeWSaved;
-        _cap = _capSaved;
-        _join = _joinSaved;
-    }
-
-    Color? _fillSaved, _strokeSaved;
-    float _strokeWSaved;
-    LineCap _capSaved;
-    LineJoin _joinSaved;
 
     void ApplyAttributes(Node n)
     {
-        string s;
-        if (!string.IsNullOrEmpty(s = n.A("fill")))
+        if (n.A("transform") != null)
         {
-            _fill = ParseColor(s);
+            throw new NotSupportedException("attribute 'transform' is not supported (element <" + n.Name + ">)");
         }
-        if (!string.IsNullOrEmpty(s = n.A("stroke")))
+
+        string v;
+        if (!string.IsNullOrEmpty(v = n.A("fill")))
         {
-            _stroke = ParseColor(s);
+            _state.Fill = ParseColor(v);
         }
-        if ((s = n.A("stroke-width")) != null)
+        if (!string.IsNullOrEmpty(v = n.A("stroke")))
         {
-            _strokeW = F(s, 1);
+            _state.Stroke = ParseColor(v);
         }
-        if ((s = n.A("stroke-linecap")) != null)
+        if ((v = n.A("stroke-width")) != null)
         {
-            _cap = s == "round" ? LineCap.Round : s == "square" ? LineCap.Square : LineCap.Flat;
+            _state.StrokeWidth = Math.Max(0f, Util.F(v, 1));
         }
-        if ((s = n.A("stroke-linejoin")) != null)
+        if ((v = n.A("stroke-linecap")) != null)
         {
-            _join = s == "round" ? LineJoin.Round : s == "bevel" ? LineJoin.Bevel : LineJoin.Miter;
+            _state.Cap = v == "round" ? LineCap.Round : v == "square" ? LineCap.Square : LineCap.Flat;
+        }
+        if ((v = n.A("stroke-linejoin")) != null)
+        {
+            _state.Join = v == "round" ? LineJoin.Round : v == "bevel" ? LineJoin.Bevel : LineJoin.Miter;
         }
     }
 
     void DrawRect(Graphics g, Node n)
     {
-        float x = F(n.A("x"), 0);
-        float y = F(n.A("y"), 0);
-        float w = F(n.A("width"), 0);
-        float h = F(n.A("height"), 0);
-        float rx = F(n.A("rx"), F(n.A("ry"), 0));
-        float ry = F(n.A("ry"), 0);
-        if (rx <= 0 || ry <= 0)
+        float x = Util.F(n.A("x"), 0);
+        float y = Util.F(n.A("y"), 0);
+        float w = Util.F(n.A("width"), 0);
+        float h = Util.F(n.A("height"), 0);
+        if (w <= 0 || h <= 0)
+        {
+            return;
+        }
+
+        float rx = Util.F(n.A("rx") ?? n.A("ry"), 0);
+        float ry = Util.F(n.A("ry") ?? n.A("rx"), 0);
+
+        if (rx <= 0 && ry <= 0)
         {
             RectangleF r = new(x, y, w, h);
-            if (_fill.HasValue)
+            if (_state.Fill != null)
             {
-                g.FillRectangle(Brush(_fill), r);
+                using (SolidBrush brush = new(_state.Fill.Value))
+                {
+                    g.FillRectangle(brush, r);
+                }
             }
-            if (_stroke.HasValue)
+            if (_state.Stroke != null)
             {
-                g.DrawRectangle(Pen(), r);
+                using (Pen pen = MakePen())
+                {
+                    g.DrawRectangle(pen, r);
+                }
             }
         }
         else
         {
-            using GraphicsPath p = RoundedRect(x, y, w, h, rx, ry);
-            if (_fill.HasValue)
+            using (GraphicsPath p = RoundedRect(x, y, w, h, rx, ry))
             {
-                g.FillPath(Brush(_fill), p);
-            }
-            if (_stroke.HasValue)
-            {
-                g.DrawPath(Pen(), p);
+                if (_state.Fill != null)
+                {
+                    using (SolidBrush brush = new(_state.Fill.Value))
+                    {
+                        g.FillPath(brush, p);
+                    }
+                }
+                if (_state.Stroke != null)
+                {
+                    using (Pen pen = MakePen())
+                    {
+                        g.DrawPath(pen, p);
+                    }
+                }
             }
         }
     }
@@ -395,22 +450,36 @@ class Renderer
 
     void DrawLine(Graphics g, Node n)
     {
-        if (_stroke.HasValue)
+        if (_state.Stroke == null)
         {
-            g.DrawLine(Pen(), F(n.A("x1"), 0), F(n.A("y1"), 0), F(n.A("x2"), 0), F(n.A("y2"), 0));
+            return;
+        }
+        using (Pen pen = MakePen())
+        {
+            g.DrawLine(pen, Util.F(n.A("x1"), 0), Util.F(n.A("y1"), 0), Util.F(n.A("x2"), 0), Util.F(n.A("y2"), 0));
         }
     }
 
     void DrawEllipse(Graphics g, float cx, float cy, float rx, float ry)
     {
-        RectangleF r = new(cx - rx, cy - ry, 2 * rx, 2 * ry);
-        if (_fill.HasValue)
+        if (rx <= 0 || ry <= 0)
         {
-            g.FillEllipse(Brush(_fill), r);
+            return;
         }
-        if (_stroke.HasValue)
+        RectangleF r = new(cx - rx, cy - ry, 2 * rx, 2 * ry);
+        if (_state.Fill != null)
         {
-            g.DrawEllipse(Pen(), r);
+            using (SolidBrush brush = new(_state.Fill.Value))
+            {
+                g.FillEllipse(brush, r);
+            }
+        }
+        if (_state.Stroke != null)
+        {
+            using (Pen pen = MakePen())
+            {
+                g.DrawEllipse(pen, r);
+            }
         }
     }
 
@@ -421,305 +490,537 @@ class Renderer
         {
             throw new NotSupportedException("<path> without a d attribute");
         }
-        using GraphicsPath p = PathBuilder.Build(d);
-        if (_fill.HasValue)
+        using (GraphicsPath p = PathBuilder.Build(d))
         {
-            g.FillPath(Brush(_fill), p);
-        }
-        if (_stroke.HasValue)
-        {
-            g.DrawPath(Pen(), p);
+            // SVG paint order: fill first, stroke on top.
+            if (_state.Fill != null)
+            {
+                using (SolidBrush brush = new(_state.Fill.Value))
+                {
+                    g.FillPath(brush, p);
+                }
+            }
+            if (_state.Stroke != null)
+            {
+                using (Pen pen = MakePen())
+                {
+                    g.DrawPath(pen, p);
+                }
+            }
         }
     }
 
-    SolidBrush Brush(Color? c)
+    Pen MakePen()
     {
-        return new SolidBrush(c.Value);
-    }
-
-    Pen Pen()
-    {
-        return new Pen(_stroke.Value, _strokeW)
+        return new Pen(_state.Stroke.Value, _state.StrokeWidth)
         {
-            StartCap = _cap,
-            EndCap = _cap,
-            LineJoin = _join,
-            MiterLimit = 4,
+            StartCap = _state.Cap,
+            EndCap = _state.Cap,
+            LineJoin = _state.Join,
         };
     }
 
     static Color? ParseColor(string s)
     {
-        s = s.Trim().ToLowerInvariant();
-        if (s == "none")
+        s = s.Trim();
+        if (s.Equals("none", StringComparison.OrdinalIgnoreCase))
         {
             return null;
         }
-        if (s == "white" || s == "#ffffff" || s == "#fff")
+        try
         {
-            return Color.White;
+            // Handles "white", "#fff", "#ffffff", and the full CSS name list.
+            return ColorTranslator.FromHtml(s);
         }
-        if (s == "black" || s == "#000000" || s == "#000")
+        catch (Exception)
         {
-            return Color.Black;
+            throw new NotSupportedException("unsupported color '" + s + "' (CSS color names and #hex are supported)");
         }
-        if (s.StartsWith("#") && (s.Length == 4 || s.Length == 7))
-        {
-            try
-            {
-                return ColorTranslator.FromHtml(s);
-            }
-            catch
-            {
-                // fall through
-            }
-        }
-        throw new NotSupportedException(
-            "unsupported color '" + s + "' (this tool handles none/white/black and #hex)");
     }
 }
 
-// ------------------------------------------------------- path data parser ----
+// ------------------------------------------------------ path data (SVG) ----
 
 static class PathBuilder
 {
-    static readonly Regex Token = new(
-        @"([MmLlHhVvCcSsQqTtAaZz])|(-?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?)",
-        RegexOptions.Compiled);
-
     public static GraphicsPath Build(string d)
     {
-        List<float> nums = new();
+        List<object> tokens = Tokenize(d);
+        GraphicsPath path = new();
+
+        float x = 0;
+        float y = 0;
+        float subX = 0;
+        float subY = 0;
+        float pcx = 0;
+        float pcy = 0;      // previous curve control point (for S/s and T/t)
+        bool prevCubic = false;
+        bool prevQuad = false;
         char cmd = '\0';
-        bool cmdConsumed = false;
 
-        GraphicsPath p = new();
-        p.StartFigure();
-
-        float x = 0, y = 0;         // current point
-        float startX = 0, startY = 0;
-        float lastCx = 0, lastCy = 0; // last quadratic control point (for S/T)
-        char lastCmd = '\0';
-
-        void Need(int n)
+        for (int i = 0; i < tokens.Count; i++)
         {
-            if (nums.Count < n)
+            if (tokens[i] is char c)
             {
-                throw new FormatException("path '" + d + "': expected " + n + " more number(s) after '" + cmd + "'");
+                cmd = c;
+                continue;
+            }
+
+            if (cmd == '\0')
+            {
+                throw new FormatException("path '" + d + "': number(s) appear before any command");
+            }
+
+            i = Execute(path, ref x, ref y, ref subX, ref subY, ref pcx, ref pcy, ref prevCubic, ref prevQuad,
+                    cmd, tokens, i, d) - 1;
+
+            // Per the SVG spec, coordinate pairs after M/m repeat as L/l.
+            if (cmd == 'M')
+            {
+                cmd = 'L';
+            }
+            else if (cmd == 'm')
+            {
+                cmd = 'l';
             }
         }
 
-        for (int i = 0; i < d.Length; i++)
+        return path;
+    }
+
+    static List<object> Tokenize(string d)
+    {
+        List<object> tokens = new();
+        int n = d.Length;
+        int i = 0;
+
+        while (i < n)
         {
             char c = d[i];
+
             if (char.IsWhiteSpace(c))
             {
+                i++;
                 continue;
             }
+
             if (char.IsLetter(c))
             {
-                if (cmd != '\0' && nums.Count > 0)
-                {
-                    throw new FormatException("path '" + d + "': leftover numbers before command '" + c + "'");
-                }
-                cmd = c;
-                cmdConsumed = false;
+                tokens.Add(c);
+                i++;
                 continue;
             }
+
             if (c == '-' || c == '+' || c == '.' || (c >= '0' && c <= '9'))
             {
-                // read a full number
                 int start = i;
-                while (i < d.Length && (char.IsWhiteSpace(d[i]) == false &&
-                       (char.IsLetter(d[i]) || d[i] == '-' || d[i] == '+' || d[i] == '.' ||
-                        (d[i] >= '0' && d[i] <= '9'))))
+                bool dot = false;
+                bool exp = false;
+                i++;
+                while (i < n)
                 {
-                    // stop at a letter (next command)
-                    if (char.IsLetter(d[i]) && i > start)
+                    char k = d[i];
+                    if (k >= '0' && k <= '9')
+                    {
+                        i++;
+                    }
+                    else if (k == '.' && !dot && !exp)
+                    {
+                        dot = true;
+                        i++;
+                    }
+                    else if ((k == 'e' || k == 'E') && !exp)
+                    {
+                        exp = true;
+                        i++;
+                        if (i < n && (d[i] == '+' || d[i] == '-'))
+                        {
+                            i++;
+                        }
+                    }
+                    else
                     {
                         break;
                     }
-                    i++;
                 }
-                i--;
-                string tok = d.Substring(start, i - start + 1);
-                nums.Add(float.Parse(tok, CultureInfo.InvariantCulture));
-                continue;
+                tokens.Add(float.Parse(d.Substring(start, i - start), CultureInfo.InvariantCulture));
             }
-            throw new FormatException("path '" + d + "': unexpected character '" + c + "'");
-        }
-
-        int ni = 0;
-        float N()
-        {
-            if (ni >= nums.Count)
+            else
             {
-                throw new FormatException("path '" + d + "': ran out of numbers");
-            }
-            return nums[ni++];
-        }
-
-        while (ni < nums.Count || true)
-        {
-            if (cmd == '\0')
-            {
-                // implicit repeat of the last command is handled by re-reading:
-                // if there are numbers left but no command, the SVG spec says to
-                // repeat the previous command.
-                if (ni >= nums.Count)
-                {
-                    break;
-                }
-                cmd = lastCmd == '\0' ? cmd : lastCmd;
-                if (cmd == '\0')
-                {
-                    throw new FormatException("path '" + d + "': numbers without a command");
-                }
-            }
-            Execute(p, ref x, ref y, ref startX, ref startY, ref lastCx, ref lastCy, ref lastCmd, cmd, N);
-            if (ni >= nums.Count)
-            {
-                break;
+                throw new FormatException("path '" + d + "': unexpected character '" + c + "'");
             }
         }
 
-        p.CloseFigure();
-        return p;
+        return tokens;
     }
 
-    static void Execute(GraphicsPath p, ref float x, ref float y, ref float startX, ref float startY,
-        ref float lastCx, ref float lastCy, ref char lastCmd, char c, Func<float> N)
+    static int Execute(GraphicsPath path, ref float x, ref float y, ref float subX, ref float subY,
+        ref float pcx, ref float pcy, ref bool prevCubic, ref bool prevQuad,
+        char cmd, List<object> tokens, int start, string d)
     {
-        switch (c)
+        int j = start;
+
+        float N()
+        {
+            if (j >= tokens.Count || tokens[j] is not float f)
+            {
+                throw new FormatException("path '" + d + "': missing number(s) for command '" + cmd + "'");
+            }
+            j++;
+            return f;
+        }
+
+        switch (cmd)
         {
             case 'M':
-                x = N(); y = N();
-                startX = x; startY = y;
-                p.StartFigure();
-                p.LineTo(x, y);
+                x = N();
+                y = N();
+                subX = x;
+                subY = y;
+                path.StartFigure();
+                path.AddLine(new PointF(x, y), new PointF(x, y));
+                prevCubic = prevQuad = false;
                 break;
             case 'm':
-                x += N(); y += N();
-                startX = x; startY = y;
-                p.StartFigure();
-                p.LineTo(x, y);
+                x += N();
+                y += N();
+                subX = x;
+                subY = y;
+                path.StartFigure();
+                path.AddLine(new PointF(x, y), new PointF(x, y));
+                prevCubic = prevQuad = false;
                 break;
             case 'L':
-                x = N(); y = N();
-                p.LineTo(x, y);
-                break;
-            case 'l':
-                x += N(); y += N();
-                p.LineTo(x, y);
-                break;
-            case 'H':
+            {
+                PointF from = new(x, y);
                 x = N();
-                p.LineTo(x, y);
-                break;
-            case 'h':
-                x += N();
-                p.LineTo(x, y);
-                break;
-            case 'V':
                 y = N();
-                p.LineTo(x, y);
+                path.AddLine(from, new PointF(x, y));
+                prevCubic = prevQuad = false;
                 break;
-            case 'v':
+            }
+            case 'l':
+            {
+                PointF from = new(x, y);
+                x += N();
                 y += N();
-                p.LineTo(x, y);
+                path.AddLine(from, new PointF(x, y));
+                prevCubic = prevQuad = false;
                 break;
+            }
+            case 'H':
+            {
+                PointF from = new(x, y);
+                x = N();
+                path.AddLine(from, new PointF(x, y));
+                prevCubic = prevQuad = false;
+                break;
+            }
+            case 'h':
+            {
+                PointF from = new(x, y);
+                x += N();
+                path.AddLine(from, new PointF(x, y));
+                prevCubic = prevQuad = false;
+                break;
+            }
+            case 'V':
+            {
+                PointF from = new(x, y);
+                y = N();
+                path.AddLine(from, new PointF(x, y));
+                prevCubic = prevQuad = false;
+                break;
+            }
+            case 'v':
+            {
+                PointF from = new(x, y);
+                y += N();
+                path.AddLine(from, new PointF(x, y));
+                prevCubic = prevQuad = false;
+                break;
+            }
             case 'C':
             {
+                PointF p0 = new(x, y);
                 float c1x = N(), c1y = N(), c2x = N(), c2y = N();
-                x = N(); y = N();
-                lastCx = c2x; lastCy = c2y;
-                p.AddCurve(new PointF(x, y), new[] { new PointF(c1x, c1y), new PointF(c2x, c2y) });
+                x = N();
+                y = N();
+                pcx = c2x;
+                pcy = c2y;
+                prevCubic = true;
+                prevQuad = false;
+                path.AddBezier(p0, new PointF(c1x, c1y), new PointF(c2x, c2y), new PointF(x, y));
                 break;
             }
             case 'c':
             {
+                PointF p0 = new(x, y);
                 float c1x = x + N(), c1y = y + N(), c2x = x + N(), c2y = y + N();
-                x += N(); y += N();
-                lastCx = c2x; lastCy = c2y;
-                p.AddCurve(new PointF(x, y), new[] { new PointF(c1x, c1y), new PointF(c2x, c2y) });
+                x += N();
+                y += N();
+                pcx = c2x;
+                pcy = c2y;
+                prevCubic = true;
+                prevQuad = false;
+                path.AddBezier(p0, new PointF(c1x, c1y), new PointF(c2x, c2y), new PointF(x, y));
                 break;
             }
             case 'S':
             {
-                float c1x = 2 * x - lastCx;
-                float c1y = 2 * y - lastCy;
+                PointF p0 = new(x, y);
+                float c1x = prevCubic ? 2 * x - pcx : x;
+                float c1y = prevCubic ? 2 * y - pcy : y;
                 float c2x = N(), c2y = N();
-                x = N(); y = N();
-                lastCx = c2x; lastCy = c2y;
-                p.AddCurve(new PointF(x, y), new[] { new PointF(c1x, c1y), new PointF(c2x, c2y) });
+                x = N();
+                y = N();
+                pcx = c2x;
+                pcy = c2y;
+                prevCubic = true;
+                prevQuad = false;
+                path.AddBezier(p0, new PointF(c1x, c1y), new PointF(c2x, c2y), new PointF(x, y));
                 break;
             }
             case 's':
             {
-                float c1x = 2 * x - lastCx;
-                float c1y = 2 * y - lastCy;
+                PointF p0 = new(x, y);
+                float c1x = prevCubic ? 2 * x - pcx : x;
+                float c1y = prevCubic ? 2 * y - pcy : y;
                 float c2x = x + N(), c2y = y + N();
-                x += N(); y += N();
-                lastCx = c2x; lastCy = c2y;
-                p.AddCurve(new PointF(x, y), new[] { new PointF(c1x, c1y), new PointF(c2x, c2y) });
+                x += N();
+                y += N();
+                pcx = c2x;
+                pcy = c2y;
+                prevCubic = true;
+                prevQuad = false;
+                path.AddBezier(p0, new PointF(c1x, c1y), new PointF(c2x, c2y), new PointF(x, y));
                 break;
             }
             case 'Q':
             {
+                PointF p0 = new(x, y);
                 float cx = N(), cy = N();
-                x = N(); y = N();
-                lastCx = cx; lastCy = cy;
-                p.AddBezier(new PointF(x, y), new[] { new PointF(cx, cy), new PointF(cx, cy) });
+                x = N();
+                y = N();
+                PointF p2 = new(x, y);
+                PointF b1 = new(p0.X + 2f / 3f * (cx - p0.X), p0.Y + 2f / 3f * (cy - p0.Y));
+                PointF b2 = new(p2.X + 2f / 3f * (cx - p2.X), p2.Y + 2f / 3f * (cy - p2.Y));
+                pcx = cx;
+                pcy = cy;
+                prevCubic = false;
+                prevQuad = true;
+                path.AddBezier(p0, b1, b2, p2);
                 break;
             }
             case 'q':
             {
+                PointF p0 = new(x, y);
                 float cx = x + N(), cy = y + N();
-                x += N(); y += N();
-                lastCx = cx; lastCy = cy;
-                p.AddBezier(new PointF(x, y), new[] { new PointF(cx, cy), new PointF(cx, cy) });
+                x += N();
+                y += N();
+                PointF p2 = new(x, y);
+                PointF b1 = new(p0.X + 2f / 3f * (cx - p0.X), p0.Y + 2f / 3f * (cy - p0.Y));
+                PointF b2 = new(p2.X + 2f / 3f * (cx - p2.X), p2.Y + 2f / 3f * (cy - p2.Y));
+                pcx = cx;
+                pcy = cy;
+                prevCubic = false;
+                prevQuad = true;
+                path.AddBezier(p0, b1, b2, p2);
                 break;
             }
             case 'T':
             {
-                float cx = 2 * x - lastCx;
-                float cy = 2 * y - lastCy;
-                x = N(); y = N();
-                lastCx = cx; lastCy = cy;
-                p.AddBezier(new PointF(x, y), new[] { new PointF(cx, cy), new PointF(cx, cy) });
+                PointF p0 = new(x, y);
+                float cx = prevQuad ? 2 * x - pcx : x;
+                float cy = prevQuad ? 2 * y - pcy : y;
+                x = N();
+                y = N();
+                PointF p2 = new(x, y);
+                PointF b1 = new(p0.X + 2f / 3f * (cx - p0.X), p0.Y + 2f / 3f * (cy - p0.Y));
+                PointF b2 = new(p2.X + 2f / 3f * (cx - p2.X), p2.Y + 2f / 3f * (cy - p2.Y));
+                pcx = cx;
+                pcy = cy;
+                prevCubic = false;
+                prevQuad = true;
+                path.AddBezier(p0, b1, b2, p2);
                 break;
             }
             case 't':
             {
-                float cx = 2 * x - lastCx;
-                float cy = 2 * y - lastCy;
-                x += N(); y += N();
-                lastCx = cx; lastCy = cy;
-                p.AddBezier(new PointF(x, y), new[] { new PointF(cx, cy), new PointF(cx, cy) });
+                PointF p0 = new(x, y);
+                float cx = prevQuad ? 2 * x - pcx : x;
+                float cy = prevQuad ? 2 * y - pcy : y;
+                x += N();
+                y += N();
+                PointF p2 = new(x, y);
+                PointF b1 = new(p0.X + 2f / 3f * (cx - p0.X), p0.Y + 2f / 3f * (cy - p0.Y));
+                PointF b2 = new(p2.X + 2f / 3f * (cx - p2.X), p2.Y + 2f / 3f * (cy - p2.Y));
+                pcx = cx;
+                pcy = cy;
+                prevCubic = false;
+                prevQuad = true;
+                path.AddBezier(p0, b1, b2, p2);
                 break;
             }
             case 'A':
             {
                 float rx = N(), ry = N(), phi = N(), laf = N(), sf = N();
                 float x2 = N(), y2 = N();
-                AddArc(p, x, y, x2, y2, rx, ry, phi, laf != 0, sf != 0);
-                x = x2; y = y2;
+                AddArc(path, x, y, x2, y2, rx, ry, phi, laf != 0, sf != 0);
+                x = x2;
+                y = y2;
+                prevCubic = prevQuad = false;
                 break;
             }
             case 'a':
             {
                 float rx = N(), ry = N(), phi = N(), laf = N(), sf = N();
-                x += N(); y += N();
-                AddArc(p, x - (x - (x)), y - (y - (y)), x, y, rx, ry, phi, laf != 0, sf != 0);
+                float x2 = x + N(), y2 = y + N();
+                AddArc(path, x, y, x2, y2, rx, ry, phi, laf != 0, sf != 0);
+                x = x2;
+                y = y2;
+                prevCubic = prevQuad = false;
                 break;
             }
             case 'Z':
             case 'z':
-                x = startX; y = startY;
-                p.CloseFigure();
+                path.CloseFigure();
+                x = subX;
+                y = subY;
+                prevCubic = prevQuad = false;
                 break;
             default:
-                throw new NotSupportedException("path command '" + c + "' is not supported");
+                throw new NotSupportedException("path command '" + cmd + "' is not supported");
         }
+
+        return j;
+    }
+
+    // Converts an elliptical arc to cubic Beziers: W3C SVG 1.1 F.6.5
+    // (endpoint to center parameterization) + the standard unit-circle
+    // approximation, generalized to rotated ellipses. Segments are at most
+    // a quarter turn each, which keeps the Bezier error well under a pixel
+    // for icon-sized radii.
+    static void AddArc(GraphicsPath path, float fx1, float fy1, float fx2, float fy2,
+        float frx, float fry, double phiDeg, bool largeArc, bool sweep)
+    {
+        double x1 = fx1, y1 = fy1;
+        double x2 = fx2, y2 = fy2;
+        double rx = Math.Abs(frx);
+        double ry = Math.Abs(fry);
+
+        if (rx == 0 || ry == 0)
+        {
+            path.AddLine(new PointF((float)x1, (float)y1), new PointF((float)x2, (float)y2));
+            return;
+        }
+
+        double phi = phiDeg * Math.PI / 180.0;
+        double cos = Math.Cos(phi);
+        double sin = Math.Sin(phi);
+
+        // Step 1: rotate the endpoints into the ellipse's frame (origin at midpoint).
+        double dx = (x1 - x2) / 2.0;
+        double dy = (y1 - y2) / 2.0;
+        double x1p = cos * dx + sin * dy;
+        double y1p = -sin * dx + cos * dy;
+
+        // Step 2: radii too small for the endpoints? Enlarge them (spec rule).
+        double lambda = (x1p * x1p) / (rx * rx) + (y1p * y1p) / (ry * ry);
+        if (lambda > 1)
+        {
+            double s = Math.Sqrt(lambda);
+            rx *= s;
+            ry *= s;
+        }
+
+        // Step 3: the ellipse center in the rotated frame.
+        double num = rx * rx * ry * ry - rx * rx * y1p * y1p - ry * ry * x1p * x1p;
+        double den = rx * rx * y1p * y1p + ry * ry * x1p * x1p;
+        double factor = Math.Sqrt(Math.Max(0.0, num / Math.Max(1e-12, den)));
+        if (largeArc == sweep)
+        {
+            factor = -factor;
+        }
+
+        double cxp = factor * (rx * y1p / ry);
+        double cyp = -factor * (ry * x1p / rx);
+
+        // Step 4: back to world coordinates.
+        double cx = cos * cxp - sin * cyp + (x1 + x2) / 2.0;
+        double cy = sin * cxp + cos * cyp + (y1 + y2) / 2.0;
+
+        // Step 5: start angle and swept angle (sweep=1 is the direction of
+        // increasing parameter, i.e. clockwise on screen because y points down).
+        double ux1 = (x1p - cxp) / rx;
+        double uy1 = (y1p - cyp) / ry;
+        double ux2 = (-x1p - cxp) / rx;
+        double uy2 = (-y1p - cyp) / ry;
+
+        double theta1 = Math.Atan2(uy1, ux1);
+        double dtheta = SignedAngle(ux1, uy1, ux2, uy2);
+        if (dtheta < 0 && sweep)
+        {
+            dtheta += 2 * Math.PI;
+        }
+        if (dtheta > 0 && !sweep)
+        {
+            dtheta -= 2 * Math.PI;
+        }
+
+        if (Math.Abs(dtheta) < 1e-9)
+        {
+            path.AddLine(new PointF((float)x1, (float)y1), new PointF((float)x2, (float)y2));
+            return;
+        }
+
+        int segments = Math.Max(1, (int)Math.Ceiling(Math.Abs(dtheta) / (Math.PI / 2.0)));
+        double delta = dtheta / segments;
+        double t = Math.Tan(delta / 4.0);
+
+        for (int k = 0; k < segments; k++)
+        {
+            double a0 = theta1 + k * delta;
+            double a1 = a0 + delta;
+
+            double p0x = cx + rx * cos * Math.Cos(a0) - ry * sin * Math.Sin(a0);
+            double p0y = cy + rx * sin * Math.Cos(a0) + ry * cos * Math.Sin(a0);
+            double p3x = cx + rx * cos * Math.Cos(a1) - ry * sin * Math.Sin(a1);
+            double p3y = cy + rx * sin * Math.Cos(a1) + ry * cos * Math.Sin(a1);
+
+            // dP/da in world coordinates (the Bezier handles of the unit-circle
+            // approximation, scaled by the ellipse + rotation).
+            double d0x = -(rx * cos * Math.Sin(a0) + ry * sin * Math.Cos(a0));
+            double d0y = -(rx * sin * Math.Sin(a0) - ry * cos * Math.Cos(a0));
+            double d3x = -(rx * cos * Math.Sin(a1) + ry * sin * Math.Cos(a1));
+            double d3y = -(rx * sin * Math.Sin(a1) - ry * cos * Math.Cos(a1));
+
+            // Pin the very first point to the exact start so no seam appears.
+            if (k == 0)
+            {
+                p0x = x1;
+                p0y = y1;
+            }
+
+            path.AddBezier(
+                new PointF((float)p0x, (float)p0y),
+                new PointF((float)(p0x + t * d0x), (float)(p0y + t * d0y)),
+                new PointF((float)(p3x - t * d3x), (float)(p3y - t * d3y)),
+                new PointF((float)p3x, (float)p3y));
+        }
+    }
+
+    static double SignedAngle(double x1, double y1, double x2, double y2)
+    {
+        double a = Math.Atan2(y2, x2) - Math.Atan2(y1, x1);
+        while (a <= -Math.PI)
+        {
+            a += 2 * Math.PI;
+        }
+        while (a > Math.PI)
+        {
+            a -= 2 * Math.PI;
+        }
+        return a;
     }
 }

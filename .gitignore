@@ -9,3 +9,5 @@
 .externalNativeBuild
 .cxx
 tmp
+tools/SvgToPng/bin
+tools/SvgToPng/obj
