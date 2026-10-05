@@ -1,7 +1,14 @@
 // SvgToPng - renders an SVG icon to a transparent PNG.
 //
-// Usage:  SvgToPng <input.svg> <output.png> [size]
+// Usage:  SvgToPng <input.svg> <output.png> [size] [scale]
 //         SvgToPng <input.svg> --dump          (print the parsed element tree)
+//
+// [size]  output PNG edge length (default 48)
+// [scale] supersampling factor (default 1): the vector is rendered at
+//         svg-size × scale and reduced to [size]. The reduction is an exact
+//         box average when the ratio is an integer (e.g. 48x2 -> 32 is a
+//         3x3 area average), else a high-quality bicubic. Higher = crisper
+//         anti-aliased edges, at a render-time cost.
 //
 // A small, dependency-free rasterizer covering the practical SVG subset the
 // app's icon sources use. It deliberately does not use the OS image codecs:
@@ -48,6 +55,7 @@ internal static class Program
         string inPath = args[0];
         string outPath = args[1];
         int size = args.Length > 2 && int.TryParse(args[2], out int parsed) ? parsed : 48;
+        int scale = args.Length > 3 && int.TryParse(args[3], out int scaled) ? Math.Max(1, scaled) : 1;
 
         Node root;
         try
@@ -60,9 +68,12 @@ internal static class Program
             return 1;
         }
 
-        float canvasW = Util.F(root.A("width"), 48);
-        float canvasH = Util.F(root.A("height"), 48);
-        float[] vb = SvgParser.ParseViewBox(root.A("viewBox"), canvasW, canvasH);
+        // Render at svg size × scale (supersampling), then reduce to `size`.
+        float svgW = Util.F(root.A("width"), 48);
+        float svgH = Util.F(root.A("height"), 48);
+        float[] vb = SvgParser.ParseViewBox(root.A("viewBox"), svgW, svgH);
+        float canvasW = svgW * scale;
+        float canvasH = svgH * scale;
 
         Renderer renderer = new();
 
@@ -87,10 +98,15 @@ internal static class Program
                 {
                     bmp.Save(outPath, ImageFormat.Png);
                 }
+                else if (size > 1 && bmp.Width % size == 0 && bmp.Height % size == 0
+                    && bmp.Width / size == bmp.Height / size)
+                {
+                    // Integer reduction: exact area average — best quality.
+                    SaveAreaDownsample(bmp, size, bmp.Width / size, outPath);
+                }
                 else
                 {
-                    // Re-sample onto the requested canvas (icons are 48x48, so this
-                    // path is only hit if someone regenerates at a different size).
+                    // Non-integer reduction: high-quality bicubic fallback.
                     using (Bitmap canvas = new(size, size))
                     {
                         using (Graphics g = Graphics.FromImage(canvas))
@@ -123,6 +139,38 @@ internal static class Program
         {
             Dump(c, depth + 1);
         }
+    }
+
+    // Area-averaging (box) downsample by an integer factor k — the standard
+    // high-quality reduction: each output pixel is the mean of a k×k block of
+    // the supersampled render. 32bppArgb pixels are stored premultiplied, so
+    // averaging the raw per-channel components (and writing them back as-is)
+    // yields correctly anti-aliased colors.
+    static void SaveAreaDownsample(Bitmap src, int size, int k, string outPath)
+    {
+        Bitmap dst = new(size, size, PixelFormat.Format32bppArgb);
+        for (int oy = 0; oy < size; oy++)
+        {
+            for (int ox = 0; ox < size; ox++)
+            {
+                int r = 0, g = 0, b = 0, a = 0;
+                for (int dy = 0; dy < k; dy++)
+                {
+                    for (int dx = 0; dx < k; dx++)
+                    {
+                        Color c = src.GetPixel(ox * k + dx, oy * k + dy);
+                        r += c.R;
+                        g += c.G;
+                        b += c.B;
+                        a += c.A;
+                    }
+                }
+                int n = k * k;
+                dst.SetPixel(ox, oy, Color.FromArgb(a / n, r / n, g / n, b / n));
+            }
+        }
+        dst.Save(outPath, ImageFormat.Png);
+        dst.Dispose();
     }
 }
 

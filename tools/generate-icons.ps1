@@ -1,5 +1,7 @@
-# Regenerates the PNG header icons in app/src/main/res/drawable from their SVG
-# sources in app/icons.
+# Regenerates the PNG header icons in app/src/main/res/drawable (32x32, the
+# 32dp display size of the header buttons) from their 48x48 SVG sources in
+# app/icons. The rasterizer supersamples (renders at 96x96) and reduces with
+# an exact 3x3 area average, so the 32px edges are as crisp as the source.
 #
 # Requirements: .NET SDK on PATH. The rasterizer (tools/SvgToPng) is a small
 # self-contained C# program with zero NuGet dependencies, so the first build
@@ -29,7 +31,9 @@ if ($svgFiles.Count -eq 0) { throw "no *.svg found in $iconsDir" }
 
 foreach ($svg in $svgFiles) {
     $out = Join-Path $outDir ($svg.BaseName + '.png')
-    & dotnet $bin $svg.FullName $out 48
+    # 32 = target size; 2 = supersample factor (render at 96, exact 3x3
+    # area average down to 32 — crisper edges than a direct 32px render).
+    & dotnet $bin $svg.FullName $out 32 2
     if ($LASTEXITCODE -ne 0) { throw "SvgToPng failed for $($svg.Name)" }
 }
 

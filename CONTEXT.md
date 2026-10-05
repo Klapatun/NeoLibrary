@@ -106,10 +106,14 @@ it never steals column width.
 
 The four `MainActivity` header icons (`ic_import`, `ic_refresh`, `ic_grid`,
 `ic_list`) are authored as SVG in `app/icons/` (48×48, white, transparent).
-The runtime PNGs in `app/src/main/res/drawable/` are generated from them via
+The runtime PNGs in `app/src/main/res/drawable/` (32×32, the 32dp header
+button size) are generated from them via
 `tools\generate-icons.ps1` (drives `tools/SvgToPng`, a small dependency-free
 .NET rasterizer — the OS WIC SVG path crashes on this machine, and the "no
-extra deps" rule rules out third-party rasterizers). **The PNGs are
+extra deps" rule rules out third-party rasterizers). The generator
+**supersamples**: it renders each SVG at 96×96 (2× the 48×48 source) and
+reduces to 32 with an exact 3×3 area average, so the 32px edges are as crisp
+as the vector source — no resampling softness. **The PNGs are
 committed**, so the Android build stays 100% offline; the tool only runs when
 an icon is redesigned. VectorDrawable is off the table at runtime (API 19 < 21).
 
