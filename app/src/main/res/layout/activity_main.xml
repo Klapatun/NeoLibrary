@@ -15,25 +15,22 @@
         <RelativeLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:paddingLeft="16dp"
+            android:paddingLeft="8dp"
             android:paddingRight="8dp">
 
-            <!-- The title is pinned to the start and bounded by the action row on
-                 its right (one-way only: the row stays alignParentEnd, so there is
-                 no circular dependency) — a long localized title can never run
-                 under the buttons. -->
-            <TextView
-                android:id="@+id/toolbar_title"
-                android:layout_width="wrap_content"
+            <!-- The filter spinner takes the start side of the header row and is
+                 bounded by the action row on its right (one-way constraint: the
+                 row stays alignParentEnd, so there is no circular dependency) —
+                 the same pattern the former title TextView used. -->
+            <Spinner
+                android:id="@+id/filter_spinner"
+                android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:layout_alignParentStart="true"
                 android:layout_centerVertical="true"
                 android:layout_toStartOf="@id/header_actions"
-                android:text="@string/app_name"
-                android:textColor="@color/white"
-                android:textSize="20sp"
-                android:paddingTop="16dp"
-                android:paddingBottom="8dp" />
+                android:layout_marginEnd="8dp"
+                android:prompt="@string/filter_all" />
 
             <!-- Header actions in one row: import, rescan, then the list/tiles
                  toggle (rightmost, as before). All icons are 48x48 white PNGs on
@@ -74,12 +71,6 @@
                     android:padding="8dp" />
             </LinearLayout>
         </RelativeLayout>
-
-        <Spinner
-            android:id="@+id/filter_spinner"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:prompt="@string/filter_all" />
     </LinearLayout>
 
     <!-- Stage-2 (background enrichment) status strip: visible only while the
