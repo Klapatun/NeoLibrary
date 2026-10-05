@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Selected-item view of the filter spinner: white on the indigo header bar.
+     The dropdown popup keeps the default dark-on-light layout (it is a separate
+     window, not painted on indigo). -->
+<TextView xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:paddingLeft="16dp"
+    android:paddingRight="16dp"
+    android:paddingTop="10dp"
+    android:paddingBottom="10dp"
+    android:singleLine="true"
+    android:ellipsize="end"
+    android:textColor="@color/white"
+    android:textSize="16sp" />

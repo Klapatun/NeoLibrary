@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Source of res/drawable/ic_list.png. "Show as list": three 32x6 bars
+     (y = 12 / 21 / 30, 3px gaps). Regenerate the PNG with tools/generate-icons.ps1. -->
+<svg xmlns="http://www.w3.org/2000/svg" width="48" height="48" viewBox="0 0 48 48">
+    <g fill="#fff">
+        <rect x="8" y="12" width="32" height="6"/>
+        <rect x="8" y="21" width="32" height="6"/>
+        <rect x="8" y="30" width="32" height="6"/>
+    </g>
+</svg>

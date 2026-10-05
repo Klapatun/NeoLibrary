@@ -13,8 +13,6 @@ import android.database.Cursor;
 import android.net.Uri;
 import android.os.AsyncTask;
 import android.os.Bundle;
-import android.view.Menu;
-import android.view.MenuItem;
 import android.view.View;
 import android.widget.AdapterView;
 import android.widget.ArrayAdapter;
@@ -68,6 +66,8 @@ public class MainActivity extends Activity
     private TextView emptyView;
     private ListView list;
     private GridView grid;
+    private ImageButton btnImport;
+    private ImageButton btnRescan;
     private ImageButton toggleView;
     private LinearLayout enrichBar;
     private TextView enrichStatus;
@@ -103,6 +103,8 @@ public class MainActivity extends Activity
 
         list = (ListView) findViewById(R.id.book_list);
         grid = (GridView) findViewById(R.id.book_grid);
+        btnImport = (ImageButton) findViewById(R.id.btn_import);
+        btnRescan = (ImageButton) findViewById(R.id.btn_rescan);
         toggleView = (ImageButton) findViewById(R.id.toggle_view);
 
         list.setEmptyView(emptyView);
@@ -119,6 +121,20 @@ public class MainActivity extends Activity
         // confirmation live on the screen, not in the row binding.
         adapter = new BookAdapter(this, db.cursorAll(null), this);
         list.setAdapter(adapter);
+
+        // The system action bar is off on this screen (AppTheme.NoActionBar):
+        // import and rescan live in the indigo header row now, not in an
+        // options menu.
+        btnImport.setOnClickListener(new View.OnClickListener() {
+            @Override public void onClick(View v) {
+                launchImport();
+            }
+        });
+        btnRescan.setOnClickListener(new View.OnClickListener() {
+            @Override public void onClick(View v) {
+                startScan();
+            }
+        });
 
         toggleView.setOnClickListener(new View.OnClickListener() {
             @Override public void onClick(View v) {
@@ -201,8 +217,10 @@ public class MainActivity extends Activity
             filterLabels.add("Format: " + f);
             filterValues.add(f);
         }
+        // White text layout: the spinner sits on the indigo header bar, where the
+        // default dark-on-light selected item would be hard to read.
         ArrayAdapter<String> sa = new ArrayAdapter<String>(this,
-                android.R.layout.simple_spinner_item, filterLabels);
+                R.layout.spinner_item, filterLabels);
         sa.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
         filterSpinner = (Spinner) findViewById(R.id.filter_spinner);
         filterSpinner.setAdapter(sa);
@@ -447,27 +465,8 @@ public class MainActivity extends Activity
     }
 
     // -----------------------------------------------------------------
-    // Menu / import
+    // Import
     // -----------------------------------------------------------------
-
-    @Override
-    public boolean onCreateOptionsMenu(Menu menu) {
-        getMenuInflater().inflate(R.menu.main_menu, menu);
-        return true;
-    }
-
-    @Override
-    public boolean onOptionsItemSelected(MenuItem item) {
-        int id = item.getItemId();
-        if (id == R.id.menu_rescan) {
-            startScan();
-            return true;
-        } else if (id == R.id.menu_import) {
-            launchImport();
-            return true;
-        }
-        return super.onOptionsItemSelected(item);
-    }
 
     private void launchImport() {
         Intent i = new Intent(Intent.ACTION_OPEN_DOCUMENT);
