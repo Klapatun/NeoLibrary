@@ -1,6 +1,7 @@
 package com.example.mylibrary.meta;
 
 import android.util.Base64;
+import android.util.Log;
 
 import com.example.mylibrary.scan.Formats;
 
@@ -43,11 +44,17 @@ import java.util.zip.ZipInputStream;
  */
 public final class CoverExtractor {
 
+    private static final String TAG = "CoverExtractor";
+
     private CoverExtractor() {}
 
     /**
      * Returns the cover image bytes for the given file, or {@code null} if the format
      * isn't covered-sourced or no cover could be located/read.
+     *
+     * <p>Never throws: a malformed file (corrupt archive, undecodable image) is logged
+     * with its cause and simply yields no cover, so one bad file can never take the
+     * enricher down.</p>
      */
     public static byte[] extract(File file) {
         String format = Formats.formatOf(file.getName());
@@ -57,8 +64,9 @@ public final class CoverExtractor {
             if (format.equals("FB2")) return extractFb2(file);
             if (format.equals("FB2ZIP")) return extractFb2Zip(file);
             if (format.equals("MOBI")) return extractMobi(file);
-        } catch (Exception ignored) {
-            // Any malformed file simply yields no cover.
+        } catch (Exception e) {
+            // Any malformed file simply yields no cover (log the cause for logcat).
+            Log.w(TAG, "Could not extract cover of " + file, e);
         }
         return null;
     }

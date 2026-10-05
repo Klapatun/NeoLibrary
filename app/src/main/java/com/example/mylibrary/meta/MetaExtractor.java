@@ -1,5 +1,6 @@
 package com.example.mylibrary.meta;
 
+import android.util.Log;
 import android.util.Xml;
 
 import com.example.mylibrary.scan.Formats;
@@ -33,12 +34,18 @@ import java.util.zip.ZipInputStream;
  */
 public final class MetaExtractor {
 
+    private static final String TAG = "MetaExtractor";
+
     private MetaExtractor() {}
 
     /**
      * Attempt to read metadata from the given file. Returns a {@link MetaData} whose
      * {@link MetaData#found} flag tells whether anything usable was parsed; fields may
      * still be null/unset, in which case the caller should fall back to the file name.
+     *
+     * <p>Never throws: a broken file (corrupt archive, malformed XML, I/O error) is
+     * logged with its cause and degrades to {@code found = false}, so one bad file can
+     * never take the enricher down.</p>
      */
     public static MetaData extract(File file) {
         String format = Formats.formatOf(file.getName());
@@ -50,8 +57,10 @@ public final class MetaExtractor {
             if (format.equals("MOBI")) return extractMobi(file);
             if (format.equals("TXT")) return extractText(file);
             if (format.equals("HTML")) return extractHtml(file);
-        } catch (Exception ignored) {
-            // Fall through -> not found.
+        } catch (Exception e) {
+            // A broken file must not take the enricher down: log the cause, fall
+            // through -> not found (the file-name title is kept).
+            Log.w(TAG, "Could not parse metadata of " + file, e);
         }
         return notFound(file);
     }

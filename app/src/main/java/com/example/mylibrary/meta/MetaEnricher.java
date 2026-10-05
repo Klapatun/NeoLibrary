@@ -4,6 +4,7 @@ import android.content.Context;
 import android.os.AsyncTask;
 import android.os.Handler;
 import android.os.Looper;
+import android.util.Log;
 
 import com.example.mylibrary.db.BookDatabase;
 import com.example.mylibrary.db.BookProvider;
@@ -39,12 +40,22 @@ import java.util.concurrent.TimeUnit;
  * it is read-only, its result is discarded, and it terminates on its own when the
  * file I/O completes (Java cannot kill a thread, so it is simply let go).</p>
  *
+ * <p><b>Error containment.</b> Every per-book failure is logged and contained: a parse
+ * that throws (corrupt file, I/O error) keeps the file-name title and marks the book
+ * done (the project's no-retry-loop rule for failed extractions), a cover-cache write
+ * that fails is logged and skipped (the metadata is already persisted), and a database
+ * error on one book can never kill the worker loop or the import/detail fast paths —
+ * the pass always moves on to the next book.</p>
+ *
  * <p>{@link #enrichOne} is the single-book variant used by the import flow and by
- * the detail screen's fast path; it is safe to call from any background thread and
- * is idempotent (a book whose metadata was already extracted simply gets the same
- * values written again).</p>
+ * the detail screen's fast path; it is safe to call from any background thread,
+ * idempotent (a book whose metadata was already extracted simply gets the same
+ * values written again) and exception-safe (parse/persist errors are contained and
+ * logged, never rethrown).</p>
  */
 public final class MetaEnricher {
+
+    private static final String TAG = "MetaEnricher";
 
     /** Progress callback; every method is invoked on the main thread. */
     public interface OnProgress {
@@ -168,7 +179,7 @@ public final class MetaEnricher {
         File f = new File(book.path);
         if (!f.isFile()) {
             // File is gone: keep the file-name title and drain the queue slot.
-            db.updateMetadata(book.id, new MetaData(), false);
+            persistMetadata(db, book.id, new MetaData(), false);
             return;
         }
 
@@ -177,12 +188,19 @@ public final class MetaEnricher {
         // it is abandoned and the book is marked "un-enriched" so the pass moves on
         // to the next file instead of stalling on it.
         final Parsed parsed = new Parsed();
+        // Set by the parse thread when the parse throws; inspected after the wait so
+        // the worker (not the parse thread) decides the book's fate.
+        final Exception[] parseError = new Exception[1];
         final CountDownLatch parseDone = new CountDownLatch(1);
         Thread parseThread = new Thread(new Runnable() {
             @Override
             public void run() {
                 try {
                     parseTask.parse(f, book.format, parsed);
+                } catch (Exception e) {
+                    // Record instead of letting it kill the thread: the worker turns
+                    // a failed parse into the book's final state (see below).
+                    parseError[0] = e;
                 } finally {
                     parseDone.countDown();
                 }
@@ -204,14 +222,52 @@ public final class MetaEnricher {
             // flagged so every rescan takes it last. The abandoned thread may still
             // be chugging away, but it is read-only and its result is discarded —
             // it terminates on its own when the file I/O completes.
-            db.markMetaFailed(book.id);
+            Log.w(TAG, "Parse of " + f + " overran " + extractTimeoutMs
+                    + " ms; marked un-enriched (id=" + book.id
+                    + "), retried last on the next rescan");
+            markFailed(db, book.id);
+            return;
+        }
+        if (parseError[0] != null) {
+            // The parse threw (corrupt file, I/O error, parser bug). Follow the
+            // project rule for failed extractions: keep the file-name title, mark the
+            // book done (no retry loop) and log the cause.
+            Log.e(TAG, "Parse of " + f + " (id=" + book.id + ") failed; "
+                    + "keeping the file-name title", parseError[0]);
+            persistMetadata(db, book.id, new MetaData(), true);
             return;
         }
 
-        db.updateMetadata(book.id, parsed.meta, true);
+        persistMetadata(db, book.id, parsed.meta, true);
         byte[] cover = parsed.cover;
         if (cover != null && cover.length > 0) {
-            CoverCache.save(app, book.path, cover);
+            try {
+                CoverCache.save(app, book.path, cover);
+            } catch (Exception e) {
+                // The metadata is already persisted; a failed cover-cache write (e.g.
+                // full disk) must not kill the worker — CoverLoader re-extracts on
+                // demand when the cover is next shown.
+                Log.e(TAG, "Could not cache cover of " + f + " (id=" + book.id + ")", e);
+            }
+        }
+    }
+
+    /** {@link BookDatabase#updateMetadata} isolated: a database error on one book
+     *  must not kill the worker loop or the import/detail fast paths. */
+    private static void persistMetadata(BookDatabase db, long id, MetaData md, boolean readable) {
+        try {
+            db.updateMetadata(id, md, readable);
+        } catch (Exception e) {
+            Log.e(TAG, "Could not persist metadata (id=" + id + ")", e);
+        }
+    }
+
+    /** {@link BookDatabase#markMetaFailed} isolated (see {@link #persistMetadata}). */
+    private static void markFailed(BookDatabase db, long id) {
+        try {
+            db.markMetaFailed(id);
+        } catch (Exception e) {
+            Log.e(TAG, "Could not flag the timed-out book (id=" + id + ")", e);
         }
     }
 }

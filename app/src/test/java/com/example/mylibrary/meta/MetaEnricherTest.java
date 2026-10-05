@@ -348,4 +348,90 @@ public class MetaEnricherTest {
             MetaEnricher.parseTask = savedTask;
         }
     }
+
+    // ------------------------------------------------------------------
+    // parse error containment (a parse that throws, not a slow one)
+    // ------------------------------------------------------------------
+
+    /** A parse that THROWS must not escape enrichOne: the file-name title is kept,
+     *  the book is marked done (the no-retry-loop rule for failed extractions) and is
+     *  NOT flagged un-enriched (that flag is reserved for the time-budget overrun). */
+    @Test
+    public void enrichOneContainsParseErrorsAndKeepsFileNameTitle() throws Exception {
+        File bad = new File(folder.getRoot(), "bad.fb2");
+        TestFixtures.writeText(bad, "not a real fb2");
+        long id = seedStageOne(bad, "FB2", "bad book");
+
+        final MetaEnricher.ParseTask savedTask = MetaEnricher.parseTask;
+        try {
+            MetaEnricher.parseTask = new MetaEnricher.ParseTask() {
+                @Override
+                public void parse(File file, String format, MetaEnricher.Parsed out) {
+                    throw new IllegalStateException("simulated parser crash");
+                }
+            };
+            MetaEnricher.enrichOne(app, db, get(id)); // must not throw
+        } finally {
+            MetaEnricher.parseTask = savedTask;
+        }
+
+        Book b = get(id);
+        assertEquals("the file-name title must survive a throwing parse", "bad book", b.title);
+        assertTrue("a failed extraction marks the book done (no retry loop)", b.metaDone);
+        assertFalse("a throwing parse is not a timeout: no un-enriched flag", b.metaFailed);
+        assertTrue("the queue must be drained", db.needMeta().isEmpty());
+    }
+
+    /** The bulk worker must survive a throwing parse too: the bad book is contained
+     *  (marked done, not flagged) and the rest of the queue is still drained. */
+    @Test
+    public void throwingParseDoesNotStallTheWorkerQueue() throws Exception {
+        File bad = new File(folder.getRoot(), "bad.fb2");
+        File good = new File(folder.getRoot(), "good.txt");
+        TestFixtures.writeText(bad, "not a real fb2");
+        TestFixtures.writeText(good, "alpha\n");
+        long badId = seedStageOne(bad, "FB2", "bad book");
+        long goodId = seedStageOne(good, "TXT", "good");
+
+        final MetaEnricher.ParseTask savedTask = MetaEnricher.parseTask;
+        try {
+            MetaEnricher.parseTask = new MetaEnricher.ParseTask() {
+                @Override
+                public void parse(File file, String format, MetaEnricher.Parsed out) {
+                    if (file.getName().equals("bad.fb2")) {
+                        throw new IllegalStateException("simulated parser crash");
+                    }
+                    out.meta = MetaExtractor.extract(file);
+                }
+            };
+
+            MetaEnricher.start(app, db, new MetaEnricher.OnProgress() {
+                @Override public void onProgress(int done, int total) { /* below */ }
+                @Override public void onFinished() { /* below */ }
+            });
+
+            // Both books end up done (the throwing one by the error path), so the
+            // queue drains to zero.
+            ShadowLooper looper = shadowOf(Looper.getMainLooper());
+            long deadline = System.currentTimeMillis() + WAIT_MS;
+            while (System.currentTimeMillis() < deadline && !db.needMeta().isEmpty()) {
+                looper.idle();
+                Thread.sleep(10);
+            }
+            looper.idle();
+            MetaEnricher.cancel();
+
+            assertTrue("a throwing parse must not stall the queue", db.needMeta().isEmpty());
+            Book badBook = get(badId);
+            assertEquals("bad book", badBook.title); // file-name title kept
+            assertTrue("the failed book is marked done", badBook.metaDone);
+            assertFalse("the failed book is not flagged un-enriched", badBook.metaFailed);
+            Book goodBook = get(goodId);
+            assertTrue("the good book is enriched normally", goodBook.metaDone);
+            assertEquals("good", goodBook.title);
+        } finally {
+            MetaEnricher.cancel();
+            MetaEnricher.parseTask = savedTask;
+        }
+    }
 }
