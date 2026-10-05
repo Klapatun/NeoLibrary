@@ -25,6 +25,8 @@ public class Book implements Parcelable {
     public long sizeBytes;
     public boolean exported;    // true if the on-disk file metadata was edited
     public boolean metaDone;    // true once the background stage extracted in-file metadata
+    public boolean metaFailed;  // true if the last parse overran the enricher's time budget
+                                // ("un-enriched": stays pending, taken last on the next rescan)
     public boolean userEdited;  // true once the user edited fields in the catalog
 
     public String displayFormat() {
@@ -55,6 +57,7 @@ public class Book implements Parcelable {
         sizeBytes = in.readLong();
         exported = in.readByte() != 0;
         metaDone = in.readByte() != 0;
+        metaFailed = in.readByte() != 0;
         userEdited = in.readByte() != 0;
     }
 
@@ -71,6 +74,7 @@ public class Book implements Parcelable {
         dest.writeLong(sizeBytes);
         dest.writeByte((byte) (exported ? 1 : 0));
         dest.writeByte((byte) (metaDone ? 1 : 0));
+        dest.writeByte((byte) (metaFailed ? 1 : 0));
         dest.writeByte((byte) (userEdited ? 1 : 0));
     }
 

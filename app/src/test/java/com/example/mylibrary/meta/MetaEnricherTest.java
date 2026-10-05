@@ -227,4 +227,125 @@ public class MetaEnricherTest {
         List<Book> rest = db.needMeta();
         assertTrue(rest.isEmpty());
     }
+
+    // ------------------------------------------------------------------
+    // per-file parse time budget (2 minutes in production)
+    // ------------------------------------------------------------------
+
+    /** A parse that overruns the budget must be abandoned (enrichOne returns as soon
+     *  as the budget elapses, not when the parse finishes), and the book must stay in
+     *  the stage-2 queue flagged "un-enriched" (meta_done = 0, meta_failed = 1). */
+    @Test
+    public void slowParseIsAbandonedAtTheTimeoutAndTheBookIsMarkedUnEnriched() throws Exception {
+        File fb2 = new File(folder.getRoot(), "slow.fb2");
+        TestFixtures.writeText(fb2, TestFixtures.FB2_FULL);
+        long id = seedStageOne(fb2, "FB2", "slow");
+
+        final long savedTimeout = MetaEnricher.extractTimeoutMs;
+        final MetaEnricher.ParseTask savedTask = MetaEnricher.parseTask;
+        try {
+            MetaEnricher.extractTimeoutMs = 200;
+            MetaEnricher.parseTask = new MetaEnricher.ParseTask() {
+                @Override
+                public void parse(File file, String format, MetaEnricher.Parsed out) {
+                    try {
+                        Thread.sleep(10000); // much longer than the 200ms budget
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                    }
+                }
+            };
+
+            long t0 = System.currentTimeMillis();
+            MetaEnricher.enrichOne(app, db, get(id));
+            long elapsed = System.currentTimeMillis() - t0;
+
+            assertTrue("enrichOne must give up at the budget, not wait for the parse"
+                            + " (took " + elapsed + "ms)",
+                    elapsed < 5000);
+            Book b = get(id);
+            assertFalse("a timed-out book must remain un-enriched (still in the queue)",
+                    b.metaDone);
+            assertTrue("a timed-out book must be flagged un-enriched", b.metaFailed);
+            assertEquals("the flagged book must still be in the stage-2 queue",
+                    1, db.needMeta().size());
+        } finally {
+            MetaEnricher.extractTimeoutMs = savedTimeout;
+            MetaEnricher.parseTask = savedTask;
+        }
+    }
+
+    /** The bulk worker must not stall on a slow file: it times the out, flags the
+     *  book, and still drains the rest of the queue. On the next rescan the flagged
+     *  book is retried — here, with a fast parse — and the flag is cleared. */
+    @Test
+    public void startMovesOnToTheNextFileWhenAParseOverrunsTheBudget() throws Exception {
+        File fast = new File(folder.getRoot(), "fast.txt");
+        File slow = new File(folder.getRoot(), "slow.fb2");
+        TestFixtures.writeText(fast, "alpha\n");
+        TestFixtures.writeText(slow, TestFixtures.FB2_FULL);
+        seedStageOne(fast, "TXT", "fast");
+        long slowId = seedStageOne(slow, "FB2", "slow");
+
+        final long savedTimeout = MetaEnricher.extractTimeoutMs;
+        final MetaEnricher.ParseTask savedTask = MetaEnricher.parseTask;
+        try {
+            MetaEnricher.extractTimeoutMs = 200;
+            MetaEnricher.parseTask = new MetaEnricher.ParseTask() {
+                @Override
+                public void parse(File file, String format, MetaEnricher.Parsed out) {
+                    if (file.getName().equals("slow.fb2")) {
+                        try {
+                            Thread.sleep(5000); // much longer than the 200ms budget
+                        } catch (InterruptedException ignored) {
+                        }
+                    } else {
+                        out.meta = MetaExtractor.extract(file); // the fast file: real parse
+                    }
+                }
+            };
+
+            // Wait for the worker's onFinished (not for the queue size): the queue
+            // drops to 1 as soon as the fast book is enriched, but the worker only
+            // flags the slow book once it has actually timed its parse out.
+            final java.util.concurrent.atomic.AtomicBoolean workerDone =
+                    new java.util.concurrent.atomic.AtomicBoolean(false);
+            MetaEnricher.start(app, db, new MetaEnricher.OnProgress() {
+                @Override public void onProgress(int done, int total) { /* below */ }
+                @Override public void onFinished() { workerDone.set(true); }
+            });
+
+            ShadowLooper looper = shadowOf(Looper.getMainLooper());
+            long deadline = System.currentTimeMillis() + WAIT_MS;
+            while (System.currentTimeMillis() < deadline && !workerDone.get()) {
+                looper.idle();
+                Thread.sleep(10);
+            }
+            looper.idle();
+            MetaEnricher.cancel();
+            assertTrue("the worker must have finished the pass", workerDone.get());
+
+            assertEquals("the worker must get past the slow file and drain the rest",
+                    1, db.needMeta().size());
+            Book slowBook = get(slowId);
+            assertFalse("the slow book must stay un-enriched", slowBook.metaDone);
+            assertTrue("the slow book must be flagged un-enriched", slowBook.metaFailed);
+            for (Book b : db.all(null)) {
+                if (b.id == slowId) continue;
+                assertTrue("the other books must be enriched", b.metaDone);
+            }
+
+            // Rescan: the flagged book is retried (parse is fast now) and the flag clears.
+            MetaEnricher.parseTask = savedTask; // fast parse
+            MetaEnricher.enrichOne(app, db, get(slowId));
+            Book after = get(slowId);
+            assertTrue(after.metaDone);
+            assertFalse("a successful retry clears the un-enriched flag", after.metaFailed);
+            assertTrue("the queue is finally empty", db.needMeta().isEmpty());
+        } finally {
+            MetaEnricher.cancel();
+            MetaEnricher.extractTimeoutMs = savedTimeout;
+            MetaEnricher.parseTask = savedTask;
+        }
+    }
 }
