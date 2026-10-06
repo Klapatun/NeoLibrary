@@ -17,6 +17,7 @@ import android.os.Handler;
 import android.os.Looper;
 import android.provider.OpenableColumns;
 import android.view.View;
+import android.widget.AbsListView;
 import android.widget.GridView;
 import android.widget.ImageButton;
 import android.widget.ListView;
@@ -119,18 +120,18 @@ public class MainActivityTest {
     /** Waits until the visible adapter shows exactly {@code expected} rows. The cursor
      *  updates asynchronously (notifyChange -> loader re-query -> onLoadFinished), so
      *  both the real worker threads and the main looper have to be given time. */
-    private void awaitAdapterCount(ListView list, int expected) throws InterruptedException {
+    private void awaitAdapterCount(AbsListView view, int expected) throws InterruptedException {
         long deadline = System.currentTimeMillis() + WAIT_MS;
         ShadowLooper looper = shadowOf(Looper.getMainLooper());
         while (System.currentTimeMillis() < deadline) {
             looper.idle();
-            if (list.getAdapter().getCount() == expected) return;
+            if (view.getAdapter().getCount() == expected) return;
             Thread.sleep(10);
         }
         looper.idle();
         assertTrue("timed out waiting for the adapter to show " + expected
-                + " row(s), got " + list.getAdapter().getCount(),
-                list.getAdapter().getCount() == expected);
+                + " row(s), got " + view.getAdapter().getCount(),
+                view.getAdapter().getCount() == expected);
     }
 
     /** A lazily-evaluated condition, so the wait loop can re-check it every round. */
@@ -155,8 +156,8 @@ public class MainActivityTest {
         looper.idle();
     }
 
-    private boolean adapterHasCount(ListView list, int expected) {
-        return list.getAdapter().getCount() == expected;
+    private boolean adapterHasCount(AbsListView view, int expected) {
+        return view.getAdapter().getCount() == expected;
     }
 
     // ------------------------------------------------------------------
@@ -183,11 +184,12 @@ public class MainActivityTest {
         assertTrue(formats.contains("FB2ZIP"));
         assertEquals(3, formats.size()); // TXT counted once: {TXT, PDF, FB2ZIP}
 
-        // The list is now driven by the cursor loader: wait until it caught up with
-        // the stage-1 upserts (notifyChange -> re-query -> onLoadFinished).
-        ListView list = a.findViewById(R.id.book_list);
-        awaitAdapterCount(list, 4);
-        assertEquals(4, list.getAdapter().getCount());
+        // The view is now driven by the cursor loader: wait until it caught up with
+        // the stage-1 upserts (notifyChange -> re-query -> onLoadFinished). The
+        // default (and initially visible) view is the tile grid.
+        GridView grid = a.findViewById(R.id.book_grid);
+        awaitAdapterCount(grid, 4);
+        assertEquals(4, grid.getAdapter().getCount());
         assertEquals(View.GONE, a.findViewById(R.id.progress).getVisibility());
         assertTrue(ShadowToast.showedToast("Found 4 book(s)"));
     }
@@ -284,8 +286,8 @@ public class MainActivityTest {
                         && dbLocal.all(null).isEmpty();
             }
         });
-        ListView list = a.findViewById(R.id.book_list);
-        assertEquals("no books after the first (empty) scan", 0, list.getAdapter().getCount());
+        GridView grid = a.findViewById(R.id.book_grid);
+        assertEquals("no books after the first (empty) scan", 0, grid.getAdapter().getCount());
 
         // The user drops two books onto storage while the app is still open...
         TestFixtures.writeText(new File(storage, "story_a.txt"), "alpha\n");
@@ -301,10 +303,10 @@ public class MainActivityTest {
 
         // The new books land in the catalog...
         awaitCatalogSize(2);
-        // ...and must be drawn in the list (the original bug: catalog updated,
-        // list stayed empty until the app was restarted).
-        awaitAdapterCount(list, 2);
-        assertEquals(2, list.getAdapter().getCount());
+        // ...and must be drawn in the visible view (the original bug: catalog
+        // updated, the view stayed empty until the app was restarted).
+        awaitAdapterCount(grid, 2);
+        assertEquals(2, grid.getAdapter().getCount());
     }
 
     // ------------------------------------------------------------------
@@ -322,28 +324,29 @@ public class MainActivityTest {
         ListView list = a.findViewById(R.id.book_list);
         GridView grid = a.findViewById(R.id.book_grid);
 
-        // Initial state: list mode, with the two books on the cursor.
-        awaitAdapterCount(list, 2);
+        // Initial state: tile (grid) mode — the default view — with the two books
+        // on the cursor.
+        awaitAdapterCount(grid, 2);
+        assertEquals(View.GONE, list.getVisibility());
+        assertEquals(View.VISIBLE, grid.getVisibility());
+        assertNull("adapter not yet attached to the list", list.getAdapter());
+        assertNotNull("adapter attached to grid", grid.getAdapter());
+
+        // Switch to list: the adapter must move (a CursorAdapter cannot serve two views).
+        ImageButton toggle = a.findViewById(R.id.toggle_view);
+        toggle.performClick();
         assertEquals(View.VISIBLE, list.getVisibility());
         assertEquals(View.GONE, grid.getVisibility());
-        assertNotNull("adapter attached to list", list.getAdapter());
-        assertNull("adapter not yet attached to grid", grid.getAdapter());
+        assertNotNull("adapter must be attached to the list", list.getAdapter());
+        assertNull("adapter must be detached from the grid", grid.getAdapter());
+        assertEquals(2, list.getAdapter().getCount());
 
-        // Switch to grid: the adapter must move (a CursorAdapter cannot serve two views).
-        ImageButton toggle = a.findViewById(R.id.toggle_view);
+        // Switch back to the tiles.
         toggle.performClick();
         assertEquals(View.GONE, list.getVisibility());
         assertEquals(View.VISIBLE, grid.getVisibility());
+        assertNotNull("adapter must be attached to the grid again", grid.getAdapter());
         assertNull("adapter must be detached from the list", list.getAdapter());
-        assertNotNull("adapter must be attached to the grid", grid.getAdapter());
-        assertEquals(2, grid.getAdapter().getCount());
-
-        // Switch back to list.
-        toggle.performClick();
-        assertEquals(View.VISIBLE, list.getVisibility());
-        assertEquals(View.GONE, grid.getVisibility());
-        assertNotNull("adapter must be attached to the list again", list.getAdapter());
-        assertNull("adapter must be detached from the grid", grid.getAdapter());
     }
 
     // ------------------------------------------------------------------
@@ -359,19 +362,19 @@ public class MainActivityTest {
         MainActivity a = launchMain();
         awaitCatalogSize(3);
 
-        ListView list = a.findViewById(R.id.book_list);
-        awaitAdapterCount(list, 3);
+        GridView grid = a.findViewById(R.id.book_grid);
+        awaitAdapterCount(grid, 3);
         Spinner spinner = a.findViewById(R.id.filter_spinner);
-        final BookAdapter adapter = (BookAdapter) list.getAdapter();
+        final BookAdapter adapter = (BookAdapter) grid.getAdapter();
 
         final int txtPos = 2 + Arrays.asList(Formats.ALL).indexOf("TXT");
         spinner.setSelection(txtPos);
 
         // The re-query for the filtered cursor is asynchronous; wait it out.
-        final ListView listRef = list;
+        final AbsListView gridRef = grid;
         awaitCondition("TXT filter to apply", new Cond() {
             public boolean holds() {
-                return adapterHasCount(listRef, 2);
+                return adapterHasCount(gridRef, 2);
             }
         });
         for (int i = 0; i < adapter.getCount(); i++) {
@@ -383,7 +386,7 @@ public class MainActivityTest {
         final MainActivity act = a;
         awaitCondition("recent filter to apply", new Cond() {
             public boolean holds() {
-                return adapterHasCount(listRef, 0)
+                return adapterHasCount(gridRef, 0)
                         && "No books read yet.".equals(
                         ((TextView) act.findViewById(R.id.empty_view)).getText().toString());
             }
@@ -416,16 +419,17 @@ public class MainActivityTest {
         return -1;
     }
 
-    /** The laid-out row view of adapter position {@code pos}: ListView materializes
-     *  its rows on a layout pass, so pump the main looper until the row exists. */
-    private View rowAt(ListView list, int pos) throws InterruptedException {
+    /** The laid-out row view of adapter position {@code pos}: AbsListView
+     *  (ListView and GridView alike) materializes its rows on a layout pass, so
+     *  pump the main looper until the row exists. */
+    private View rowAt(AbsListView view, int pos) throws InterruptedException {
         View row = null;
         long deadline = System.currentTimeMillis() + WAIT_MS;
         while (System.currentTimeMillis() < deadline && row == null) {
             shadowOf(Looper.getMainLooper()).idle();
-            int index = pos - list.getFirstVisiblePosition();
-            if (index >= 0 && index < list.getChildCount()) {
-                row = list.getChildAt(index);
+            int index = pos - view.getFirstVisiblePosition();
+            if (index >= 0 && index < view.getChildCount()) {
+                row = view.getChildAt(index);
             } else {
                 Thread.sleep(10);
             }
@@ -435,25 +439,25 @@ public class MainActivityTest {
     }
 
     /**
-     * Taps the row of {@code target} in the visible list. The tap goes through the
-     * row view's own OnClickListener (BookAdapter binds it, because a row with a
+     * Taps the row/tile of {@code target} in the visible view. The tap goes through
+     * the row view's own OnClickListener (BookAdapter binds it, because a row with a
      * clickable kebab never fires ListView.onItemClick) — the same listener a real
      * finger triggers.
      */
-    private void tapBook(ListView list, Book target) throws InterruptedException {
-        BookAdapter adapter = (BookAdapter) list.getAdapter();
+    private void tapBook(AbsListView view, Book target) throws InterruptedException {
+        BookAdapter adapter = (BookAdapter) view.getAdapter();
         int pos = positionOf(adapter, target);
-        assertTrue("the book must be in the visible list", pos >= 0);
-        rowAt(list, pos).performClick();
+        assertTrue("the book must be in the visible view", pos >= 0);
+        rowAt(view, pos).performClick();
     }
 
-    /** Opens the kebab menu for the book at adapter position {@code pos} (row view
-     *  built by the adapter, kebab click) and returns the popup — so the test can
-     *  pick an item exactly like a tap on the popup window would. */
-    private android.widget.PopupMenu openKebabFor(ListView list, int pos)
+    /** Opens the kebab menu for the book at adapter position {@code pos} (row/tile
+     *  view built by the adapter, kebab click) and returns the popup — so the test
+     *  can pick an item exactly like a tap on the popup window would. */
+    private android.widget.PopupMenu openKebabFor(AbsListView view, int pos)
             throws InterruptedException {
-        BookAdapter adapter = (BookAdapter) list.getAdapter();
-        rowAt(list, pos).findViewById(R.id.book_more).performClick();
+        BookAdapter adapter = (BookAdapter) view.getAdapter();
+        rowAt(view, pos).findViewById(R.id.book_more).performClick();
         android.widget.PopupMenu menu = adapter.getLastPopupMenu();
         assertNotNull("the kebab click must open the menu", menu);
         return menu;
@@ -477,12 +481,12 @@ public class MainActivityTest {
 
         MainActivity a = launchMain();
         awaitCatalogSize(2);
-        ListView list = a.findViewById(R.id.book_list);
-        awaitAdapterCount(list, 2);
+        GridView grid = a.findViewById(R.id.book_grid);
+        awaitAdapterCount(grid, 2);
 
         Book target = findBook("story_a.txt");
         assertNotNull(target);
-        tapBook(list, target);
+        tapBook(grid, target);
 
         // The tap must not open anything — it only asks first.
         android.app.Dialog d = ShadowDialog.getLatestDialog();
@@ -508,12 +512,12 @@ public class MainActivityTest {
 
         MainActivity a = launchMain();
         awaitCatalogSize(2);
-        ListView list = a.findViewById(R.id.book_list);
-        awaitAdapterCount(list, 2);
+        GridView grid = a.findViewById(R.id.book_grid);
+        awaitAdapterCount(grid, 2);
 
         Book target = findBook("story_a.txt");
         assertNotNull(target);
-        tapBook(list, target);
+        tapBook(grid, target);
         android.app.Dialog d = ShadowDialog.getLatestDialog();
         assertNotNull("the tap must show the confirmation dialog", d);
 
@@ -545,12 +549,12 @@ public class MainActivityTest {
 
         MainActivity a = launchMain();
         awaitCatalogSize(2);
-        ListView list = a.findViewById(R.id.book_list);
-        awaitAdapterCount(list, 2);
+        GridView grid = a.findViewById(R.id.book_grid);
+        awaitAdapterCount(grid, 2);
 
         Book target = findBook("story_a.txt");
         assertNotNull(target);
-        tapBook(list, target);
+        tapBook(grid, target);
         android.app.Dialog d = ShadowDialog.getLatestDialog();
         assertNotNull("the tap must show the confirmation dialog", d);
 
@@ -579,16 +583,16 @@ public class MainActivityTest {
 
         MainActivity a = launchMain();
         awaitCatalogSize(2);
-        ListView list = a.findViewById(R.id.book_list);
-        awaitAdapterCount(list, 2);
-        BookAdapter adapter = (BookAdapter) list.getAdapter();
+        GridView grid = a.findViewById(R.id.book_grid);
+        awaitAdapterCount(grid, 2);
+        BookAdapter adapter = (BookAdapter) grid.getAdapter();
 
         Book target = findBook("story_a.txt");
         assertNotNull(target);
         int pos = positionOf(adapter, target);
         assertTrue("the book must be in the visible list", pos >= 0);
 
-        android.widget.PopupMenu menu = openKebabFor(list, pos);
+        android.widget.PopupMenu menu = openKebabFor(grid, pos);
         // The framework MenuItem has no public click method — performIdentifierAction
         // goes through the same path a real tap on the popup item would.
         menu.getMenu().performIdentifierAction(R.id.book_menu_details, 0);
@@ -608,16 +612,16 @@ public class MainActivityTest {
 
         MainActivity a = launchMain();
         awaitCatalogSize(2);
-        ListView list = a.findViewById(R.id.book_list);
-        awaitAdapterCount(list, 2);
-        BookAdapter adapter = (BookAdapter) list.getAdapter();
+        GridView grid = a.findViewById(R.id.book_grid);
+        awaitAdapterCount(grid, 2);
+        BookAdapter adapter = (BookAdapter) grid.getAdapter();
 
         Book target = findBook("story_a.txt");
         assertNotNull(target);
         int pos = positionOf(adapter, target);
         assertTrue("the book must be in the visible list", pos >= 0);
 
-        android.widget.PopupMenu menu = openKebabFor(list, pos);
+        android.widget.PopupMenu menu = openKebabFor(grid, pos);
         menu.getMenu().performIdentifierAction(R.id.book_menu_edit, 0);
         shadowOf(Looper.getMainLooper()).idle();
 
@@ -639,9 +643,9 @@ public class MainActivityTest {
 
         MainActivity a = launchMain();
         awaitCatalogSize(2);
-        ListView list = a.findViewById(R.id.book_list);
-        awaitAdapterCount(list, 2);
-        BookAdapter adapter = (BookAdapter) list.getAdapter();
+        GridView grid = a.findViewById(R.id.book_grid);
+        awaitAdapterCount(grid, 2);
+        BookAdapter adapter = (BookAdapter) grid.getAdapter();
 
         Book target = findBook("story_a.txt");
         assertNotNull(target);
@@ -655,7 +659,7 @@ public class MainActivityTest {
         app.getContentResolver().registerContentObserver(BookProvider.CONTENT_URI, true, onBooks);
         app.getContentResolver().registerContentObserver(BookProvider.RECENT_URI, true, onRecent);
 
-        android.widget.PopupMenu menu = openKebabFor(list, pos);
+        android.widget.PopupMenu menu = openKebabFor(grid, pos);
         menu.getMenu().performIdentifierAction(R.id.book_menu_remove, 0);
 
         // The Remove pick must ask for confirmation (the same texts the old
@@ -783,9 +787,9 @@ public class MainActivityTest {
         assertTrue("the imported book must be enriched", imported.metaDone);
         assertTrue(ShadowToast.showedToast("Imported imported_book.txt"));
 
-        // And the list picked it up through the loader.
-        ListView list = a.findViewById(R.id.book_list);
-        awaitAdapterCount(list, 1);
+        // And the view (the grid, the default) picked it up through the loader.
+        GridView grid = a.findViewById(R.id.book_grid);
+        awaitAdapterCount(grid, 1);
     }
 
     /** Re-importing a file with the same name overwrites it: the catalog row must be

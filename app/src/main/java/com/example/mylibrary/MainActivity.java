@@ -71,7 +71,7 @@ public class MainActivity extends Activity
     private ImageButton toggleView;
     private LinearLayout enrichBar;
     private TextView enrichStatus;
-    private int viewMode = BookAdapter.MODE_LIST;
+    private int viewMode = BookAdapter.MODE_GRID; // tiles are the default view
 
     private List<String> filterLabels;
     private List<String> filterValues; // format ids, or "" for All, or "__recent__"
@@ -111,16 +111,16 @@ public class MainActivity extends Activity
         grid.setEmptyView(emptyView);
         // The adapter is cursor-driven from the start; the loader below replaces the
         // cursor on every load. Attached to exactly ONE view at a time — the visible
-        // one (list initially). list and grid are stacked in a FrameLayout and a
-        // CursorAdapter cannot be attached to two views at once, so setViewMode moves
-        // it: detaches it from the view going away and attaches it to the one coming
-        // forward (guarded by getAdapter() == null so the move happens only on the
-        // first toggle each way).
+        // one (the tile grid initially: tiles are the default view). list and grid
+        // are stacked in a FrameLayout and a CursorAdapter cannot be attached to two
+        // views at once, so setViewMode moves it: detaches it from the view going
+        // away and attaches it to the one coming forward (guarded by
+        // getAdapter() == null so the move happens only on the first toggle each way).
         // "this" as BookMenuActions: the per-book kebab (Details / Edit metadata /
         // Remove) dispatches its picks here — the navigation and the delete
         // confirmation live on the screen, not in the row binding.
         adapter = new BookAdapter(this, db.cursorAll(null), this);
-        list.setAdapter(adapter);
+        grid.setAdapter(adapter);
 
         // The system action bar is off on this screen (AppTheme.NoActionBar):
         // import and rescan live in the indigo header row now, not in an
@@ -142,7 +142,7 @@ public class MainActivity extends Activity
             }
         });
 
-        setViewMode(BookAdapter.MODE_LIST);
+        setViewMode(BookAdapter.MODE_GRID);
         setupFilterSpinner();
         // The framework Activity (unlike AndroidX's FragmentActivity) has no loader
         // shortcuts of its own — go through the LoaderManager explicitly.

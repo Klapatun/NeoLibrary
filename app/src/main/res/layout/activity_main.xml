@@ -65,9 +65,9 @@
                     android:id="@+id/toggle_view"
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
-                    android:src="@drawable/ic_grid"
+                    android:src="@drawable/ic_list"
                     android:background="?android:attr/selectableItemBackground"
-                    android:contentDescription="@string/view_grid"
+                    android:contentDescription="@string/view_list"
                     android:padding="8dp" />
             </LinearLayout>
         </RelativeLayout>
@@ -112,11 +112,15 @@
         android:paddingLeft="8px"
         android:paddingRight="8px">
 
+        <!-- Tiles (the grid) are the DEFAULT view, so the list starts hidden;
+             MainActivity.setViewMode() flips the visibilities on the first toggle
+             (and on a persisted non-default choice). -->
         <ListView
             android:id="@+id/book_list"
             android:layout_width="match_parent"
             android:layout_height="match_parent"
-            android:choiceMode="singleChoice" />
+            android:choiceMode="singleChoice"
+            android:visibility="gone" />
 
         <!-- Uniform tiles, sized in px for the ONYX Boox Volta 3 (6", 1024x758):
              each tile is a fixed 242px wide (stretchMode=none, columnWidth=242px),
@@ -136,8 +140,7 @@
             android:stretchMode="none"
             android:columnWidth="242px"
             android:scrollbarStyle="insideOverlay"
-            android:verticalScrollbarPosition="defaultPosition"
-            android:visibility="gone" />
+            android:verticalScrollbarPosition="defaultPosition" />
 
         <ProgressBar
             android:id="@+id/progress"
