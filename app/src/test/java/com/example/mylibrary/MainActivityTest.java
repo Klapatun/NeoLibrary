@@ -8,8 +8,9 @@ import static org.junit.Assert.assertTrue;
 import static org.robolectric.Shadows.shadowOf;
 
 import android.app.Activity;
-import android.content.Intent;
 import android.content.Context;
+import android.content.Intent;
+import android.content.SharedPreferences;
 import android.database.ContentObserver;
 import android.net.Uri;
 import android.os.Bundle;
@@ -347,6 +348,57 @@ public class MainActivityTest {
         assertEquals(View.VISIBLE, grid.getVisibility());
         assertNotNull("adapter must be attached to the grid again", grid.getAdapter());
         assertNull("adapter must be detached from the list", list.getAdapter());
+    }
+
+    /** The user's view-mode choice (list/tiles) is stored in the phone's memory
+     *  (SharedPreferences) and must be applied on the next launch — even a cold
+     *  start with no saved instance state, i.e. the app was simply closed. */
+    @Test
+    public void viewModeChoiceIsPersistedAcrossAppRestarts() throws Exception {
+        TestFixtures.writeText(new File(storage, "story_a.txt"), "alpha\n");
+        TestFixtures.writeText(new File(storage, "story_b.txt"), "beta\n");
+
+        ActivityController<MainActivity> c = Robolectric.buildActivity(MainActivity.class);
+        MainActivity a = c.setup().get();
+
+        ListView list = a.findViewById(R.id.book_list);
+        GridView grid = a.findViewById(R.id.book_grid);
+
+        // Initial state: tiles — the default view. Wait for the scan to load the
+        // catalog first: with an EMPTY adapter the framework shows the empty view
+        // instead of the list view (AbsListView.checkForDisabledView hides the view
+        // itself), so the raw visibility is only meaningful once data is on screen.
+        awaitAdapterCount(grid, 2);
+        assertEquals(View.VISIBLE, grid.getVisibility());
+        assertEquals(View.GONE, list.getVisibility());
+        assertNotNull("adapter attached to the grid", grid.getAdapter());
+        assertNull("adapter not attached to the list", list.getAdapter());
+
+        // The user switches to the list...
+        a.findViewById(R.id.toggle_view).performClick();
+        assertEquals("the toggle switches to the list", View.VISIBLE, list.getVisibility());
+        assertEquals(View.GONE, grid.getVisibility());
+        assertNotNull("adapter attached to the list", list.getAdapter());
+        assertNull("adapter not attached to the grid", grid.getAdapter());
+
+        // ...and the choice is saved to the phone's memory (MainActivity's private
+        // prefs file "library_prefs", key "view_mode" — mirrors the private
+        // constants in MainActivity).
+        SharedPreferences prefs = a.getSharedPreferences("library_prefs", Context.MODE_PRIVATE);
+        assertEquals(BookAdapter.MODE_LIST, prefs.getInt("view_mode", -1));
+
+        // "Close the app" and relaunch: the persisted choice, not the default,
+        // must be the initial view mode.
+        c.destroy();
+        MainActivity a2 = Robolectric.buildActivity(MainActivity.class).setup().get();
+        ListView list2 = a2.findViewById(R.id.book_list);
+        GridView grid2 = a2.findViewById(R.id.book_grid);
+        awaitAdapterCount(list2, 2);
+        assertEquals("the list choice must survive the restart",
+                View.VISIBLE, list2.getVisibility());
+        assertEquals("the grid must stay hidden", View.GONE, grid2.getVisibility());
+        assertNotNull("adapter attached to the list", list2.getAdapter());
+        assertNull("adapter not attached to the grid", grid2.getAdapter());
     }
 
     // ------------------------------------------------------------------

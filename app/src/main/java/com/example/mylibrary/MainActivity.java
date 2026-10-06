@@ -58,6 +58,10 @@ public class MainActivity extends Activity
 
     private static final int REQ_IMPORT = 100;
     private static final int LOADER_BOOKS = 1;
+    /** SharedPreferences file for the UI settings that must survive an app restart. */
+    private static final String PREFS_NAME = "library_prefs";
+    /** The chosen display mode (a {@code BookAdapter.MODE_*} value). */
+    private static final String PREF_KEY_VIEW_MODE = "view_mode";
 
     private BookDatabase db;
     private BookAdapter adapter;
@@ -142,7 +146,13 @@ public class MainActivity extends Activity
             }
         });
 
-        setViewMode(BookAdapter.MODE_GRID);
+        // The display mode (list/tiles) is persisted in the phone's memory
+        // (SharedPreferences), so it survives the app being closed: apply the saved
+        // choice (tiles by default) now. The field's initial value (MODE_GRID)
+        // matches the layout's initial state, so a first launch — or a stored
+        // default — is a no-op transition.
+        setViewMode(getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
+                .getInt(PREF_KEY_VIEW_MODE, BookAdapter.MODE_GRID));
         setupFilterSpinner();
         // The framework Activity (unlike AndroidX's FragmentActivity) has no loader
         // shortcuts of its own — go through the LoaderManager explicitly.
@@ -200,6 +210,12 @@ public class MainActivity extends Activity
             this.list.setVisibility(View.VISIBLE);
             this.grid.setVisibility(View.GONE);
         }
+
+        // Remember the choice in the phone's memory so the next launch opens in
+        // the same mode (written only when the mode actually changed, so the
+        // startup no-op does not touch the file).
+        getSharedPreferences(PREFS_NAME, MODE_PRIVATE).edit()
+                .putInt(PREF_KEY_VIEW_MODE, mode).commit();
     }
 
     // -----------------------------------------------------------------
