@@ -126,7 +126,17 @@ public class MainActivity extends Activity
         // "this" as BookMenuActions: the per-book kebab (Details / Edit metadata /
         // Remove) dispatches its picks here — the navigation and the delete
         // confirmation live on the screen, not in the row binding.
+        //
+        // The adapter's OWN default mode is MODE_LIST, which does not match the
+        // screen's default (grid): on a grid launch setViewMode below takes its
+        // early-return path (the field already holds MODE_GRID) and would never
+        // call adapter.setMode — the first layout pass would then bind LIST rows
+        // (item_book, circle covers) inside the GridView. Force the adapter onto
+        // the mode the screen is about to apply, before any row gets inflated.
+        int initialMode = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
+                .getInt(PREF_KEY_VIEW_MODE, BookAdapter.MODE_GRID);
         adapter = new BookAdapter(this, db.cursorAll(null), this);
+        adapter.setMode(initialMode);
         grid.setAdapter(adapter);
 
         // The system action bar is off on this screen (AppTheme.NoActionBar):
@@ -148,9 +158,9 @@ public class MainActivity extends Activity
         // (SharedPreferences), so it survives the app being closed: apply the saved
         // choice (tiles by default) now. The field's initial value (MODE_GRID)
         // matches the layout's initial state, so a first launch — or a stored
-        // default — is a no-op transition.
-        setViewMode(getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
-                .getInt(PREF_KEY_VIEW_MODE, BookAdapter.MODE_GRID));
+        // default — is a no-op transition (the adapter was already forced onto
+        // this mode above, so the early return skips no state that matters).
+        setViewMode(initialMode);
         setupFilterSpinner();
         // The framework Activity (unlike AndroidX's FragmentActivity) has no loader
         // shortcuts of its own — go through the LoaderManager explicitly.

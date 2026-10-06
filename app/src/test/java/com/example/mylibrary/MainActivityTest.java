@@ -401,6 +401,34 @@ public class MainActivityTest {
         assertNull("adapter not attached to the grid", grid2.getAdapter());
     }
 
+    /** The FIRST layout in the default (grid) mode must bind the TILE layout
+     *  (item_book_grid), not the list layout (item_book) with its circle covers.
+     *  Regression test: the adapter's own class default is MODE_LIST, and on a
+     *  grid launch setViewMode() takes its early-return path — without forcing
+     *  the adapter onto the initial mode, the first layout pass would inflate
+     *  list rows (small circle covers) inside the GridView until the user
+     *  toggles once. */
+    @Test
+    public void firstLayoutInDefaultGridModeBindsGridTilesNotListRows() throws Exception {
+        TestFixtures.writeText(new File(storage, "story_a.txt"), "alpha\n");
+        TestFixtures.writeText(new File(storage, "story_b.txt"), "beta\n");
+
+        MainActivity a = launchMain();
+        awaitCatalogSize(2);
+        GridView grid = a.findViewById(R.id.book_grid);
+        awaitAdapterCount(grid, 2);
+
+        // The grid is the visible view and materializes its rows on the layout pass.
+        assertEquals(View.VISIBLE, grid.getVisibility());
+        View row = rowAt(grid, 0);
+        assertNotNull("the tile must carry the grid cover",
+                row.findViewById(R.id.book_grid_cover));
+        assertNotNull("the tile must carry the grid title",
+                row.findViewById(R.id.book_grid_title));
+        assertNull("a list row must not be inflated inside the grid",
+                row.findViewById(R.id.book_title));
+    }
+
     // ------------------------------------------------------------------
     // header kebab (import / rescan)
     // ------------------------------------------------------------------
