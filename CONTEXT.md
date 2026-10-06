@@ -58,7 +58,11 @@ Every book's metadata is stored in **two places**:
 
 `MainActivity` shows the same `BookAdapter` in both a `ListView` and a `GridView`
 (`activity_main.xml`). The toolbar button (`@+id/toggle_view`) calls `setViewMode()` which
-swaps visibility and tells the adapter which layout to inflate. In **tile** mode
+swaps visibility and tells the adapter which layout to inflate. **Tiles are the
+default view** (the grid starts visible, the list hidden, and the adapter attaches
+to the grid at startup), and the chosen mode is **persisted in `SharedPreferences`**
+(file `library_prefs`, key `view_mode`), so it survives rotation *and* the app
+being closed. In **tile** mode
 (3-column `GridView`) each `item_book_grid.xml` tile is one clickable unit: the cover
 on top, a small uniform-width format label (`bg_format_badge`) at the cover's
 bottom-left corner, the book title under the cover (fixed two lines) — all tiles
@@ -112,8 +116,13 @@ it never steals column width.
 
 ## Header icons (SVG sources → committed PNGs)
 
-The four `MainActivity` header icons (`ic_import`, `ic_refresh`, `ic_grid`,
-`ic_list`) are authored as SVG in `app/icons/` (48×48, white, transparent).
+The five `MainActivity` header icons (`ic_import`, `ic_refresh`, `ic_grid`,
+`ic_list`, `ic_overflow`) are authored as SVG in `app/icons/` (48×48, white,
+transparent). `ic_overflow` is the kebab that replaced the standalone import /
+rescan header buttons: the kebab sits at the header's right corner and its popup
+(`res/menu/main_menu.xml`) carries **Import**, **Rescan** and **Clear library**
+(the latter wipes the whole catalog — all rows + cover cache, on-disk files
+untouched — after a confirmation dialog; `BookDatabase.clear()` is the backend).
 The runtime PNGs in `app/src/main/res/drawable/` (32×32, the 32dp header
 button size) are generated from them via
 `tools\generate-icons.ps1` (drives `tools/SvgToPng`, a small dependency-free

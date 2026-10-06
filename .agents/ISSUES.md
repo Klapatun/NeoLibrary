@@ -122,7 +122,7 @@ final class ZipUtil {
 - **Осталось:** мёртвый ресурс `empty_view_grid` в `activity_main.xml`
   (в коде не используется — один `empty_view` служит обоим видам); удалить.
 
-### 6.6 UI-состояние (фильтр, режим списка/плиток) теряется при ротации — [ ] (низкий)
+### 6.6 UI-состояние (фильтр, режим списка/плиток) теряется при ротации — [~] (частично)
 - **Где:** `MainActivity` (`currentFilter`, `filterSpinner`, `viewMode`).
 - **Проблема:** при пересоздании `currentFilter` обнуляется в `""`, спиннер
   сбрасывается на «All formats» (`onSaveInstanceState` не реализован) —
@@ -131,6 +131,11 @@ final class ZipUtil {
   в список — то же самое, тот же корень.
 - **Доработка:** сохранять позицию спиннера (или `currentFilter`) и `viewMode`
   в `onSaveInstanceState` и восстанавливать в `onCreate`.
+- **Статус (2026-10-06):** часть `viewMode` **закрыта** и закрывается шире,
+  чем предлагалось: выбор режима теперь персистентен в `SharedPreferences`
+  (файл `library_prefs`, ключ `view_mode`), то есть переживает не только
+  ротацию, но и закрытие приложения (коммиты `784622a`→`11c0be5`, см. раздел 9).
+  Осталась открытой только часть `currentFilter` (сброс спиннера при ротации).
 
 ---
 
@@ -321,3 +326,66 @@ lint 0 errors.
   тест по 15-30-с таймауту из-за голода фоновых тредов (жертва менялась:
   `filterSpinner...`, `kebabDetails...`, `backgroundEnricher...`); изолированный
   прогон — секунды. Сначала перепроверять изолированно, потом чинить.
+
+---
+
+## [FEATURE] 2026-10-06: плитка по умолчанию + кебаб в хедере + Clear (ветка feature/new_view)
+
+**Создано:** 2026-10-06. **Статус:** сделано (коммиты `784622a` → `6b694cb`,
+каждый шаг — отдельный коммит); полный прогон 174/174 зелёные, lint 0 errors.
+
+### 9.1 Что сделано (по шагам)
+1. **Плитка — режим по умолчанию:** `MainActivity.viewMode` инициализируется
+   `MODE_GRID`; XML показывает грид и скрывает список; адаптер с onCreate
+   прикреплён к гриду; иконка переключателя стартует с `ic_list`
+   (иконка всегда намекает на ДРУГОЙ режим).
+2. **Персистентность выбора режима** («в памяти телефона»): `SharedPreferences`
+   (файл `library_prefs`, ключ `view_mode`); читается в `onCreate`, пишется в
+   `setViewMode` (только при фактической смене). Переживает и ротацию, и закрытие
+   приложения — закрывает viewMode-часть 6.6. Тест:
+   `viewModeChoiceIsPersistedAcrossAppRestarts`.
+3. **Кебаб в правом углу хедера:** кнопки `btn_import`/`btn_rescan` из строки
+   хедера убраны; добавлен `btn_menu` (иконка `ic_overflow`, три точки) —
+   самый правый элемент хедера; `res/menu/main_menu.xml` + `showHeaderMenu`
+   (тот же паттерн, что `BookAdapter.showBookMenu`: `MenuInflater` +
+   package-private `getLastHeaderMenu()` для тестов).
+4. **Clear library** в том же кебабе: `main_menu_clear` → `confirmClear` —
+   диалог подтверждения (файлы на диске НЕ удаляются, как у per-book Remove),
+   затем `MetaEnricher.cancel()` + `db.clear()` (строки + CoverCache) +
+   стандартный прямой ребаинд (`changeCursor(currentCatalogCursor())` +
+   `updateEmptyView()` + `notifyChangeAll`) + тост. Тесты: confirm- и
+   cancel-путь.
+5. **Иконка:** `app/icons/ic_overflow.svg` (48×48, белый) → 32×32 PNG через
+   `tools/generate-icons.ps1` (инструмент byte-детерминированный: перегенерация
+   существующих иконок diff не даёт).
+
+### 9.2 Подводный камень: AbsListView + empty view (не баг, но ловушка для тестов)
+- При **пустом** каталоге `setEmptyView(emptyView)` + пустой адаптер заставляет
+  фреймворк (`AbsListView.checkForDisabledView`) **скрывать сам грид/список** и
+  показывать empty view. Т.е. сразу после запуска с пустым каталогом
+  `grid.getVisibility() == GONE` — НЕ индикатор режима отображения. Данные
+  прилетели (`AdapterDataSetObserver.onChanged` → `checkForDisabledView`) —
+  видимость вернулась. Отсюда правило тестов: assertions по виду/режиму делать
+  ПОСЛЕ `awaitAdapterCount(..., N > 0)`, либо проверять прикреплённость
+  адаптера (`getAdapter() != null` на нужном виде), а не голую visibility.
+
+### 9.3 Наблюдения и улучшения (не сделаны в этой задаче)
+- **Роняемый Clear под working stage-2 воркером:** `MetaEnricher.cancel()` +
+  `db.clear()` не останавливают воркер, уже вошедший в `enrichOneBook` для книги:
+  после очистки он выполнит `updateMetadata(id)` (no-op — строки нет) и,
+  возможно, `CoverCache.save(path, cover)` — сиротский `<hash>.img` для книги,
+  которой больше нет в каталоге (уберётся следующим Clear'ом). Окно узкое (только
+  текущая парс-книга). Простое закрытие: в `enrichOneBook` перед persist'ом
+  добавить проверку «книга ещё в каталоге / воркер не отменён» (например,
+  `db.getById(id) != null` перед `CoverCache.save`).
+- **30-с флейки `MainActivityTest` под нагрузкой машины** (см. 8.4): во время
+  этой работы жертвами были `filterSpinnerRestrictsTheVisibleBooks` и
+  `kebabEditMetadataOpensTheEditorWithTheBookParcel` — оба проходили изолированно.
+  Задокументированное явление, не регресс; если флейки зачастят — поднять
+  `WAIT_MS` или гонять сьют на тихой машине / в CI.
+- **`empty_view_grid`** (из 6.5) всё ещё лежит в `activity_main.xml`
+  неиспользуемым — можно удалить.
+- Row-иконки `ic_kebab`/`ic_kebab_gray` (96px) НЕ имеют SVG-источников в
+  `app/icons/` (в отличие от хедерных): при перерисовке придётся либо создать
+  SVG и прогнать генератор, либо править PNG вручную.
+- `menu_settings` в `strings.xml` — мёртвая строка (меню настроек нет).
