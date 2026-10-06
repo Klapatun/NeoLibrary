@@ -21,7 +21,7 @@
     <FrameLayout
         android:id="@+id/cover_frame"
         android:layout_width="match_parent"
-        android:layout_height="387px"
+        android:layout_height="336px"
         android:background="@drawable/bg_cover_frame">
 
         <!-- centerCrop: the cover is scaled (uniformly, no distortion) to fill the
