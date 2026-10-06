@@ -20,7 +20,6 @@ import android.provider.OpenableColumns;
 import android.view.MotionEvent;
 import android.view.View;
 import android.widget.AbsListView;
-import android.widget.Button;
 import android.widget.GridView;
 import android.widget.ImageButton;
 import android.widget.ListView;
@@ -822,8 +821,8 @@ public class MainActivityTest {
         View bar = a.findViewById(R.id.pagination_bar);
         assertEquals("no pagination: the strip is hidden", View.GONE, bar.getVisibility());
         TextView indicator = (TextView) a.findViewById(R.id.page_indicator);
-        Button prev = (Button) a.findViewById(R.id.page_prev);
-        Button next = (Button) a.findViewById(R.id.page_next);
+        ImageButton prev = a.findViewById(R.id.page_prev);
+        ImageButton next = a.findViewById(R.id.page_next);
 
         // The kebab item offers the OPPOSITE action; its checkmark mirrors the state.
         a.findViewById(R.id.btn_menu).performClick();

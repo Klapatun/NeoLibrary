@@ -172,9 +172,9 @@
     </FrameLayout>
 
     <!-- Pagination strip: visible only while pagination is on (the header kebab's
-         "Add/Remove pagination"). Holo small buttons + the "page / pages" counter;
-         MainActivity.updatePageIndicator() is the single place that drives the
-         visibility and the button states. -->
+         "Add/Remove pagination"). 16x16dp < / > chevron icon buttons + the
+         "page / pages" counter; MainActivity.updatePageIndicator() is the single
+         place that drives the visibility and the button states. -->
     <LinearLayout
         android:id="@+id/pagination_bar"
         android:layout_width="match_parent"
@@ -187,12 +187,16 @@
         android:paddingBottom="4dp"
         android:visibility="gone">
 
-        <Button
+        <!-- 16x16dp chevron icon buttons (32px PNGs = 16dp on the ONYX at
+             density 2); the selector grayes the icon out when disabled, like
+             the old Holo button text did. -->
+        <ImageButton
             android:id="@+id/page_prev"
-            style="?android:attr/buttonStyleSmall"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:text="@string/page_prev" />
+            android:layout_width="16dp"
+            android:layout_height="16dp"
+            android:src="@drawable/page_prev_icon"
+            android:background="?android:attr/selectableItemBackground"
+            android:contentDescription="@string/page_prev" />
 
         <TextView
             android:id="@+id/page_indicator"
@@ -206,11 +210,12 @@
             android:textColor="#202020"
             android:textSize="14sp" />
 
-        <Button
+        <ImageButton
             android:id="@+id/page_next"
-            style="?android:attr/buttonStyleSmall"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:text="@string/page_next" />
+            android:layout_width="16dp"
+            android:layout_height="16dp"
+            android:src="@drawable/page_next_icon"
+            android:background="?android:attr/selectableItemBackground"
+            android:contentDescription="@string/page_next" />
     </LinearLayout>
 </LinearLayout>

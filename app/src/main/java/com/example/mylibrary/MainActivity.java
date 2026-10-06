@@ -21,7 +21,6 @@ import android.view.View;
 import android.view.ViewConfiguration;
 import android.widget.AdapterView;
 import android.widget.ArrayAdapter;
-import android.widget.Button;
 import android.widget.FrameLayout;
 import android.widget.ImageButton;
 import android.widget.LinearLayout;
@@ -87,8 +86,8 @@ public class MainActivity extends Activity
     private TextView enrichStatus;
     private int viewMode = BookAdapter.MODE_GRID; // tiles are the default view
     private LinearLayout paginationBar;
-    private Button btnPrevPage;
-    private Button btnNextPage;
+    private ImageButton btnPrevPage;
+    private ImageButton btnNextPage;
     private TextView pageIndicator;
     /** Whether the books are shown in fixed pages (the kebab's "Add pagination")
      *  instead of one long scroll; persisted like the view-mode choice. */
@@ -155,8 +154,8 @@ public class MainActivity extends Activity
         btnMenu = (ImageButton) findViewById(R.id.btn_menu);
         toggleView = (ImageButton) findViewById(R.id.toggle_view);
         paginationBar = (LinearLayout) findViewById(R.id.pagination_bar);
-        btnPrevPage = (Button) findViewById(R.id.page_prev);
-        btnNextPage = (Button) findViewById(R.id.page_next);
+        btnPrevPage = (ImageButton) findViewById(R.id.page_prev);
+        btnNextPage = (ImageButton) findViewById(R.id.page_next);
         pageIndicator = (TextView) findViewById(R.id.page_indicator);
 
         list.setEmptyView(emptyView);

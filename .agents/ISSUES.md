@@ -615,3 +615,34 @@ main-looper'а МЕЖДУ ними (имитация кадров реально
 - Шлёпок-флик признаётся только если смещение ≥ 3×touchSlop (без
   velocity-tracking — намеренно: детерминированно и тестируемо).
 - Свайп работает по области книг (list/grid); сам пейджер-стрип не свайпается.
+
+---
+
+## [FEATURE] 2026-10-07: иконки < / > в пагинации вместо кнопок Prev/Next
+
+**Создано:** 2026-10-07. **Статус:** сделано (один коммит на `feature/new_view`);
+полный прогон зелёный, lint 0 errors.
+
+### 12.1 Реализация
+
+- `page_prev`/`page_next` в `activity_main.xml`: Holo-small `Button`'ы
+  ("Prev"/"Next") → `ImageButton`'ы 16x16dp с шевронами `<`/`>`; ripple —
+  `?android:attr/selectableItemBackground` (как у иконок хедера),
+  `contentDescription` — те же строки `page_prev`/`page_next`, что были в тексте.
+- Иконки: 4 PNG 32x32 (`ic_page_prev`/`ic_page_next` + `_disabled`, #202020 /
+  #999999) — сгенерированы одноразовым скриптом `tmp/GenIcons.java` (java.awt,
+  в коммит не идёт). 32px = 16dp при плотности ONYX ~2.0 (1024x758 на 6" ≈
+  210 ppi ≈ hdpi); в Robolectric (1.5) скармливаются fitCenter'ом до 24px.
+- Disabled-состояние — селектор (`page_prev_icon.xml`/`page_next_icon.xml`):
+  статичный PNG не тускнеет сам, как тускнел текст старого Holo-кнопки, а
+  `android:alpha` на `<item>` селектора требует API 21 (minSdk 19) — поэтому
+  потускневший вариант отдельным PNG.
+- `MainActivity`: поля и касты `Button` → `ImageButton` (поведение не
+  изменилось — `setOnClickListener`/`setEnabled` — методы View), удалён
+  не используемый импорт `Button`; в тесте — касты то же.
+
+### 12.2 Тесты
+
+Новых нет: `headerKebabPaginationToggleSwitchesBetweenScrollAndPages` уже
+покрывает кнопки (Prev disabled на первой странице, Next — на последней,
+навигация) — обновлён лишь каст на `ImageButton`; свайп-тест тоже зелёный.
