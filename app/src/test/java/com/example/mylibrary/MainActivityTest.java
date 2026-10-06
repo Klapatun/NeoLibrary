@@ -294,10 +294,10 @@ public class MainActivityTest {
         TestFixtures.writeText(new File(storage, "story_a.txt"), "alpha\n");
         TestFixtures.writeText(new File(storage, "story_b.txt"), "beta\n");
 
-        // ...and taps "Rescan" in the indigo header. The button's listener calls
+        // ...and picks "Rescan" from the header kebab. The kebab's menu pick calls
         // startScan() 1:1, so drive that same entry point (reflection: it is
-        // private, and the listener is an inline anonymous class not reachable
-        // from the test).
+        // private; the real kebab flow is covered separately in
+        // headerKebabRescanPickRunsTheScanAndDrawsTheNewBooks).
         java.lang.reflect.Method rescan = MainActivity.class.getDeclaredMethod("startScan");
         rescan.setAccessible(true);
         rescan.invoke(a);
@@ -399,6 +399,64 @@ public class MainActivityTest {
         assertEquals("the grid must stay hidden", View.GONE, grid2.getVisibility());
         assertNotNull("adapter attached to the list", list2.getAdapter());
         assertNull("adapter not attached to the grid", grid2.getAdapter());
+    }
+
+    // ------------------------------------------------------------------
+    // header kebab (import / rescan)
+    // ------------------------------------------------------------------
+
+    /** The header kebab (the rightmost header button) opens the overflow menu
+     *  (import + rescan), and picking "Rescan" runs the stage-1 scan — the same
+     *  entry point the old header rescan button called. */
+    @Test
+    public void headerKebabRescanPickRunsTheScanAndDrawsTheNewBooks() throws Exception {
+        MainActivity a = launchMain();
+        final BookDatabase dbLocal = db;
+
+        // First load: storage is empty -> the catalog and the view stay empty.
+        awaitCondition("the first scan to finish on empty storage", new Cond() {
+            public boolean holds() {
+                return a.findViewById(R.id.progress).getVisibility() == View.GONE
+                        && dbLocal.all(null).isEmpty();
+            }
+        });
+
+        // The user drops two books onto storage while the app is still open...
+        TestFixtures.writeText(new File(storage, "story_a.txt"), "alpha\n");
+        TestFixtures.writeText(new File(storage, "story_b.txt"), "beta\n");
+
+        // ...and picks "Rescan" from the header kebab. The kebab click opens the
+        // popup; performIdentifierAction picks the item exactly like a tap on the
+        // popup window would.
+        a.findViewById(R.id.btn_menu).performClick();
+        android.widget.PopupMenu menu = a.getLastHeaderMenu();
+        assertNotNull("the kebab click must open the menu", menu);
+        assertEquals("the menu must carry import and rescan", 2, menu.getMenu().size());
+        menu.getMenu().performIdentifierAction(R.id.main_menu_rescan, 0);
+
+        // The new books land in the catalog...
+        awaitCatalogSize(2);
+        // ...and must be drawn in the visible view (the grid, the default).
+        GridView grid = a.findViewById(R.id.book_grid);
+        awaitAdapterCount(grid, 2);
+        assertEquals(2, grid.getAdapter().getCount());
+    }
+
+    /** Picking "Import" from the header kebab launches the document picker. */
+    @Test
+    public void headerKebabImportPickLaunchesTheDocumentPicker() throws Exception {
+        MainActivity a = launchMain();
+
+        a.findViewById(R.id.btn_menu).performClick();
+        android.widget.PopupMenu menu = a.getLastHeaderMenu();
+        assertNotNull("the kebab click must open the menu", menu);
+        menu.getMenu().performIdentifierAction(R.id.main_menu_import, 0);
+        shadowOf(Looper.getMainLooper()).idle();
+
+        Intent started = shadowOf(a).getNextStartedActivity();
+        assertNotNull("the Import pick must start an activity", started);
+        // launchImport wraps the ACTION_OPEN_DOCUMENT intent in a system chooser.
+        assertEquals(Intent.ACTION_CHOOSER, started.getAction());
     }
 
     // ------------------------------------------------------------------

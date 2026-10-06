@@ -13,6 +13,7 @@ import android.database.Cursor;
 import android.net.Uri;
 import android.os.AsyncTask;
 import android.os.Bundle;
+import android.view.MenuInflater;
 import android.view.View;
 import android.widget.AdapterView;
 import android.widget.ArrayAdapter;
@@ -20,6 +21,7 @@ import android.widget.GridView;
 import android.widget.ImageButton;
 import android.widget.LinearLayout;
 import android.widget.ListView;
+import android.widget.PopupMenu;
 import android.widget.ProgressBar;
 import android.widget.Spinner;
 import android.widget.TextView;
@@ -70,12 +72,14 @@ public class MainActivity extends Activity
     private TextView emptyView;
     private ListView list;
     private GridView grid;
-    private ImageButton btnImport;
-    private ImageButton btnRescan;
+    private ImageButton btnMenu;
     private ImageButton toggleView;
     private LinearLayout enrichBar;
     private TextView enrichStatus;
     private int viewMode = BookAdapter.MODE_GRID; // tiles are the default view
+    /** The header kebab's popup last built by {@link #showHeaderMenu}; exposed for
+     *  unit tests (same pattern as {@code BookAdapter.getLastPopupMenu}). */
+    private PopupMenu lastHeaderMenu;
 
     private List<String> filterLabels;
     private List<String> filterValues; // format ids, or "" for All, or "__recent__"
@@ -107,8 +111,7 @@ public class MainActivity extends Activity
 
         list = (ListView) findViewById(R.id.book_list);
         grid = (GridView) findViewById(R.id.book_grid);
-        btnImport = (ImageButton) findViewById(R.id.btn_import);
-        btnRescan = (ImageButton) findViewById(R.id.btn_rescan);
+        btnMenu = (ImageButton) findViewById(R.id.btn_menu);
         toggleView = (ImageButton) findViewById(R.id.toggle_view);
 
         list.setEmptyView(emptyView);
@@ -127,16 +130,11 @@ public class MainActivity extends Activity
         grid.setAdapter(adapter);
 
         // The system action bar is off on this screen (AppTheme.NoActionBar):
-        // import and rescan live in the indigo header row now, not in an
-        // options menu.
-        btnImport.setOnClickListener(new View.OnClickListener() {
+        // import and rescan live in the header kebab's popup menu now (the kebab
+        // is the rightmost header button), not as separate header buttons.
+        btnMenu.setOnClickListener(new View.OnClickListener() {
             @Override public void onClick(View v) {
-                launchImport();
-            }
-        });
-        btnRescan.setOnClickListener(new View.OnClickListener() {
-            @Override public void onClick(View v) {
-                startScan();
+                showHeaderMenu(v);
             }
         });
 
@@ -216,6 +214,43 @@ public class MainActivity extends Activity
         // startup no-op does not touch the file).
         getSharedPreferences(PREFS_NAME, MODE_PRIVATE).edit()
                 .putInt(PREF_KEY_VIEW_MODE, mode).commit();
+    }
+
+    // -----------------------------------------------------------------
+    // Header kebab (the rightmost header button): import / rescan
+    // -----------------------------------------------------------------
+
+    /**
+     * Shows the header's overflow menu ({@code main_menu}) anchored to the kebab
+     * button. The framework {@code Menu} interface has no inflate() of its own —
+     * go through {@link MenuInflater} (the plain-framework equivalent of the
+     * AppCompat one-liner), the same way {@code BookAdapter} builds the per-book
+     * menu. Package-private and returns the menu so unit tests can pick items
+     * without driving the popup window.
+     */
+    PopupMenu showHeaderMenu(View anchor) {
+        final PopupMenu menu = new PopupMenu(this, anchor);
+        new MenuInflater(this).inflate(R.menu.main_menu, menu.getMenu());
+        menu.setOnMenuItemClickListener(new PopupMenu.OnMenuItemClickListener() {
+            @Override public boolean onMenuItemClick(android.view.MenuItem item) {
+                int id = item.getItemId();
+                if (id == R.id.main_menu_import) {
+                    launchImport();
+                } else if (id == R.id.main_menu_rescan) {
+                    startScan();
+                }
+                menu.dismiss();
+                return true;
+            }
+        });
+        lastHeaderMenu = menu;
+        menu.show();
+        return menu;
+    }
+
+    /** The header popup last built by {@link #showHeaderMenu} (for unit tests). */
+    PopupMenu getLastHeaderMenu() {
+        return lastHeaderMenu;
     }
 
     // -----------------------------------------------------------------

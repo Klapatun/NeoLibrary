@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Header overflow (kebab) menu: the actions that used to be the import and
+     rescan buttons in the indigo header row. The kebab sits at the header's
+     right corner; the framework PopupMenu (API 19) shows the item titles only. -->
+<menu xmlns:android="http://schemas.android.com/apk/res/android">
+    <item
+        android:id="@+id/main_menu_import"
+        android:title="@string/menu_import" />
+    <item
+        android:id="@+id/main_menu_rescan"
+        android:title="@string/menu_refresh" />
+</menu>

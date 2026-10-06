@@ -32,9 +32,11 @@
                 android:layout_marginEnd="8dp"
                 android:prompt="@string/filter_all" />
 
-            <!-- Header actions in one row: import, rescan, then the list/tiles
-                 toggle (rightmost, as before). All icons are 48x48 white PNGs on
-                 the indigo bar; each button keeps the selectable ripple. -->
+            <!-- Header actions in one row: the list/tiles toggle, then the
+                 overflow kebab rightmost (the header's right corner). Import and
+                 rescan live in the kebab's menu (main_menu) now, so the header
+                 stays uncluttered. All icons are 48x48 white PNGs on the indigo
+                 bar; each button keeps the selectable ripple. -->
             <LinearLayout
                 android:id="@+id/header_actions"
                 android:layout_width="wrap_content"
@@ -44,30 +46,21 @@
                 android:orientation="horizontal">
 
                 <ImageButton
-                    android:id="@+id/btn_import"
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:src="@drawable/ic_import"
-                    android:background="?android:attr/selectableItemBackground"
-                    android:contentDescription="@string/menu_import"
-                    android:padding="8dp" />
-
-                <ImageButton
-                    android:id="@+id/btn_rescan"
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:src="@drawable/ic_refresh"
-                    android:background="?android:attr/selectableItemBackground"
-                    android:contentDescription="@string/menu_refresh"
-                    android:padding="8dp" />
-
-                <ImageButton
                     android:id="@+id/toggle_view"
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
                     android:src="@drawable/ic_list"
                     android:background="?android:attr/selectableItemBackground"
                     android:contentDescription="@string/view_list"
+                    android:padding="8dp" />
+
+                <ImageButton
+                    android:id="@+id/btn_menu"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:src="@drawable/ic_overflow"
+                    android:background="?android:attr/selectableItemBackground"
+                    android:contentDescription="@string/more_options"
                     android:padding="8dp" />
             </LinearLayout>
         </RelativeLayout>
