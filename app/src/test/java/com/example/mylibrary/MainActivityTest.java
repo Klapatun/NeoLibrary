@@ -17,6 +17,7 @@ import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
 import android.provider.OpenableColumns;
+import android.view.MotionEvent;
 import android.view.View;
 import android.widget.AbsListView;
 import android.widget.Button;
@@ -1039,6 +1040,117 @@ public class MainActivityTest {
         });
         assertEquals("1 / " + (12 + firstShown - 1) / firstShown,
                 ((TextView) a.findViewById(R.id.page_indicator)).getText().toString());
+    }
+
+    /** With pagination on, a horizontal swipe across the catalog turns the page
+     *  (left = next, right = previous) — the same showPage() path as the
+     *  Prev/Next buttons. A vertical drag must NOT turn a page (it is a scroll),
+     *  a swipe past the last page clamps, a swipe with pagination off is a
+     *  no-op, and a swipe over a tile/row must NOT open the "Open this book?"
+     *  dialog (the list intercepts the swipe from the row, so the row's press
+     *  is cancelled — see PagedListView). Driven
+     *  with a raw MotionEvent sequence (DOWN -> MOVE -> UP) the way a finger
+     *  produces it. */
+    @Test
+    public void swipingTheCatalogTurnsPagesWhenPaginationIsOn() throws Exception {
+        for (int i = 1; i <= 8; i++) {
+            TestFixtures.writeText(new File(storage, "story_" + i + ".txt"), "text " + i + "\n");
+        }
+
+        MainActivity a = launchMain();
+        awaitCatalogSize(8);
+        GridView grid = a.findViewById(R.id.book_grid);
+        awaitAdapterCount(grid, 8);
+        TextView indicator = (TextView) a.findViewById(R.id.page_indicator);
+        View bar = a.findViewById(R.id.pagination_bar);
+
+        // A swipe with pagination OFF does nothing.
+        swipe(grid, -150);
+        assertEquals("no pagination: the strip is hidden", View.GONE, bar.getVisibility());
+        assertEquals(8, grid.getAdapter().getCount());
+
+        // Enable pagination (grid: 6 per page -> 2 pages).
+        a.findViewById(R.id.btn_menu).performClick();
+        a.getLastHeaderMenu().getMenu().performIdentifierAction(R.id.main_menu_pagination, 0);
+        assertEquals("1 / 2", indicator.getText().toString());
+        rowAt(grid, 0); // make sure the tiles are laid out (a press lands on a tile)
+
+        // A left swipe -> page 2 (the remaining 2 books)...
+        swipe(grid, -150);
+        assertEquals("2 / 2", indicator.getText().toString());
+        assertEquals(2, grid.getAdapter().getCount());
+        // ...a swipe past the last page clamps...
+        swipe(grid, -150);
+        assertEquals("2 / 2", indicator.getText().toString());
+        // ...a right swipe -> back to page 1...
+        swipe(grid, 150);
+        assertEquals("1 / 2", indicator.getText().toString());
+        assertEquals(6, grid.getAdapter().getCount());
+        // ...and a vertical drag (a scroll, dx small / dy large) turns no page.
+        swipeVertical(grid, 150);
+        assertEquals("1 / 2", indicator.getText().toString());
+        assertEquals(6, grid.getAdapter().getCount());
+
+        // The same in list mode (a screenful per page: 8 books -> 3 pages).
+        a.findViewById(R.id.toggle_view).performClick();
+        ListView list = a.findViewById(R.id.book_list);
+        rowAt(list, 0);
+        assertEquals("1 / 3", indicator.getText().toString());
+        swipe(list, -150);
+        assertEquals("2 / 3", indicator.getText().toString());
+        assertEquals(3, list.getAdapter().getCount());
+
+        // A swipe over a tile/row must not open the book: no dialog appeared.
+        assertNull("a swipe must not open the confirmation dialog",
+                ShadowDialog.getLatestDialog());
+    }
+
+    /** A horizontal swipe across {@code view} by {@code dx} pixels (negative =
+     *  left, positive = right) with a small vertical wobble — a raw MotionEvent
+     *  sequence (DOWN -> MOVE -> UP) dispatched the way a finger produces it,
+     *  the looper idled between the events the way real input frames interleave
+     *  (the row's press-state check is posted, so it must get a turn BEFORE the
+     *  UP to cancel the press exactly like on a device), and idled once more at
+     *  the end so the posted page turn can run. */
+    private void swipe(AbsListView view, int dx) {
+        long t = 1000;
+        float x0 = 150f, y0 = 40f;
+        MotionEvent down = MotionEvent.obtain(t, t, MotionEvent.ACTION_DOWN, x0, y0, 0);
+        MotionEvent move = MotionEvent.obtain(t, t + 50, MotionEvent.ACTION_MOVE,
+                x0 + dx / 3f, y0 + 5f, 0);
+        MotionEvent up = MotionEvent.obtain(t, t + 100, MotionEvent.ACTION_UP,
+                x0 + dx, y0 + 10f, 0);
+        view.dispatchTouchEvent(down);
+        shadowOf(Looper.getMainLooper()).idle();
+        view.dispatchTouchEvent(move);
+        shadowOf(Looper.getMainLooper()).idle();
+        view.dispatchTouchEvent(up);
+        down.recycle();
+        move.recycle();
+        up.recycle();
+        shadowOf(Looper.getMainLooper()).idle();
+    }
+
+    /** A vertical drag across {@code view} by {@code dy} pixels — a scroll,
+     *  which must NOT turn a page. (Same frame-boundary interleaving as
+     *  {@link #swipe}.) */
+    private void swipeVertical(AbsListView view, int dy) {
+        long t = 1000;
+        float x0 = 150f, y0 = 40f;
+        MotionEvent down = MotionEvent.obtain(t, t, MotionEvent.ACTION_DOWN, x0, y0, 0);
+        MotionEvent move = MotionEvent.obtain(t, t + 50, MotionEvent.ACTION_MOVE,
+                x0 - 5f, y0 + dy / 3f, 0);
+        MotionEvent up = MotionEvent.obtain(t, t + 100, MotionEvent.ACTION_UP,
+                x0 - 10f, y0 + dy, 0);
+        view.dispatchTouchEvent(down);
+        shadowOf(Looper.getMainLooper()).idle();
+        view.dispatchTouchEvent(move);
+        shadowOf(Looper.getMainLooper()).idle();
+        view.dispatchTouchEvent(up);
+        down.recycle();
+        move.recycle();
+        up.recycle();
+        shadowOf(Looper.getMainLooper()).idle();
     }
 
     // ------------------------------------------------------------------

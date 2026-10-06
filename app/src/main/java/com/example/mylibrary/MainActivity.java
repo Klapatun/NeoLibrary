@@ -18,14 +18,13 @@ import android.view.LayoutInflater;
 import android.view.MenuInflater;
 import android.view.MenuItem;
 import android.view.View;
+import android.view.ViewConfiguration;
 import android.widget.AdapterView;
 import android.widget.ArrayAdapter;
 import android.widget.Button;
 import android.widget.FrameLayout;
-import android.widget.GridView;
 import android.widget.ImageButton;
 import android.widget.LinearLayout;
-import android.widget.ListView;
 import android.widget.PopupMenu;
 import android.widget.ProgressBar;
 import android.widget.Spinner;
@@ -80,8 +79,8 @@ public class MainActivity extends Activity
     private Spinner filterSpinner;
     private ProgressBar progressBar;
     private TextView emptyView;
-    private ListView list;
-    private GridView grid;
+    private PagedListView list;
+    private PagedGridView grid;
     private ImageButton btnMenu;
     private ImageButton toggleView;
     private LinearLayout enrichBar;
@@ -94,9 +93,30 @@ public class MainActivity extends Activity
     /** Whether the books are shown in fixed pages (the kebab's "Add pagination")
      *  instead of one long scroll; persisted like the view-mode choice. */
     private boolean paginationEnabled;
+    /** The view's touch slop; the swipe threshold is a multiple of it. */
+    private int swipeSlop;
     /** The header kebab's popup last built by {@link #showHeaderMenu}; exposed for
      *  unit tests (same pattern as {@code BookAdapter.getLastPopupMenu}). */
     private PopupMenu lastHeaderMenu;
+
+    /** A horizontal swipe across the catalog (list or grid) turns the page —
+     *  left = next, right = previous — through the same {@link #showPage(int)}
+     *  path as the Prev/Next buttons (clamp + scroll to the top + indicator).
+     *  The gesture is detected by the PagedListView/PagedGridView (their
+     *  dispatchTouchEvent overrides; see PageSwipeTracker for why an
+     *  OnTouchListener would not work) and arrives here POSTED, i.e. after the
+     *  touch sequence has fully unwound. The views also intercept a qualifying
+     *  swipe from the row/tile under the finger (on API 19 a swipe that stays
+     *  inside a row would otherwise release into a row click — see the views'
+     *  javadoc), so a page swipe can never also open the "Open this book?"
+     *  dialog. Active only while pagination is on; with one page, showPage()
+     *  clamps to a no-op. */
+    private final PageSwipeTracker.OnSwipe pageSwipe = new PageSwipeTracker.OnSwipe() {
+        @Override public void onSwipe(int direction) {
+            if (!paginationEnabled) return;
+            showPage(adapter.getPage() + direction);
+        }
+    };
 
     private List<String> filterLabels;
     private List<String> filterValues; // format ids, or "" for All, or "__recent__"
@@ -130,8 +150,8 @@ public class MainActivity extends Activity
         enrichStatus = (TextView) findViewById(R.id.enrich_status);
 
         bookContainer = (FrameLayout) findViewById(R.id.book_container);
-        list = (ListView) findViewById(R.id.book_list);
-        grid = (GridView) findViewById(R.id.book_grid);
+        list = (PagedListView) findViewById(R.id.book_list);
+        grid = (PagedGridView) findViewById(R.id.book_grid);
         btnMenu = (ImageButton) findViewById(R.id.btn_menu);
         toggleView = (ImageButton) findViewById(R.id.toggle_view);
         paginationBar = (LinearLayout) findViewById(R.id.pagination_bar);
@@ -236,6 +256,11 @@ public class MainActivity extends Activity
                 });
             }
         });
+        // The page-swipe gesture: the horizontal degree of freedom the vertical
+        // list/grid never uses is a natural page-turn (see pageSwipe).
+        swipeSlop = ViewConfiguration.get(this).getScaledTouchSlop();
+        list.enablePageSwipe(swipeSlop, pageSwipe);
+        grid.enablePageSwipe(swipeSlop, pageSwipe);
         setupFilterSpinner();
         // The framework Activity (unlike AndroidX's FragmentActivity) has no loader
         // shortcuts of its own — go through the LoaderManager explicitly.

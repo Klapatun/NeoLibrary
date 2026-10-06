@@ -99,6 +99,25 @@ and is applied *after* the view mode, since the page size depends on it.
 so the `DataSetObserver` that refreshes the strip sees the clamped page; an
 empty catalog hides the strip (0 pages).
 
+While pagination is on, a page can also be turned by a **horizontal swipe**
+over the list/grid (left = next, right = previous). The catalog's views are
+`PagedListView`/`PagedGridView` (subclassing `ListView`/`GridView`): they
+detect the gesture in a `dispatchTouchEvent` override feeding
+`PageSwipeTracker` (a swipe = at release, |dx| ≥ 3×touchSlop and |dx| ≥ 2×|dy|;
+a second finger cancels), and the page turn is *posted* so it runs after the
+touch sequence has fully unwound — the same `showPage()` path as the buttons.
+An `OnTouchListener` on the list would never fire for a swipe started on a
+book: `ViewGroup.dispatchTouchEvent` hands the gesture to the row/tile first
+and the (clickable) row consumes it, so the list's own listener only sees
+touches on the bare padding. The views also `onInterceptTouchEvent` a gesture
+the moment it qualifies as a swipe — on API 19 a row keeps its pre-pressed
+state until the finger leaves its *bounds* (not distance from the down
+point), and the list itself only intercepts *vertical* movement, so a swipe
+staying inside a row would otherwise release into a row click ("Open this
+book?"); the framework then sends the row `ACTION_CANCEL` and the remaining
+events are consumed in `onTouchEvent`. Taps and wiggles under the threshold
+are never intercepted.
+
 ## Main workflows
 
 - **Scan (stage 1, fast)** → `startScan()` → AsyncTask → `LibraryScanner.scan()`

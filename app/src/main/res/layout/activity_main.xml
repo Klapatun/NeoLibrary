@@ -109,7 +109,10 @@
         <!-- Tiles (the grid) are the DEFAULT view, so the list starts hidden;
              MainActivity.setViewMode() flips the visibilities on the first toggle
              (and on a persisted non-default choice). -->
-        <ListView
+        <!-- PagedListView: a ListView with the horizontal page-swipe (the
+             dispatchTouchEvent override; see the class javadoc for why an
+             OnTouchListener would not work on a list). -->
+        <com.example.mylibrary.PagedListView
             android:id="@+id/book_list"
             android:layout_width="match_parent"
             android:layout_height="match_parent"
@@ -124,7 +127,9 @@
              4 per row (4x242 + 3x8 = 992px), wider screens -> even more.
              insideOverlay: the scrollbar floats above the content so it never
              steals width from the last column. -->
-        <GridView
+        <!-- PagedGridView: a GridView with the horizontal page-swipe (see
+             PagedListView for the rationale). -->
+        <com.example.mylibrary.PagedGridView
             android:id="@+id/book_grid"
             android:layout_width="match_parent"
             android:layout_height="match_parent"
