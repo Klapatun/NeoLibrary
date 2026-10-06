@@ -72,7 +72,7 @@ exactly the same size. The grid is sized in **px** for the ONYX Boox Volta 3
 so the columns fit the screen width — portrait 758px → 3 per row
 (3×242 + 2×8 = 742px), landscape 1024px → 4 (4×242 + 3×8 = 992px),
 wider → more. The books' container `FrameLayout` has a 16px top padding
-and 8px left/right padding. Cover 242x387px (5:8), 155px red circle
+and 8px left/right padding. Cover 242x334px, 155px red circle
 (`bg_circle_red`) with the
 title's initial for books without a cover; the scrollbar is `insideOverlay` so
 it never steals column width.

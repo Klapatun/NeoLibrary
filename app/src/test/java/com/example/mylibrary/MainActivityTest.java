@@ -13,6 +13,10 @@ import android.content.Intent;
 import android.content.SharedPreferences;
 import android.database.ContentObserver;
 import android.net.Uri;
+import android.graphics.Bitmap;
+import android.graphics.drawable.BitmapDrawable;
+import android.graphics.drawable.Drawable;
+import android.graphics.drawable.StateListDrawable;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
@@ -30,6 +34,7 @@ import com.example.mylibrary.db.BookDatabase;
 import com.example.mylibrary.db.BookProvider;
 import com.example.mylibrary.model.Book;
 import com.example.mylibrary.scan.Formats;
+import com.example.mylibrary.scan.LibraryScanner;
 import com.example.mylibrary.testutil.TestFixtures;
 
 import org.junit.Before;
@@ -115,6 +120,9 @@ public class MainActivityTest {
             Thread.sleep(10);
         }
         looper.idle();
+        if (db.all(null).size() < expected) {
+            dumpThreads("the catalog to hold " + expected + " book(s)");
+        }
         assertTrue("timed out waiting for the catalog to hold " + expected
                 + " book(s), got " + db.all(null).size(), db.all(null).size() >= expected);
     }
@@ -131,6 +139,9 @@ public class MainActivityTest {
             Thread.sleep(10);
         }
         looper.idle();
+        if (view.getAdapter().getCount() != expected) {
+            dumpThreads("the adapter to show " + expected + " row(s)");
+        }
         assertTrue("timed out waiting for the adapter to show " + expected
                 + " row(s), got " + view.getAdapter().getCount(),
                 view.getAdapter().getCount() == expected);
@@ -154,8 +165,29 @@ public class MainActivityTest {
             }
             Thread.sleep(10);
         }
+        if (!ok) dumpThreads("the condition [" + what + "]");
         assertTrue("timed out waiting for: " + what, ok);
         looper.idle();
+    }
+
+    /** On a wait timeout: dump every thread's stack so the test report shows what
+     *  the background work was doing (in particular the SHARED single-threaded
+     *  AsyncTask pool: the scan/enrichment tasks queue on it, and the rotating
+     *  30s timeout victims of 8.4 keep happening on an idle machine — a stack
+     *  dump at the moment of timeout is the only way to see what held the pool). */
+    private static void dumpThreads(String context) {
+        StringBuilder sb = new StringBuilder();
+        sb.append("TIMEOUT (").append(WAIT_MS).append("ms) waiting for [")
+          .append(context).append("]; all threads:\n");
+        for (java.util.Map.Entry<Thread, StackTraceElement[]> e
+                : Thread.getAllStackTraces().entrySet()) {
+            sb.append("--- ").append(e.getKey().getName())
+              .append(" [").append(e.getKey().getState()).append("]\n");
+            for (StackTraceElement el : e.getValue()) {
+                sb.append("    at ").append(el).append('\n');
+            }
+        }
+        System.err.println(sb);
     }
 
     private boolean adapterHasCount(AbsListView view, int expected) {
@@ -358,6 +390,19 @@ public class MainActivityTest {
     public void viewModeChoiceIsPersistedAcrossAppRestarts() throws Exception {
         TestFixtures.writeText(new File(storage, "story_a.txt"), "alpha\n");
         TestFixtures.writeText(new File(storage, "story_b.txt"), "beta\n");
+        // Seed the catalog the way stage 1 would, BEFORE the activity launches:
+        // this test's subject is the persisted view-mode choice, not the scan, and
+        // waiting on the cold-start scan is exactly what made it a flake victim —
+        // the scan runs on the shared single-threaded AsyncTask pool, which a
+        // loaded machine starves for tens of seconds (8.4), and the wait would
+        // time out at 30s. With the catalog already in the DB, the activity's
+        // constructor cursor carries the rows and nothing here depends on the
+        // background pool (the cold-start scan still runs and harmlessly
+        // re-upserts the same two rows; the scan itself is covered by
+        // scanOnLaunchFindsBooksInExternalStorage).
+        for (Book b : LibraryScanner.scan(app, null)) {
+            db.upsertBasic(b);
+        }
 
         ActivityController<MainActivity> c = Robolectric.buildActivity(MainActivity.class);
         MainActivity a = c.setup().get();
@@ -365,10 +410,11 @@ public class MainActivityTest {
         ListView list = a.findViewById(R.id.book_list);
         GridView grid = a.findViewById(R.id.book_grid);
 
-        // Initial state: tiles — the default view. Wait for the scan to load the
-        // catalog first: with an EMPTY adapter the framework shows the empty view
-        // instead of the list view (AbsListView.checkForDisabledView hides the view
-        // itself), so the raw visibility is only meaningful once data is on screen.
+        // Initial state: tiles — the default view. The rows are already on the
+        // constructor cursor, so this is just a looper pump; with an EMPTY
+        // adapter the framework would show the empty view instead (AbsListView
+        // checkForDisabledView hides the view itself), so raw visibility is only
+        // meaningful once data is on screen.
         awaitAdapterCount(grid, 2);
         assertEquals(View.VISIBLE, grid.getVisibility());
         assertEquals(View.GONE, list.getVisibility());
@@ -839,12 +885,16 @@ public class MainActivityTest {
         assertEquals(6, grid.getAdapter().getCount());
         assertEquals("1 / 2", indicator.getText().toString());
         assertFalse("Prev must be disabled on the first page", prev.isEnabled());
+        // ...and the disabled button must show the DIMMED chevron (the selector's
+        // state_enabled item — a static PNG cannot dim itself, see 12.1).
+        assertChevron(prev, R.drawable.ic_page_prev_disabled);
 
         // Next: the last (partial) page.
         next.performClick();
         assertEquals(2, grid.getAdapter().getCount());
         assertEquals("2 / 2", indicator.getText().toString());
         assertFalse("Next must be disabled on the last page", next.isEnabled());
+        assertChevron(next, R.drawable.ic_page_next_disabled);
 
         // Prev: back to the first page.
         prev.performClick();
@@ -852,6 +902,8 @@ public class MainActivityTest {
         assertEquals("1 / 2", indicator.getText().toString());
         assertFalse(prev.isEnabled());
         assertTrue(next.isEnabled());
+        // ...and the re-enabled button is back to the full chevron.
+        assertChevron(next, R.drawable.ic_page_next);
 
         // The kebab now offers "Remove pagination" (checked)...
         a.findViewById(R.id.btn_menu).performClick();
@@ -1150,6 +1202,49 @@ public class MainActivityTest {
         move.recycle();
         up.recycle();
         shadowOf(Looper.getMainLooper()).idle();
+    }
+
+    /** The pagination chevrons are stateful selectors (a static PNG cannot dim
+     *  itself, and android:alpha on a selector item needs API 21 — see 12.1).
+     *  The enabled/disabled variants differ only in color (#202020 vs #999999),
+     *  so the assertion compares the DOMINANT OPAQUE COLOR of the resolved PNG
+     *  against the expected resource's (a constant-state equality would not
+     *  hold: Robolectric re-decodes the same resource per theme). */
+    private void assertChevron(ImageButton button, int expectedChevronId) {
+        Drawable d = button.getDrawable();
+        assertTrue("the chevron must be a stateful selector: " + d,
+                d instanceof StateListDrawable);
+        Drawable current = ((StateListDrawable) d).getCurrent();
+        assertTrue("the resolved chevron must be the PNG: " + current,
+                current instanceof BitmapDrawable);
+        Bitmap actual = ((BitmapDrawable) current).getBitmap();
+        Bitmap expected = ((BitmapDrawable) app.getResources()
+                .getDrawable(expectedChevronId)).getBitmap();
+        assertEquals("the button (enabled=" + button.isEnabled() + ") must show the"
+                        + " " + expectedChevronId + " chevron",
+                dominantOpaqueColor(expected), dominantOpaqueColor(actual));
+    }
+
+    /** The most frequent non-transparent pixel color of a (near monochrome) icon. */
+    private static int dominantOpaqueColor(Bitmap bmp) {
+        java.util.HashMap<Integer, Integer> counts = new java.util.HashMap<Integer, Integer>();
+        for (int x = 0; x < bmp.getWidth(); x++) {
+            for (int y = 0; y < bmp.getHeight(); y++) {
+                int p = bmp.getPixel(x, y);
+                if ((p >>> 24) == 0) continue; // transparent
+                int key = p & 0xFFFFFF; // ignore the alpha channel
+                Integer c = counts.get(key);
+                counts.put(key, c == null ? 1 : c + 1);
+            }
+        }
+        int best = 0, bestCount = -1;
+        for (java.util.Map.Entry<Integer, Integer> e : counts.entrySet()) {
+            if (e.getValue() > bestCount) {
+                bestCount = e.getValue();
+                best = e.getKey();
+            }
+        }
+        return best;
     }
 
     // ------------------------------------------------------------------
