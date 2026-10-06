@@ -431,7 +431,8 @@ public class MainActivityTest {
         a.findViewById(R.id.btn_menu).performClick();
         android.widget.PopupMenu menu = a.getLastHeaderMenu();
         assertNotNull("the kebab click must open the menu", menu);
-        assertEquals("the menu must carry import and rescan", 2, menu.getMenu().size());
+        assertEquals("the menu must carry import, rescan and clear",
+                3, menu.getMenu().size());
         menu.getMenu().performIdentifierAction(R.id.main_menu_rescan, 0);
 
         // The new books land in the catalog...
@@ -457,6 +458,94 @@ public class MainActivityTest {
         assertNotNull("the Import pick must start an activity", started);
         // launchImport wraps the ACTION_OPEN_DOCUMENT intent in a system chooser.
         assertEquals(Intent.ACTION_CHOOSER, started.getAction());
+    }
+
+    /** The kebab's "Clear library" asks for confirmation; on confirm the whole
+     *  catalog is wiped (rows + covers) while the on-disk files stay untouched,
+     *  and the visible view settles on the empty state. */
+    @Test
+    public void headerKebabClearAsksForConfirmationAndWipesTheCatalogKeepingTheFiles()
+            throws Exception {
+        TestFixtures.writeText(new File(storage, "story_a.txt"), "alpha\n");
+        TestFixtures.writeText(new File(storage, "story_b.txt"), "beta\n");
+
+        MainActivity a = launchMain();
+        awaitCatalogSize(2);
+        GridView grid = a.findViewById(R.id.book_grid);
+        awaitAdapterCount(grid, 2);
+        final BookAdapter adapter = (BookAdapter) grid.getAdapter();
+
+        FiringObserver onBooks = new FiringObserver();
+        FiringObserver onRecent = new FiringObserver();
+        app.getContentResolver().registerContentObserver(BookProvider.CONTENT_URI, true, onBooks);
+        app.getContentResolver().registerContentObserver(BookProvider.RECENT_URI, true, onRecent);
+
+        a.findViewById(R.id.btn_menu).performClick();
+        android.widget.PopupMenu menu = a.getLastHeaderMenu();
+        assertNotNull("the kebab click must open the menu", menu);
+        menu.getMenu().performIdentifierAction(R.id.main_menu_clear, 0);
+
+        // The pick must ask for confirmation first.
+        android.app.Dialog d = ShadowDialog.getLatestDialog();
+        assertNotNull("the Clear pick must ask for confirmation", d);
+        assertEquals(a.getString(R.string.clear_confirm_title), shadowOf(d).getTitle());
+        TextView msgView = d.getWindow().getDecorView().findViewById(android.R.id.message);
+        assertNotNull("the dialog must carry a message view", msgView);
+        String msg = msgView.getText().toString();
+        assertTrue("the message must be the clear confirmation: " + msg,
+                msg.contains(a.getString(R.string.clear_confirm_message)));
+        assertTrue("the message must note the files stay: " + msg,
+                msg.contains(a.getString(R.string.clear_file_note)));
+
+        // Confirm ("Clear" — the positive button, the standard alert button-1 view).
+        shadowOf(d).clickOn(android.R.id.button1);
+        shadowOf(Looper.getMainLooper()).idle();
+
+        // The catalog is empty...
+        assertTrue("the catalog must be empty", db.all(null).isEmpty());
+        // ...and the visible view has settled on the empty state.
+        final BookAdapter adapterRef = adapter;
+        awaitCondition("the view to settle on the empty state after the clear",
+                new Cond() {
+                    public boolean holds() {
+                        return adapterRef.getCount() == 0;
+                    }
+                });
+        assertTrue(ShadowToast.showedToast(a.getString(R.string.library_cleared)));
+
+        // The files themselves must not be touched.
+        assertTrue("the files must stay on disk",
+                new File(storage, "story_a.txt").exists()
+                        && new File(storage, "story_b.txt").exists());
+
+        // Both catalog cursors must have been notified.
+        assertTrue("the all-books cursor must be notified", onBooks.fired);
+        assertTrue("the recently-read cursor must be notified", onRecent.fired);
+        app.getContentResolver().unregisterContentObserver(onBooks);
+        app.getContentResolver().unregisterContentObserver(onRecent);
+    }
+
+    /** Cancelling the "Clear library" confirmation must leave the catalog intact. */
+    @Test
+    public void cancellingTheClearConfirmationKeepsTheCatalog() throws Exception {
+        TestFixtures.writeText(new File(storage, "story_a.txt"), "alpha\n");
+        TestFixtures.writeText(new File(storage, "story_b.txt"), "beta\n");
+
+        MainActivity a = launchMain();
+        awaitCatalogSize(2);
+
+        a.findViewById(R.id.btn_menu).performClick();
+        android.widget.PopupMenu menu = a.getLastHeaderMenu();
+        assertNotNull("the kebab click must open the menu", menu);
+        menu.getMenu().performIdentifierAction(R.id.main_menu_clear, 0);
+
+        android.app.Dialog d = ShadowDialog.getLatestDialog();
+        assertNotNull("the Clear pick must ask for confirmation", d);
+        // "Cancel" — the negative button (the standard alert button-2 view).
+        shadowOf(d).clickOn(android.R.id.button2);
+        shadowOf(Looper.getMainLooper()).idle();
+
+        assertEquals("the catalog must be untouched", 2, db.all(null).size());
     }
 
     // ------------------------------------------------------------------

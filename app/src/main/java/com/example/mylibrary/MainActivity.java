@@ -238,6 +238,8 @@ public class MainActivity extends Activity
                     launchImport();
                 } else if (id == R.id.main_menu_rescan) {
                     startScan();
+                } else if (id == R.id.main_menu_clear) {
+                    confirmClear();
                 }
                 menu.dismiss();
                 return true;
@@ -251,6 +253,36 @@ public class MainActivity extends Activity
     /** The header popup last built by {@link #showHeaderMenu} (for unit tests). */
     PopupMenu getLastHeaderMenu() {
         return lastHeaderMenu;
+    }
+
+    /** The kebab's "Clear library": asks for confirmation and, on confirm, wipes
+     *  the whole catalog — all rows plus the cover cache (the on-disk files are
+     *  left untouched, exactly like the per-book Remove). The stage-2 worker is
+     *  cancelled first: its queue is about to be gone, and letting it keep working
+     *  would only re-extract books that no longer exist in the catalog. The
+     *  catalog row delete is committed on this (UI) thread, just now — so the
+     *  same deterministic rebind as the other direct writes on this screen
+     *  (see {@link #startScan}): re-query the catalog and rebind the adapter
+     *  ourselves, then also announce through the normal channel (the
+     *  "recently read" observer and any other listeners). */
+    private void confirmClear() {
+        new AlertDialog.Builder(this)
+                .setTitle(R.string.clear_confirm_title)
+                .setMessage(getString(R.string.clear_confirm_message) + "\n\n"
+                        + getString(R.string.clear_file_note))
+                .setNegativeButton(R.string.cancel, null)
+                .setPositiveButton(R.string.clear_yes, new DialogInterface.OnClickListener() {
+                    @Override public void onClick(DialogInterface d, int w) {
+                        MetaEnricher.cancel();
+                        db.clear();
+                        adapter.changeCursor(currentCatalogCursor());
+                        updateEmptyView();
+                        BookProvider.notifyChangeAll(MainActivity.this);
+                        Toast.makeText(MainActivity.this, R.string.library_cleared,
+                                Toast.LENGTH_SHORT).show();
+                    }
+                })
+                .show();
     }
 
     // -----------------------------------------------------------------

@@ -4,6 +4,7 @@
 
     <string name="menu_refresh">Rescan</string>
     <string name="menu_import">Import</string>
+    <string name="menu_clear">Clear library</string>
     <string name="menu_settings">Settings</string>
 
     <string name="title_scan">Scanning library…</string>
@@ -24,6 +25,11 @@
     <string name="remove_file_note">The file itself will not be deleted.</string>
     <string name="delete_yes">Remove</string>
     <string name="delete_no">Cancel</string>
+    <string name="clear_confirm_title">Clear the library?</string>
+    <string name="clear_confirm_message">Remove all books from the library?</string>
+    <string name="clear_file_note">The files themselves will not be deleted.</string>
+    <string name="clear_yes">Clear</string>
+    <string name="library_cleared">Library cleared</string>
 
     <!-- Tap confirmation: "Open this book?" (Open / Cancel) -->
     <string name="open_confirm_title">Open this book?</string>
