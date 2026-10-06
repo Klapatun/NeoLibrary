@@ -292,6 +292,8 @@ public class BookDatabaseTest {
         SQLiteDatabase raw = db.getWritableDatabase();
         raw.execSQL("UPDATE books SET meta_done = 1 WHERE _id = " + id);
 
+        raw.execSQL("UPDATE books SET meta_failed = 1 WHERE _id = " + id);
+
         Book got = db.getById(id);
         assertEquals(b.path, got.path);
         assertEquals(b.format, got.format);
@@ -303,6 +305,7 @@ public class BookDatabaseTest {
         assertEquals(12345, got.sizeBytes);
         assertTrue("exported flag must round-trip", got.exported);
         assertTrue("meta_done flag must round-trip", got.metaDone);
+        assertTrue("meta_failed flag must round-trip", got.metaFailed);
         assertTrue("user_edited flag must round-trip", got.userEdited);
     }
 
@@ -444,6 +447,62 @@ public class BookDatabaseTest {
             c.close();
         }
         return names;
+    }
+
+    // ------------------------------------------------------------------
+    // migration (v3 -> v4: meta_failed column)
+    // ------------------------------------------------------------------
+
+    /** Old (v3) table definition, exactly as shipped in version 3 (with the
+     *  meta_done / user_edited columns but no meta_failed column). */
+    private static final String V3_CREATE =
+            "CREATE TABLE books ("
+            + "_id INTEGER PRIMARY KEY AUTOINCREMENT, "
+            + "path TEXT UNIQUE NOT NULL, "
+            + "format TEXT, "
+            + "title TEXT, "
+            + "author TEXT, "
+            + "publisher TEXT, "
+            + "description TEXT, "
+            + "series TEXT, "
+            + "size_bytes INTEGER, "
+            + "exported INTEGER DEFAULT 0, "
+            + "meta_done INTEGER NOT NULL DEFAULT 0, "
+            + "user_edited INTEGER NOT NULL DEFAULT 0, "
+            + "last_read INTEGER"
+            + ")";
+
+    /**
+     * Opening a v3 database must upgrade it in place to v4: the existing row
+     * (including last_read) survives and the new {@code meta_failed} column
+     * appears with a 0 default (no book is "un-enriched" by default).
+     */
+    @Test
+    public void openingAV3DatabaseUpgradesInPlaceAndAddsMetaFailedColumn() {
+        db.close(); // release setUp()'s connection so the raw open below can proceed
+        java.io.File f = context.getDatabasePath("library.db");
+        if (f.getParentFile() != null) f.getParentFile().mkdirs();
+        SQLiteDatabase rawDb = SQLiteDatabase.openOrCreateDatabase(f.getAbsolutePath(), null);
+        try {
+            rawDb.execSQL(V3_CREATE);
+            rawDb.execSQL("INSERT INTO books (path, format, title, last_read) VALUES "
+                    + "('/x/v3.epub', 'EPUB', 'V3 Title', 55555)");
+            rawDb.execSQL("PRAGMA user_version = 3");
+        } finally {
+            rawDb.close();
+        }
+
+        BookDatabase upgraded = new BookDatabase(context);
+        SQLiteDatabase raw = upgraded.getReadableDatabase();
+        Cursor c = raw.rawQuery("SELECT title, last_read, meta_failed FROM books", null);
+        try {
+            assertTrue("row must survive the upgrade", c.moveToFirst());
+            assertEquals("V3 Title", c.getString(0));
+            assertEquals(55555L, c.getLong(1));
+            assertEquals("meta_failed must default to 0 on upgrade", 0, c.getInt(2));
+        } finally {
+            c.close();
+        }
     }
 
     // ------------------------------------------------------------------
@@ -642,5 +701,69 @@ public class BookDatabaseTest {
         List<Book> pendingBooks = db.needMeta();
         assertEquals(1, pendingBooks.size());
         assertEquals(pending, pendingBooks.get(0).id);
+    }
+
+    /** A timed-out parse must leave the book in the stage-2 queue (meta_done stays 0)
+     *  so that every rescan retries it — the flag only changes its priority. */
+    @Test
+    public void markMetaFailedFlagsTheRowAndKeepsItPending() {
+        long id = db.upsertBasic(book("/x/slow.epub", "EPUB", "Slow", null));
+        assertFalse("a fresh row is not un-enriched", db.getById(id).metaFailed);
+
+        db.markMetaFailed(id);
+
+        Book b = db.getById(id);
+        assertTrue("the un-enriched flag must round-trip", b.metaFailed);
+        assertFalse("a timed-out book must stay pending (retried on rescan)", b.metaDone);
+        assertEquals("the flagged book must still be in the stage-2 queue", 1,
+                db.needMeta().size());
+    }
+
+    /** The rescan rule: within the stage-2 queue, books whose last parse overran the
+     *  time budget ({@code meta_failed = 1}) must be taken last, normal books first. */
+    @Test
+    public void needMetaOrdersUnEnrichedBooksLast() {
+        long a = db.upsertBasic(book("/x/a.txt", "TXT", "A", null));
+        long b = db.upsertBasic(book("/x/b.txt", "TXT", "B", null));
+        long c = db.upsertBasic(book("/x/c.txt", "TXT", "C", null));
+        db.markMetaFailed(a);
+        db.markMetaFailed(c);
+
+        List<Book> queue = db.needMeta();
+        assertEquals(3, queue.size());
+        assertEquals("the un-flagged book must come first", b, queue.get(0).id);
+        assertEquals("flagged books come after, in id order", a, queue.get(1).id);
+        assertEquals("...and last", c, queue.get(2).id);
+    }
+
+    /** A parse that completes normally (the retry succeeded) must clear the flag. */
+    @Test
+    public void updateMetadataClearsTheUnEnrichedFlag() {
+        long id = db.upsertBasic(book("/x/retry.epub", "EPUB", "Retry", null));
+        db.markMetaFailed(id);
+        assertTrue(db.getById(id).metaFailed);
+
+        MetaData md = new MetaData();
+        md.title = "Real Title";
+        md.found = true;
+        db.updateMetadata(id, md, true);
+
+        Book got = db.getById(id);
+        assertTrue(got.metaDone);
+        assertFalse("a successful enrichment clears the un-enriched flag", got.metaFailed);
+    }
+
+    /** An import with the same name replaces the file contents, so the old
+     *  "too slow to parse" verdict must not keep the new file at the end of the
+     *  queue: re-queuing (markMetaPending) clears the flag. */
+    @Test
+    public void markMetaPendingClearsTheUnEnrichedFlag() {
+        long id = db.upsertBasic(book("/x/imported.epub", "EPUB", "Imported", null));
+        db.markMetaFailed(id);
+
+        db.markMetaPending(id);
+
+        assertFalse("new file contents get normal queue priority",
+                db.getById(id).metaFailed);
     }
 }

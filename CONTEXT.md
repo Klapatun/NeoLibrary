@@ -39,12 +39,12 @@ Every book's metadata is stored in **two places**:
 | `MainActivity` | catalog: 3-stage load (fast scan → display → background enrich), browse, filter, "Recently read", SAF import; list is cursor-driven (framework `LoaderManager` + `CursorLoader`) |
 | `DetailActivity` | open in Neo Reader / edit meta / remove; fast-path enrichment of a not-yet-enriched book on open |
 | `EditMetaActivity` | metadata form → writes file (EPUB/FB2) + always updates catalog (`userEdited = true`) |
-| `Book` | Parcelable model (`metaDone`, `userEdited` flags) |
-| `db/BookDatabase` | SQLite catalog; **`upsert`/`upsertBasic`/`updateMetadata` preserve `last_read`**; `needMeta()` = stage-2 queue; static write lock |
+| `Book` | Parcelable model (`metaDone`, `metaFailed`, `userEdited` flags) |
+| `db/BookDatabase` | SQLite catalog; **`upsert`/`upsertBasic`/`updateMetadata` preserve `last_read`**; `needMeta()` = stage-2 queue (un-enriched/`meta_failed` books ordered last); `markMetaFailed()`; static write lock |
 | `db/BookProvider` | read-only `ContentProvider` — the `ContentObserver` channel for the `CursorLoader` (all / recent / `format=?`) |
 | `scan/Formats` | canonical formats + ext→id map (handles `.fb2.zip`) |
 | `scan/LibraryScanner` | stage-1 fast scan (skeleton books, no in-file meta) + `scanSingle()` |
-| `meta/MetaEnricher` | stage-2 background worker: per-book `MetaExtractor` + `CoverExtractor` → DB + `CoverCache`, `notifyChange` per batch; `enrichOne` for import/fast path |
+| `meta/MetaEnricher` | stage-2 background worker: per-book `MetaExtractor` + `CoverExtractor` → DB + `CoverCache`, `notifyChange` per batch; `enrichOne` for import/fast path; **per-file parse budget of 2 min** — a parse that overruns it is abandoned and the book is marked un-enriched (`meta_failed=1`, stays `meta_done=0`, retried last on every rescan) |
 | `meta/MetaExtractor` | read meta: EPUB/FB2/FB2ZIP (inner `.fb2` entry)/MOBI/TXT/HTML |
 | `meta/MobiParser` | shared MOBI/AZW binary reader (package-private): PalmDB record table + MOBI header + EXTH |
 | `meta/MetaWriter` | write meta EPUB/FB2, non-destructive (`.tmp`→swap→`.bak`) |
@@ -83,6 +83,11 @@ it never steals column width.
   `db.needMeta()`: per book `MetaExtractor` + `CoverExtractor` → `db.updateMetadata()`
   (never clobbers `user_edited` values, keeps `last_read`) + `CoverCache` file write →
   `notifyChange` every batch → the cursor re-queries and rows refresh in place.
+  Each file's parse (meta + cover) runs on a throwaway thread with a **2-minute
+  budget**: a parse that overruns it is abandoned, the book is marked un-enriched
+  (`db.markMetaFailed`, `meta_done` stays 0) and the worker moves on to the next
+  file. On every rescan the un-enriched books are retried but taken last
+  (`needMeta()` orders `meta_failed` last).
 - **Open** → `DetailActivity` → `Openers.openFile()` → `ACTION_VIEW` → `markRead`.
   Fast path: a book still not enriched (opened before stage 2 reached it) is enriched
   on open, off the UI thread, and the detail screen refreshes itself.
@@ -101,6 +106,9 @@ it never steals column width.
 - Never leave a book file half-written (always `.tmp`→swap→`.bak`).
 - `BookDatabase.upsert` must preserve `last_read`.
 - `Formats.ALL` is the single source of truth for scanning/filter/badge.
+- A single slow/hung file must never block the enrichment queue: the per-file parse
+  budget is 2 minutes; overruns are abandoned, the book is marked un-enriched and
+  retried last on every rescan.
 
 ## Header icons (SVG sources → committed PNGs)
 

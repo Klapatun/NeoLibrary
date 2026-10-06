@@ -54,7 +54,8 @@ public class BookAdapterTest {
     private static final class BooksCursor extends BaseCursor {
         private static final String[] COLUMNS = {
                 "_id", "path", "format", "title", "author", "publisher", "description",
-                "series", "size_bytes", "exported", "meta_done", "user_edited"
+                "series", "size_bytes", "exported", "meta_done", "meta_failed",
+                "user_edited"
         };
         private final Book[] rows;
         private int pos = -1;
@@ -110,7 +111,8 @@ public class BookAdapterTest {
                 case 8: return String.valueOf(b.sizeBytes);
                 case 9: return b.exported ? "1" : "0";
                 case 10: return b.metaDone ? "1" : "0";
-                case 11: return b.userEdited ? "1" : "0";
+                case 11: return b.metaFailed ? "1" : "0";
+                case 12: return b.userEdited ? "1" : "0";
                 default: return null;
             }
         }

@@ -107,12 +107,12 @@ Every book's metadata lives in **two places**:
 | `MainActivity` | catalog screen: 3-stage load, browse, filter, recently-read, SAF import | list is cursor-driven (framework `LoaderManager` + `CursorLoader`); never clears the DB on rescan → `last_read` survives |
 | `DetailActivity` | one book: open / edit / remove | open fires `ACTION_VIEW`, then `markRead`; fast-path `enrichOne` for a not-yet-enriched book |
 | `EditMetaActivity` | metadata form | writes file for EPUB/FB2, always updates catalog with `userEdited = true` |
-| `Book` | Parcelable model | `initial()`, `displayFormat()` helpers; `metaDone`/`userEdited` flags |
+| `Book` | Parcelable model | `initial()`, `displayFormat()` helpers; `metaDone`/`metaFailed`/`userEdited` flags |
 | `BookDatabase.upsert` | insert-or-update by path | preserves `last_read` (rejects REPLACE); `upsertBasic` (stage 1) refreshes only format+size; `updateMetadata` (stage 2) respects `user_edited`; all writes under a static lock |
 | `BookProvider` | read-only provider over the catalog | the `ContentObserver` channel for the `CursorLoader`: all / recent / `format=?` |
 | `Formats` | canonical format ids + extension map | `.fb2.zip` handled as compound extension |
 | `LibraryScanner` | stage-1 fast scan + `scanSingle()` | file walk only — in-file metadata is the enricher's job |
-| `MetaEnricher` | stage-2 background worker | single thread over `needMeta()`; `enrichOne` for import/detail fast path; `notifyChange` per batch |
+| `MetaEnricher` | stage-2 background worker | single thread over `needMeta()`; `enrichOne` for import/detail fast path; `notifyChange` per batch; **2-minute per-file parse budget** — overruns are abandoned and the book is marked un-enriched (`meta_failed`), retried last on every rescan |
 | `MetaExtractor` | read meta | EPUB via `container.xml`→OPF; FB2 author split; FB2.ZIP via the inner `.fb2` entry; MOBI via `MobiParser` |
 | `MobiParser` | read MOBI/AZW (package-private) | PalmDB record table + MOBI header + EXTH; cover = first image + EXTH 201 |
 | `MetaWriter` | write meta | non-destructive: `.tmp` → swap → `.bak` recovery |
@@ -137,7 +137,12 @@ covers, and the user can interact with the library at any point.
   (respects `user_edited`, keeps `last_read`) + `CoverCache` (durable file cache of the
   cover bytes) → `notifyChange` every batch → the cursor re-queries, rows refresh in
   place, and a compact progress strip (visible only while the worker runs) reports
-  `done/total`.
+  `done/total`. Each file's parse (metadata + cover) runs on a throwaway thread with a
+  **2-minute budget**: a parse that overruns it is abandoned, the book is marked
+  un-enriched via `db.markMetaFailed()` (it stays in the queue, `meta_done = 0`, so
+  every rescan retries it — and `needMeta()` orders the un-enriched books **last**),
+  and the worker moves on to the next file. One pathological file can never block the
+  rest of the library.
 - **Open** → list click → `DetailActivity` loads `Book` by id → button →
   `Openers.openFile()` returns `ACTION_VIEW` → `startActivity()` → `db.markRead(id)`
   (feeds "Recently read"). If the book was not enriched yet (stage 2 has not reached
@@ -162,6 +167,10 @@ covers, and the user can interact with the library at any point.
   `android:exported`.
 - **Never leave a book file half-written** when editing — always `.tmp` → swap → `.bak`.
 - **`BookDatabase.upsert` must preserve `last_read`** across rescans.
+- **A single slow file must never block the enrichment queue** — the per-file parse
+  budget is 2 minutes; a parse that overruns it is abandoned, the book is marked
+  un-enriched (`meta_failed = 1`, stays `meta_done = 0`) and is retried **last** on
+  every rescan.
 - **`Formats.ALL`** is the single source of truth — scanning, the filter spinner and the
   per-book format badge must never diverge from it.
 

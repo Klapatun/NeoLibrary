@@ -21,7 +21,7 @@ import java.util.List;
 public class BookDatabase extends SQLiteOpenHelper {
 
     private static final String DB_NAME = "library.db";
-    private static final int DB_VERSION = 3;
+    private static final int DB_VERSION = 4;
 
     /** Serializes all write operations. A static lock (not an instance monitor) so
      *  that concurrent writers from different BookDatabase instances (each Activity
@@ -46,6 +46,7 @@ public class BookDatabase extends SQLiteOpenHelper {
             + "exported INTEGER DEFAULT 0, "
             + "meta_done INTEGER NOT NULL DEFAULT 0, "
             + "user_edited INTEGER NOT NULL DEFAULT 0, "
+            + "meta_failed INTEGER NOT NULL DEFAULT 0, "
             + "last_read INTEGER"
             + ")";
 
@@ -77,6 +78,12 @@ public class BookDatabase extends SQLiteOpenHelper {
         }
         if (oldVersion < 3) {
             createIndexes(db);
+        }
+        if (oldVersion < 4) {
+            try {
+                db.execSQL("ALTER TABLE books ADD COLUMN meta_failed INTEGER NOT NULL DEFAULT 0");
+            } catch (Exception ignored) { // column already present (partial upgrade)
+            }
         }
     }
 
@@ -170,7 +177,9 @@ public class BookDatabase extends SQLiteOpenHelper {
     /** Stage-2 (background enrichment) update. When the user has edited the catalog
      *  (user_edited=1) only still-empty fields are filled, so user values are never
      *  clobbered; otherwise the extracted values are written (a failed extraction
-     *  leaves the file-name title in place). Always marks the book as enriched;
+     *  leaves the file-name title in place). Always marks the book as enriched and
+     *  clears the "un-enriched" flag ({@code meta_failed}, set by
+     *  {@link #markMetaFailed} when a parse overran the enricher's time budget);
      *  last_read is never touched. */
     public void updateMetadata(long id, MetaData md, boolean fileReadable) {
         synchronized (WRITE_LOCK) {
@@ -196,6 +205,8 @@ public class BookDatabase extends SQLiteOpenHelper {
 
             ContentValues cv = new ContentValues();
             cv.put("meta_done", 1);
+            // A parse that completed (in time) is no longer "un-enriched".
+            cv.put("meta_failed", 0);
             if (md != null && md.found && fileReadable) {
                 if (!userEdited || isBlank(curTitle)) cv.put("title", md.title);
                 if (!userEdited || isBlank(curAuthor)) cv.put("author", md.author);
@@ -213,11 +224,16 @@ public class BookDatabase extends SQLiteOpenHelper {
         return value == null || value.trim().length() == 0;
     }
 
-    /** All books whose in-file metadata has not been extracted yet (stage-2 queue). */
+    /** All books whose in-file metadata has not been extracted yet (the stage-2
+     *  queue). Books whose last parse overran the enricher's time budget
+     *  ({@code meta_failed = 1}, the "un-enriched" ones) are ordered last, so every
+     *  rescan works through the normal books first and only retries the slow ones
+     *  at the end of the pass. */
     public List<Book> needMeta() {
         List<Book> list = new ArrayList<Book>();
         SQLiteDatabase db = getReadableDatabase();
-        Cursor c = db.query("books", null, "meta_done=0", null, null, null, null);
+        Cursor c = db.query("books", null, "meta_done=0", null, null, null,
+                "meta_failed ASC, _id ASC");
         try {
             while (c.moveToNext()) list.add(fromCursor(c));
         } finally {
@@ -305,12 +321,29 @@ public class BookDatabase extends SQLiteOpenHelper {
 
     /** Marks the row as needing stage-2 enrichment again. Used after the underlying
      *  file was overwritten (an import with the same name), so the old in-file
-     *  metadata is re-extracted instead of being trusted. */
+     *  metadata is re-extracted instead of being trusted. Also clears the
+     *  "un-enriched" flag: the row now points at new file contents, so the old
+     *  "this file was too slow to parse" verdict no longer applies. */
     public void markMetaPending(long id) {
         synchronized (WRITE_LOCK) {
             SQLiteDatabase db = getWritableDatabase();
             ContentValues cv = new ContentValues();
             cv.put("meta_done", 0);
+            cv.put("meta_failed", 0);
+            db.update("books", cv, "_id=?", new String[]{String.valueOf(id)});
+        }
+    }
+
+    /** Marks the row as "un-enriched": its last parsing attempt overran the
+     *  enricher's time budget (see {@code MetaEnricher}), which gave up instead of
+     *  blocking the whole queue. The book stays in the stage-2 queue
+     *  ({@code meta_done} is left at 0, so it is retried on every rescan) and the
+     *  {@code meta_failed} flag makes {@link #needMeta()} take it last. */
+    public void markMetaFailed(long id) {
+        synchronized (WRITE_LOCK) {
+            SQLiteDatabase db = getWritableDatabase();
+            ContentValues cv = new ContentValues();
+            cv.put("meta_failed", 1);
             db.update("books", cv, "_id=?", new String[]{String.valueOf(id)});
         }
     }
@@ -369,6 +402,7 @@ public class BookDatabase extends SQLiteOpenHelper {
         b.sizeBytes = c.getLong(c.getColumnIndexOrThrow("size_bytes"));
         b.exported = c.getInt(c.getColumnIndexOrThrow("exported")) == 1;
         b.metaDone = c.getInt(c.getColumnIndexOrThrow("meta_done")) == 1;
+        b.metaFailed = c.getInt(c.getColumnIndexOrThrow("meta_failed")) == 1;
         b.userEdited = c.getInt(c.getColumnIndexOrThrow("user_edited")) == 1;
         return b;
     }
