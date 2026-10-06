@@ -19,6 +19,7 @@ import android.os.Looper;
 import android.provider.OpenableColumns;
 import android.view.View;
 import android.widget.AbsListView;
+import android.widget.Button;
 import android.widget.GridView;
 import android.widget.ImageButton;
 import android.widget.ListView;
@@ -459,8 +460,8 @@ public class MainActivityTest {
         a.findViewById(R.id.btn_menu).performClick();
         android.widget.PopupMenu menu = a.getLastHeaderMenu();
         assertNotNull("the kebab click must open the menu", menu);
-        assertEquals("the menu must carry import, rescan and clear",
-                3, menu.getMenu().size());
+        assertEquals("the menu must carry import, rescan, clear and the pagination toggle",
+                4, menu.getMenu().size());
         menu.getMenu().performIdentifierAction(R.id.main_menu_rescan, 0);
 
         // The new books land in the catalog...
@@ -797,6 +798,247 @@ public class MainActivityTest {
                 new String[]{String.valueOf(target.id)});
         assertTrue("row must exist", c.moveToFirst());
         assertEquals("last_read must stay 0", 0L, c.getLong(0));
+    }
+
+    // ------------------------------------------------------------------
+    // pagination (the kebab's "Add/Remove pagination")
+    // ------------------------------------------------------------------
+
+    /** The kebab's "Add pagination" switches the catalog from one long scroll to
+     *  fixed pages: in tiles that is 6 books per page, with the strip's Prev /
+     *  "X / Y" / Next navigating. Picking the item again ("Remove pagination",
+     *  shown checked) restores the long scroll. */
+    @Test
+    public void headerKebabPaginationToggleSwitchesBetweenScrollAndPages() throws Exception {
+        for (int i = 1; i <= 8; i++) {
+            TestFixtures.writeText(new File(storage, "story_" + i + ".txt"), "text " + i + "\n");
+        }
+
+        MainActivity a = launchMain();
+        awaitCatalogSize(8);
+        GridView grid = a.findViewById(R.id.book_grid);
+        awaitAdapterCount(grid, 8);
+        View bar = a.findViewById(R.id.pagination_bar);
+        assertEquals("no pagination: the strip is hidden", View.GONE, bar.getVisibility());
+        TextView indicator = (TextView) a.findViewById(R.id.page_indicator);
+        Button prev = (Button) a.findViewById(R.id.page_prev);
+        Button next = (Button) a.findViewById(R.id.page_next);
+
+        // The kebab item offers the OPPOSITE action; its checkmark mirrors the state.
+        a.findViewById(R.id.btn_menu).performClick();
+        android.widget.PopupMenu menu = a.getLastHeaderMenu();
+        assertNotNull(menu);
+        android.view.MenuItem paginationItem = menu.getMenu().findItem(R.id.main_menu_pagination);
+        assertEquals(a.getString(R.string.menu_pagination_add),
+                paginationItem.getTitle().toString());
+        assertFalse(paginationItem.isChecked());
+        menu.getMenu().performIdentifierAction(R.id.main_menu_pagination, 0);
+
+        // Pagination on in tiles: 6 books per page (8 books -> 2 pages).
+        assertEquals(View.VISIBLE, bar.getVisibility());
+        assertEquals(6, grid.getAdapter().getCount());
+        assertEquals("1 / 2", indicator.getText().toString());
+        assertFalse("Prev must be disabled on the first page", prev.isEnabled());
+
+        // Next: the last (partial) page.
+        next.performClick();
+        assertEquals(2, grid.getAdapter().getCount());
+        assertEquals("2 / 2", indicator.getText().toString());
+        assertFalse("Next must be disabled on the last page", next.isEnabled());
+
+        // Prev: back to the first page.
+        prev.performClick();
+        assertEquals(6, grid.getAdapter().getCount());
+        assertEquals("1 / 2", indicator.getText().toString());
+        assertFalse(prev.isEnabled());
+        assertTrue(next.isEnabled());
+
+        // The kebab now offers "Remove pagination" (checked)...
+        a.findViewById(R.id.btn_menu).performClick();
+        android.view.MenuItem paginationItem2 = a.getLastHeaderMenu()
+                .getMenu().findItem(R.id.main_menu_pagination);
+        assertEquals(a.getString(R.string.menu_pagination_remove),
+                paginationItem2.getTitle().toString());
+        assertTrue(paginationItem2.isChecked());
+        a.getLastHeaderMenu().getMenu().performIdentifierAction(R.id.main_menu_pagination, 0);
+
+        // ...and the long scroll is back.
+        assertEquals(View.GONE, bar.getVisibility());
+        assertEquals(8, grid.getAdapter().getCount());
+    }
+
+    /** The pagination choice is stored in the phone's memory (SharedPreferences)
+     *  and must be applied on the next launch, like the view-mode choice. */
+    @Test
+    public void paginationChoiceIsPersistedAcrossAppRestarts() throws Exception {
+        for (int i = 1; i <= 8; i++) {
+            TestFixtures.writeText(new File(storage, "story_" + i + ".txt"), "text " + i + "\n");
+        }
+
+        ActivityController<MainActivity> c = Robolectric.buildActivity(MainActivity.class);
+        MainActivity a = c.setup().get();
+        awaitCatalogSize(8);
+        GridView grid = a.findViewById(R.id.book_grid);
+        awaitAdapterCount(grid, 8);
+
+        a.findViewById(R.id.btn_menu).performClick();
+        a.getLastHeaderMenu().getMenu().performIdentifierAction(R.id.main_menu_pagination, 0);
+        assertEquals("the choice is written to the phone's memory",
+                true, a.getSharedPreferences("library_prefs", Context.MODE_PRIVATE)
+                        .getBoolean("pagination_enabled", false));
+        assertEquals(6, grid.getAdapter().getCount());
+
+        // "Close the app" and relaunch: the persisted choice must be applied.
+        c.destroy();
+        MainActivity a2 = Robolectric.buildActivity(MainActivity.class).setup().get();
+        GridView grid2 = a2.findViewById(R.id.book_grid);
+        awaitAdapterCount(grid2, 6);
+        assertEquals("the pagination must survive the restart",
+                View.VISIBLE, a2.findViewById(R.id.pagination_bar).getVisibility());
+        assertEquals("1 / 2",
+                ((TextView) a2.findViewById(R.id.page_indicator)).getText().toString());
+    }
+
+    /** In list mode "Add pagination" shows as many rows as fit on the screen (a
+     *  measured screenful — not a fixed number), so 12 books span several pages. */
+    @Test
+    public void listModePaginationShowsAScreenfulOfRows() throws Exception {
+        for (int i = 1; i <= 12; i++) {
+            TestFixtures.writeText(new File(storage, "story_" + i + ".txt"), "text " + i + "\n");
+        }
+
+        MainActivity a = launchMain();
+        awaitCatalogSize(12);
+        GridView grid = a.findViewById(R.id.book_grid);
+        awaitAdapterCount(grid, 12);
+
+        // Switch to the list...
+        a.findViewById(R.id.toggle_view).performClick();
+        ListView list = a.findViewById(R.id.book_list);
+        assertEquals(12, list.getAdapter().getCount());
+
+        // ...and enable pagination from the kebab.
+        a.findViewById(R.id.btn_menu).performClick();
+        a.getLastHeaderMenu().getMenu().performIdentifierAction(R.id.main_menu_pagination, 0);
+
+        // A screenful: shorter than the whole catalog, at least one row.
+        int shown = list.getAdapter().getCount();
+        assertTrue("the list page must be shorter than the whole catalog: " + shown,
+                shown < 12);
+        assertTrue("the list page must show at least one row: " + shown, shown >= 1);
+        assertEquals(View.VISIBLE, a.findViewById(R.id.pagination_bar).getVisibility());
+
+        String indicator = ((TextView) a.findViewById(R.id.page_indicator)).getText().toString();
+        assertTrue("the indicator must read '1 / N': " + indicator,
+                indicator.startsWith("1 / "));
+        assertEquals("one screenful = ceil(12 / screenful) pages",
+                (12 + shown - 1) / shown, Integer.parseInt(indicator.split(" / ")[1]));
+    }
+
+    /** In list mode the page size is "as many rows as fit on the screen", and the
+     *  screen changes under the user's fingers: the stage-2 enrichment strip
+     *  appears (taking height from the book area) and later disappears (giving it
+     *  back). The page size must FOLLOW the laid-out height — without it, the list
+     *  keeps the screenful measured before the strip appeared, and (symmetrically)
+     *  stays shorter than the screen after the strip is gone. The re-measure is the
+     *  bookContainer's layout listener (height-only changes re-post the recompute),
+     *  so drive the strip's visibility directly — the same view the real worker
+     *  toggles in {@code startEnrichment} / {@code onFinished}. */
+    @Test
+    public void listPageSizeFollowsTheEnrichmentStripAppearance() throws Exception {
+        for (int i = 1; i <= 12; i++) {
+            TestFixtures.writeText(new File(storage, "story_" + i + ".txt"), "text " + i + "\n");
+        }
+
+        MainActivity a = launchMain();
+        awaitCatalogSize(12);
+        GridView grid = a.findViewById(R.id.book_grid);
+        awaitAdapterCount(grid, 12);
+
+        // Stage 2 must be DONE first: the enrichment strip is GONE, so the page
+        // size measured below is the full-screen one.
+        final BookDatabase dbLocal = db;
+        awaitCondition("stage-2 to finish", new Cond() {
+            public boolean holds() {
+                return dbLocal.needMeta().isEmpty()
+                        && a.findViewById(R.id.enrich_bar).getVisibility() == View.GONE;
+            }
+        });
+
+        // Switch to the list and let it lay out (a GONE list has no height yet).
+        a.findViewById(R.id.toggle_view).performClick();
+        ListView list = a.findViewById(R.id.book_list);
+        awaitCondition("the list to lay out", new Cond() {
+            public boolean holds() {
+                return list.getHeight() > 0;
+            }
+        });
+
+        // Enable pagination; the pager strip itself takes height from the book
+        // area — wait for the layout to settle on the new height before reading
+        // the baseline.
+        int hBeforePagerStrip = list.getHeight();
+        a.findViewById(R.id.btn_menu).performClick();
+        a.getLastHeaderMenu().getMenu().performIdentifierAction(R.id.main_menu_pagination, 0);
+        awaitCondition("the pager strip to take its height", new Cond() {
+            public boolean holds() {
+                return list.getHeight() < hBeforePagerStrip;
+            }
+        });
+        int firstShown = list.getAdapter().getCount();
+        assertTrue("the list page must be shorter than the whole catalog: " + firstShown,
+                firstShown < 12);
+        assertTrue("the list page must show at least one row: " + firstShown, firstShown >= 1);
+
+        // One row's height at the list's width — the same measurement the app does
+        // in computeListPageSize (the row height is constant, so the unbound
+        // measure is exact).
+        View row = android.view.LayoutInflater.from(a).inflate(R.layout.item_book, list, false);
+        row.measure(View.MeasureSpec.makeMeasureSpec(list.getWidth(), View.MeasureSpec.EXACTLY),
+                    View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED));
+        int rowHeight = Math.max(1, row.getMeasuredHeight());
+
+        // The enrichment strip appears (like a stage-2 restart would): it takes
+        // height from the book area...
+        int oldHeight = list.getHeight();
+        a.findViewById(R.id.enrich_bar).setVisibility(View.VISIBLE);
+        awaitCondition("the list to lose height to the strip", new Cond() {
+            public boolean holds() {
+                return list.getHeight() < oldHeight;
+            }
+        });
+
+        // ...and the page size must follow the new (shorter) height — fewer rows,
+        // and the pager counter's page total must grow with the smaller page.
+        int expected = Math.max(1, list.getHeight() / rowHeight);
+        final int expectedRef = expected;
+        awaitCondition("the page to shrink to the new screenful", new Cond() {
+            public boolean holds() {
+                return list.getAdapter().getCount() == expectedRef;
+            }
+        });
+        assertTrue("the shorter list must hold fewer rows: " + expected + " vs " + firstShown,
+                expected < firstShown);
+        assertEquals("the page total must grow with the smaller page",
+                "1 / " + (12 + expected - 1) / expected,
+                ((TextView) a.findViewById(R.id.page_indicator)).getText().toString());
+
+        // ...and the strip goes away again: the height comes back and the page
+        // size must grow back to the full screenful.
+        a.findViewById(R.id.enrich_bar).setVisibility(View.GONE);
+        awaitCondition("the list to get its height back", new Cond() {
+            public boolean holds() {
+                return list.getHeight() == oldHeight;
+            }
+        });
+        final int firstShownRef = firstShown;
+        awaitCondition("the page to grow back to the full screenful", new Cond() {
+            public boolean holds() {
+                return list.getAdapter().getCount() == firstShownRef;
+            }
+        });
+        assertEquals("1 / " + (12 + firstShown - 1) / firstShown,
+                ((TextView) a.findViewById(R.id.page_indicator)).getText().toString());
     }
 
     // ------------------------------------------------------------------

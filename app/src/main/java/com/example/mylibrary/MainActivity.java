@@ -10,13 +10,18 @@ import android.content.CursorLoader;
 import android.content.Intent;
 import android.content.Loader;
 import android.database.Cursor;
+import android.database.DataSetObserver;
 import android.net.Uri;
 import android.os.AsyncTask;
 import android.os.Bundle;
+import android.view.LayoutInflater;
 import android.view.MenuInflater;
+import android.view.MenuItem;
 import android.view.View;
 import android.widget.AdapterView;
 import android.widget.ArrayAdapter;
+import android.widget.Button;
+import android.widget.FrameLayout;
 import android.widget.GridView;
 import android.widget.ImageButton;
 import android.widget.LinearLayout;
@@ -64,9 +69,14 @@ public class MainActivity extends Activity
     private static final String PREFS_NAME = "library_prefs";
     /** The chosen display mode (a {@code BookAdapter.MODE_*} value). */
     private static final String PREF_KEY_VIEW_MODE = "view_mode";
+    /** Rows per page in tile (grid) mode. */
+    private static final int GRID_PAGE_SIZE = 6;
+    /** SharedPreferences key: the pagination on/off choice (persists like view_mode). */
+    private static final String PREF_KEY_PAGINATION = "pagination_enabled";
 
     private BookDatabase db;
     private BookAdapter adapter;
+    private FrameLayout bookContainer;
     private Spinner filterSpinner;
     private ProgressBar progressBar;
     private TextView emptyView;
@@ -77,6 +87,13 @@ public class MainActivity extends Activity
     private LinearLayout enrichBar;
     private TextView enrichStatus;
     private int viewMode = BookAdapter.MODE_GRID; // tiles are the default view
+    private LinearLayout paginationBar;
+    private Button btnPrevPage;
+    private Button btnNextPage;
+    private TextView pageIndicator;
+    /** Whether the books are shown in fixed pages (the kebab's "Add pagination")
+     *  instead of one long scroll; persisted like the view-mode choice. */
+    private boolean paginationEnabled;
     /** The header kebab's popup last built by {@link #showHeaderMenu}; exposed for
      *  unit tests (same pattern as {@code BookAdapter.getLastPopupMenu}). */
     private PopupMenu lastHeaderMenu;
@@ -93,6 +110,9 @@ public class MainActivity extends Activity
         }
         @Override public void onFinished() {
             if (isFinishing()) return;
+            // The strip going away gives the list its full height back — the
+            // bookContainer layout listener re-measures the list page size once
+            // the new height is laid out.
             enrichBar.setVisibility(View.GONE);
         }
     };
@@ -109,10 +129,15 @@ public class MainActivity extends Activity
         enrichBar = (LinearLayout) findViewById(R.id.enrich_bar);
         enrichStatus = (TextView) findViewById(R.id.enrich_status);
 
+        bookContainer = (FrameLayout) findViewById(R.id.book_container);
         list = (ListView) findViewById(R.id.book_list);
         grid = (GridView) findViewById(R.id.book_grid);
         btnMenu = (ImageButton) findViewById(R.id.btn_menu);
         toggleView = (ImageButton) findViewById(R.id.toggle_view);
+        paginationBar = (LinearLayout) findViewById(R.id.pagination_bar);
+        btnPrevPage = (Button) findViewById(R.id.page_prev);
+        btnNextPage = (Button) findViewById(R.id.page_next);
+        pageIndicator = (TextView) findViewById(R.id.page_indicator);
 
         list.setEmptyView(emptyView);
         grid.setEmptyView(emptyView);
@@ -138,6 +163,18 @@ public class MainActivity extends Activity
         adapter = new BookAdapter(this, db.cursorAll(null), this);
         adapter.setMode(initialMode);
         grid.setAdapter(adapter);
+        // Any external data change (an enrichment batch, a remove, a filter, a
+        // rescan rebind) can shrink the cursor below the current page or grow the
+        // page count: refresh the strip so "page X / Y" and the button states
+        // mirror the adapter.
+        adapter.registerDataSetObserver(new DataSetObserver() {
+            @Override public void onChanged() {
+                updatePageIndicator();
+            }
+            @Override public void onInvalidated() {
+                updatePageIndicator();
+            }
+        });
 
         // The system action bar is off on this screen (AppTheme.NoActionBar):
         // import and rescan live in the header kebab's popup menu now (the kebab
@@ -154,6 +191,17 @@ public class MainActivity extends Activity
             }
         });
 
+        btnPrevPage.setOnClickListener(new View.OnClickListener() {
+            @Override public void onClick(View v) {
+                showPage(adapter.getPage() - 1);
+            }
+        });
+        btnNextPage.setOnClickListener(new View.OnClickListener() {
+            @Override public void onClick(View v) {
+                showPage(adapter.getPage() + 1);
+            }
+        });
+
         // The display mode (list/tiles) is persisted in the phone's memory
         // (SharedPreferences), so it survives the app being closed: apply the saved
         // choice (tiles by default) now. The field's initial value (MODE_GRID)
@@ -161,6 +209,33 @@ public class MainActivity extends Activity
         // default — is a no-op transition (the adapter was already forced onto
         // this mode above, so the early return skips no state that matters).
         setViewMode(initialMode);
+        // The pagination choice is persisted like the view mode (the kebab's
+        // "Add/Remove pagination"); apply it with the initial view mode already in
+        // place, because the page size depends on it.
+        paginationEnabled = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
+                .getBoolean(PREF_KEY_PAGINATION, false);
+        if (paginationEnabled) {
+            adapter.setPagination(true, pageSizeForCurrentMode(), 0);
+        }
+        updatePageIndicator();
+        // The list's page size ("as many rows as fit the screen") is a function of
+        // the book area's laid-out height, and that height changes under the
+        // user's fingers: the first layout pass after a cold start, the enrichment
+        // strip appearing/disappearing, the pager strip itself appearing/dis-
+        // appearing. Whenever the container re-lays out at a DIFFERENT height,
+        // re-measure. The recompute is posted so it reads the settled height and
+        // never notifies the adapter in the middle of a layout pass.
+        bookContainer.addOnLayoutChangeListener(new View.OnLayoutChangeListener() {
+            @Override public void onLayoutChange(View v, int left, int top, int right, int bottom,
+                    int oldLeft, int oldTop, int oldRight, int oldBottom) {
+                if (bottom - top == oldBottom - oldTop) return; // width-only: nothing to re-measure
+                v.post(new Runnable() {
+                    @Override public void run() {
+                        recomputeListPageSize();
+                    }
+                });
+            }
+        });
         setupFilterSpinner();
         // The framework Activity (unlike AndroidX's FragmentActivity) has no loader
         // shortcuts of its own — go through the LoaderManager explicitly.
@@ -224,6 +299,14 @@ public class MainActivity extends Activity
         // startup no-op does not touch the file).
         getSharedPreferences(PREFS_NAME, MODE_PRIVATE).edit()
                 .putInt(PREF_KEY_VIEW_MODE, mode).commit();
+
+        // The page size depends on the mode (6 tiles vs. a screenful of rows):
+        // re-measure it and keep the current page clamped to the new size.
+        if (paginationEnabled) {
+            adapter.setPagination(true, pageSizeForCurrentMode(), adapter.getPage());
+            (isGrid ? grid : list).setSelection(0);
+            updatePageIndicator();
+        }
     }
 
     // -----------------------------------------------------------------
@@ -241,8 +324,16 @@ public class MainActivity extends Activity
     PopupMenu showHeaderMenu(View anchor) {
         final PopupMenu menu = new PopupMenu(this, anchor);
         new MenuInflater(this).inflate(R.menu.main_menu, menu.getMenu());
+        // The pagination item offers the OPPOSITE action (like the view toggle
+        // icon does) and carries the checkmark while pagination is on.
+        MenuItem pagination = menu.getMenu().findItem(R.id.main_menu_pagination);
+        if (pagination != null) {
+            pagination.setTitle(paginationEnabled
+                    ? R.string.menu_pagination_remove : R.string.menu_pagination_add);
+            pagination.setChecked(paginationEnabled);
+        }
         menu.setOnMenuItemClickListener(new PopupMenu.OnMenuItemClickListener() {
-            @Override public boolean onMenuItemClick(android.view.MenuItem item) {
+            @Override public boolean onMenuItemClick(MenuItem item) {
                 int id = item.getItemId();
                 if (id == R.id.main_menu_import) {
                     launchImport();
@@ -250,6 +341,8 @@ public class MainActivity extends Activity
                     startScan();
                 } else if (id == R.id.main_menu_clear) {
                     confirmClear();
+                } else if (id == R.id.main_menu_pagination) {
+                    setPaginationEnabled(!paginationEnabled);
                 }
                 menu.dismiss();
                 return true;
@@ -293,6 +386,94 @@ public class MainActivity extends Activity
                     }
                 })
                 .show();
+    }
+
+    // -----------------------------------------------------------------
+    // Pagination (the kebab's "Add/Remove pagination": long scroll <-> pages)
+    // -----------------------------------------------------------------
+
+    /** Flips the pagination mode, persists the choice (like the view mode) and
+     *  re-applies it: page 0, the current mode's page size (6 tiles, or as many
+     *  list rows as fit on the screen), the visible view scrolled back to its
+     *  first row, the strip refreshed. */
+    private void setPaginationEnabled(boolean enabled) {
+        if (paginationEnabled == enabled) return;
+        paginationEnabled = enabled;
+        getSharedPreferences(PREFS_NAME, MODE_PRIVATE).edit()
+                .putBoolean(PREF_KEY_PAGINATION, enabled).commit();
+        if (enabled) {
+            adapter.setPagination(true, pageSizeForCurrentMode(), 0);
+            (viewMode == BookAdapter.MODE_GRID ? grid : list).setSelection(0);
+        } else {
+            adapter.setPagination(false, 0, 0);
+        }
+        updatePageIndicator();
+    }
+
+    /** The page size for the current view mode: a fixed 6 in tiles, or as many
+     *  list rows as fit on the screen (measured, not guessed). */
+    private int pageSizeForCurrentMode() {
+        if (viewMode == BookAdapter.MODE_GRID) return GRID_PAGE_SIZE;
+        return computeListPageSize();
+    }
+
+    /** How many list rows fit in the books area: the list's own laid-out height
+     *  (or the grid's — they share the same {@code bookContainer} FrameLayout —
+     *  when the list is not laid out yet, e.g. right after a mode switch; the
+     *  full screen height as a last resort before the first layout pass,
+     *  corrected by the {@code bookContainer} layout listener). One row's height
+     *  is measured from a real (unbound) row at the list's width — the row height
+     *  is constant (the fixed 48dp cover slot plus the padding), so the unbound
+     *  measure is exact. */
+    private int computeListPageSize() {
+        int available = list.getHeight();
+        if (available <= 0) available = grid.getHeight();
+        if (available <= 0) available = getResources().getDisplayMetrics().heightPixels;
+        int width = list.getWidth() > 0
+                ? list.getWidth() : getResources().getDisplayMetrics().widthPixels;
+        View row = LayoutInflater.from(this).inflate(R.layout.item_book, list, false);
+        row.measure(View.MeasureSpec.makeMeasureSpec(width, View.MeasureSpec.EXACTLY),
+                    View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED));
+        return Math.max(1, available / Math.max(1, row.getMeasuredHeight()));
+    }
+
+    /** Re-measures the list page size. Invoked by the {@code bookContainer}
+     *  layout listener whenever the book area's height settles at a new value
+     *  (the first layout, the enrichment strip appearing/disappearing, the pager
+     *  strip appearing/disappearing, a rotation). */
+    private void recomputeListPageSize() {
+        if (!paginationEnabled || viewMode != BookAdapter.MODE_LIST) return;
+        adapter.setPagination(true, computeListPageSize(), adapter.getPage());
+        updatePageIndicator();
+    }
+
+    /** Shows page {@code desired} (clamped to the last existing page) and scrolls
+     *  the visible view back to its first row, so a page turn never keeps the old
+     *  page's scroll offset. */
+    private void showPage(int desired) {
+        int last = Math.max(0, adapter.getPageCount() - 1);
+        int target = Math.max(0, Math.min(desired, last));
+        if (target == adapter.getPage()) return;
+        adapter.setPage(target);
+        (viewMode == BookAdapter.MODE_GRID ? grid : list).setSelection(0);
+        updatePageIndicator();
+    }
+
+    /** The strip's state — the single place that decides its visibility: shown
+     *  iff pagination is on AND there is at least one page (an empty catalog
+     *  hides it, the empty view takes over). "X / Y" and the button states
+     *  mirror the adapter. */
+    private void updatePageIndicator() {
+        int pages = adapter.getPageCount();
+        if (!paginationEnabled || pages == 0) {
+            paginationBar.setVisibility(View.GONE);
+            return;
+        }
+        paginationBar.setVisibility(View.VISIBLE);
+        int page = adapter.getPage();
+        pageIndicator.setText((page + 1) + " / " + pages);
+        btnPrevPage.setEnabled(page > 0);
+        btnNextPage.setEnabled(page < pages - 1);
     }
 
     // -----------------------------------------------------------------
@@ -552,6 +733,8 @@ public class MainActivity extends Activity
     private void startEnrichment() {
         if (isFinishing()) return;
         if (db.needMeta().isEmpty()) return;
+        // The strip takes height away from the list — the bookContainer layout
+        // listener re-measures the list page size once the new height is laid out.
         enrichBar.setVisibility(View.VISIBLE);
         enrichStatus.setText(R.string.enriching);
         MetaEnricher.start(this, db, enrichListener);

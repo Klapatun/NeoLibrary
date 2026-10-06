@@ -1,8 +1,10 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!-- Header overflow (kebab) menu: the actions that used to be the import and
-     rescan buttons in the indigo header row, plus "Clear library". The kebab
-     sits at the header's right corner; the framework PopupMenu (API 19) shows
-     the item titles only. -->
+     rescan buttons in the indigo header row, plus "Clear library" and the
+     pagination toggle. The pagination item's title ("Add"/"Remove pagination")
+     and its checkmark are set from the current state in
+     MainActivity.showHeaderMenu. The kebab sits at the header's right corner;
+     the framework PopupMenu (API 19) shows the item titles only. -->
 <menu xmlns:android="http://schemas.android.com/apk/res/android">
     <item
         android:id="@+id/main_menu_import"
@@ -13,4 +15,8 @@
     <item
         android:id="@+id/main_menu_clear"
         android:title="@string/menu_clear" />
+    <item
+        android:id="@+id/main_menu_pagination"
+        android:title="@string/menu_pagination_add"
+        android:checkable="true" />
 </menu>

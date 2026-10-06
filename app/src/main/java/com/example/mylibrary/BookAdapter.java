@@ -37,6 +37,15 @@ import com.example.mylibrary.util.CoverLoader;
  * drive it: the loader re-queries whenever the catalog changes (scan, background
  * enrichment, import) and the adapter re-binds the rows. When switching modes, views
  * whose layout type no longer matches are re-inflated.
+ *
+ * <p><b>Pagination:</b> {@link #setPagination} windows the cursor client-side — the
+ * adapter still holds the WHOLE cursor (so every catalog change refreshes in place
+ * and the screen's direct-rebind paths work unchanged) but serves only the current
+ * page: {@link #getCount()} reports the page's rows and every visible position is
+ * mapped onto the cursor row offset by the page start ({@link #rowForPosition}). A
+ * cursor that shrinks below the current page (a remove, a filter, a clear) walks the
+ * page back in {@link #changeCursor}. With pagination off (the class default) every
+ * method behaves exactly as without this feature.
  */
 public class BookAdapter extends CursorAdapter {
 
@@ -71,6 +80,10 @@ public class BookAdapter extends CursorAdapter {
     private int mode = MODE_LIST;
     /** The popup last built by {@link #showBookMenu}; exposed for unit tests. */
     private PopupMenu lastPopupMenu;
+    /** Rows per page; 0 = pagination off (the whole cursor is scrollable). */
+    private int pageSize = 0;
+    /** The page currently shown (0-based); always within 0..getPageCount()-1. */
+    private int page = 0;
 
     public BookAdapter(Context context, Cursor c) {
         this(context, c, (BookMenuActions) null);
@@ -93,31 +106,135 @@ public class BookAdapter extends CursorAdapter {
         return mode;
     }
 
-    /** The book at the given position (for row-click handling), or null if the
-     *  cursor moved on. */
+    // ------------------------------------------------------------------
+    // pagination (a client-side window over the whole cursor)
+    // ------------------------------------------------------------------
+
+    /** The cursor row behind an adapter position: with pagination on, the
+     *  position is offset by the current page's start; off, it maps 1:1. */
+    private int rowForPosition(int position) {
+        if (pageSize <= 0) return position;
+        return page * pageSize + position;
+    }
+
+    /** How many pages the current cursor would hold at {@code size} rows per page
+     *  (an empty cursor holds 0). */
+    private int pageCountFor(int size) {
+        if (size <= 0) return 0;
+        Cursor c = getCursor();
+        int total = (c == null) ? 0 : c.getCount();
+        return (total + size - 1) / size;
+    }
+
+    /** Total pages at the CURRENT page size (0 when the cursor is empty, 1 when
+     *  pagination is off but rows exist). */
+    public int getPageCount() {
+        if (pageSize <= 0) {
+            Cursor c = getCursor();
+            return (c == null || c.getCount() == 0) ? 0 : 1;
+        }
+        return pageCountFor(pageSize);
+    }
+
+    public boolean isPaginationEnabled() {
+        return pageSize > 0;
+    }
+
+    /** The page currently shown (0-based); always within 0..getPageCount()-1. */
+    public int getPage() {
+        return page;
+    }
+
+    /** Shows page {@code p} (clamped to the last existing page). No-op while
+     *  pagination is off; a real change notifies the attached views. */
+    public void setPage(int p) {
+        if (pageSize > 0) setPagination(true, pageSize, p);
+    }
+
+    /** Turns pagination on/off over the current cursor. On: the adapter serves
+     *  {@code pageSize} rows per page, starting at {@code page} (clamped to the
+     *  last existing page — a cursor that shrank under the page walks it back).
+     *  Off: the whole cursor is served. A real change notifies the attached views. */
+    public void setPagination(boolean enabled, int pageSize, int page) {
+        int size = enabled ? Math.max(1, pageSize) : 0;
+        int p = 0;
+        if (size > 0) {
+            int last = pageCountFor(size) - 1;
+            p = (last <= 0) ? 0 : Math.max(0, Math.min(page, last));
+        }
+        if (size != this.pageSize || p != this.page) {
+            this.pageSize = size;
+            this.page = p;
+            notifyDataSetChanged();
+        }
+    }
+
+    @Override
+    public void changeCursor(Cursor c) {
+        // The new cursor may hold fewer rows than the current page spans (a remove,
+        // a filter, a clear): walk the page back to the last existing one BEFORE the
+        // swap — super.changeCursor fires the dataset callbacks (on API 19 a
+        // non-null swap goes through swapCursor's notifyDataSetChanged; a null
+        // swap fires notifyDataSetInvalidated — the screen's pager bar listens to
+        // both) with mCursor already the new cursor, so that refresh must see the
+        // clamped page, not the stale one.
+        if (pageSize > 0 && c != null) {
+            int last = (c.getCount() + pageSize - 1) / pageSize - 1;
+            page = (last <= 0) ? 0 : Math.min(page, last);
+        }
+        super.changeCursor(c);
+    }
+
+    /** Serves only the current page of the cursor (the whole cursor when
+     *  pagination is off). */
+    @Override
+    public int getCount() {
+        Cursor c = getCursor();
+        if (c == null) return 0;
+        int total = c.getCount();
+        if (pageSize <= 0) return total;
+        int start = page * pageSize;
+        return (start >= total) ? 0 : Math.min(pageSize, total - start);
+    }
+
+    /** The book at the given (visible) position (for row-click handling), or null
+     *  if the cursor moved on. */
     public Book getItem(int position) {
         Cursor c = getCursor();
-        if (c == null || !c.moveToPosition(position)) return null;
+        if (c == null || !c.moveToPosition(rowForPosition(position))) return null;
         return BookDatabase.fromCursor(c);
     }
 
     @Override
     public long getItemId(int position) {
         Cursor c = getCursor();
-        if (c == null || !c.moveToPosition(position)) return -1;
+        if (c == null || !c.moveToPosition(rowForPosition(position))) return -1;
         int idx = c.getColumnIndexOrThrow("_id");
         return c.getLong(idx);
     }
 
     @Override
     public View getView(int position, View convertView, ViewGroup parent) {
+        Cursor cursor = getCursor();
+        if (cursor == null) return null;
+        // Position the SHARED cursor on the row to bind BEFORE the newView()/
+        // bindView() dance: with pagination on, an adapter position maps to a
+        // cursor row offset by the page start, and the base class would position
+        // the cursor on the raw (windowed) position instead — binding the wrong
+        // book.
+        int row = rowForPosition(position);
+        if (row >= cursor.getCount()) return null;
+        cursor.moveToPosition(row);
         // A view recycled from the other mode has a different layout: drop it so
-        // newView() builds a fresh one for the current mode, then let the framework
-        // do its normal newView()/bindView() dance.
+        // newView() builds a fresh one for the current mode.
         if (convertView != null && !Integer.valueOf(mode).equals(convertView.getTag(R.id.view_mode))) {
             convertView = null;
         }
-        return super.getView(position, convertView, parent);
+        View v = (convertView == null)
+                ? newView(parent.getContext(), cursor, parent)
+                : convertView;
+        bindView(v, parent.getContext(), cursor);
+        return v;
     }
 
     @Override

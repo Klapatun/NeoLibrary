@@ -1,6 +1,7 @@
 package com.example.mylibrary;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotSame;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNull;
@@ -47,6 +48,14 @@ public class BookAdapterTest {
         b.title = title;
         b.author = author;
         b.id = 1;
+        return b;
+    }
+
+    /** A row with an explicit _id (the default helper above uses 1 for every book;
+     *  tests that assert {@code getItemId} need distinct ids). */
+    private static Book book(int id, String path, String format, String title, String author) {
+        Book b = book(path, format, title, author);
+        b.id = id;
         return b;
     }
 
@@ -254,6 +263,128 @@ public class BookAdapterTest {
         assertNotNull(got);
         assertEquals("/sdcard/b.epub", got.path);
         assertEquals("Beta", got.title);
+    }
+
+    // ------------------------------------------------------------------
+    // pagination (a client-side window over the whole cursor)
+    // ------------------------------------------------------------------
+
+    @Test
+    public void paginationServesOnePageAtATime() {
+        BookAdapter adapter = adapterWith(app,
+                book("/sdcard/1.txt", "TXT", "One", null),
+                book("/sdcard/2.txt", "TXT", "Two", null),
+                book("/sdcard/3.txt", "TXT", "Three", null),
+                book("/sdcard/4.txt", "TXT", "Four", null),
+                book("/sdcard/5.txt", "TXT", "Five", null),
+                book("/sdcard/6.txt", "TXT", "Six", null),
+                book("/sdcard/7.txt", "TXT", "Seven", null),
+                book("/sdcard/8.txt", "TXT", "Eight", null));
+
+        adapter.setPagination(true, 6, 0);
+        assertTrue(adapter.isPaginationEnabled());
+        assertEquals(2, adapter.getPageCount());
+        assertEquals(0, adapter.getPage());
+        assertEquals(6, adapter.getCount());
+        assertEquals("One", adapter.getItem(0).title);
+        assertEquals("Six", adapter.getItem(5).title);
+
+        adapter.setPage(1);
+        assertEquals(1, adapter.getPage());
+        assertEquals(2, adapter.getCount());
+        assertEquals("Seven", adapter.getItem(0).title);
+        assertEquals("Eight", adapter.getItem(1).title);
+
+        // Off again: the whole cursor is served.
+        adapter.setPagination(false, 0, 0);
+        assertFalse(adapter.isPaginationEnabled());
+        assertEquals(8, adapter.getCount());
+        assertEquals("One", adapter.getItem(0).title);
+    }
+
+    /** The page-2 position 0 must bind the 4th CURSOR row (the offset by the page
+     *  start), not the 1st — the regression the windowing exists for. (Distinct _ids:
+     *  the default book() helper gives every row id 1.) */
+    @Test
+    public void paginationBindsViewsToTheCursorRowOfTheCurrentPage() {
+        BookAdapter adapter = adapterWith(app,
+                book(1, "/sdcard/1.txt", "TXT", "One", null),
+                book(2, "/sdcard/2.txt", "TXT", "Two", null),
+                book(3, "/sdcard/3.txt", "TXT", "Three", null),
+                book(4, "/sdcard/4.txt", "TXT", "Four", null));
+
+        adapter.setPagination(true, 3, 1);
+        assertEquals(1, adapter.getCount());
+
+        View v = adapter.getView(0, null, new FrameLayout(app));
+        assertEquals("the page-2 row must bind the 4th cursor row",
+                "Four", ((TextView) v.findViewById(R.id.book_title)).getText().toString());
+        assertEquals(4, adapter.getItemId(0));
+    }
+
+    @Test
+    public void paginationClampsThePageToTheLastExistingOne() {
+        BookAdapter adapter = adapterWith(app,
+                book("/sdcard/1.txt", "TXT", "One", null),
+                book("/sdcard/2.txt", "TXT", "Two", null),
+                book("/sdcard/3.txt", "TXT", "Three", null),
+                book("/sdcard/4.txt", "TXT", "Four", null));
+
+        // Only 2 pages exist (3 + 1) — page 9 walks back to the last one.
+        adapter.setPagination(true, 3, 9);
+        assertEquals(1, adapter.getPage());
+        assertEquals(1, adapter.getCount());
+        assertEquals("Four", adapter.getItem(0).title);
+
+        // A cursor that shrinks past the current page walks it back to 0.
+        adapter.changeCursor(new BooksCursor(book("/sdcard/1.txt", "TXT", "One", null)));
+        assertEquals(0, adapter.getPage());
+        assertEquals(1, adapter.getCount());
+        assertEquals("One", adapter.getItem(0).title);
+    }
+
+    /** A shrunk cursor must not only walk the page back — the dataset callback
+     *  that changeCursor fires (which the screen's pager bar listens to) must
+     *  ALREADY see the clamped page. Without the clamp-before-swap, the callback
+     *  would carry the stale page and the strip would briefly read "2 / 1".
+     *  (On API 19 a non-null swap goes through CursorAdapter.swapCursor's
+     *  notifyDataSetChanged — i.e. onChanged; only changeCursor(null) fires
+     *  onInvalidated — so the probe listens to onChanged.) */
+    @Test
+    public void changeCursorFiresDatasetCallbacksWithTheClampedPage() {
+        BookAdapter adapter = adapterWith(app,
+                book("/sdcard/1.txt", "TXT", "One", null),
+                book("/sdcard/2.txt", "TXT", "Two", null),
+                book("/sdcard/3.txt", "TXT", "Three", null),
+                book("/sdcard/4.txt", "TXT", "Four", null));
+
+        adapter.setPagination(true, 3, 1); // 2 pages; the second holds one row
+        assertEquals(1, adapter.getPage());
+
+        final int[] pageOnChanged = {-1};
+        adapter.registerDataSetObserver(new android.database.DataSetObserver() {
+            @Override public void onChanged() {
+                pageOnChanged[0] = adapter.getPage();
+            }
+        });
+
+        // The catalog shrinks to a single row: the current page (1) no longer exists.
+        adapter.changeCursor(new BooksCursor(book("/sdcard/1.txt", "TXT", "One", null)));
+
+        assertEquals("the page must walk back to 0", 0, adapter.getPage());
+        assertEquals(1, adapter.getCount());
+        assertEquals("the callback the pager bar listens to must see the CLAMPED page",
+                0, pageOnChanged[0]);
+    }
+
+    @Test
+    public void paginationOverAnEmptyCursorShowsNoPages() {
+        BookAdapter adapter = new BookAdapter(app, null);
+        adapter.changeCursor(new BooksCursor());
+        adapter.setPagination(true, 6, 0);
+        assertEquals(0, adapter.getCount());
+        assertEquals(0, adapter.getPageCount());
+        assertEquals(0, adapter.getPage());
     }
 
     // ------------------------------------------------------------------

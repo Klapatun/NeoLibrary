@@ -6,6 +6,10 @@
     <string name="menu_import">Import</string>
     <string name="menu_clear">Clear library</string>
     <string name="menu_settings">Settings</string>
+    <!-- The kebab's pagination toggle offers the OPPOSITE action (set in
+         MainActivity.showHeaderMenu); the title below is the XML default. -->
+    <string name="menu_pagination_add">Add pagination</string>
+    <string name="menu_pagination_remove">Remove pagination</string>
 
     <string name="title_scan">Scanning library…</string>
     <string name="title_no_books">No books found</string>
@@ -48,4 +52,8 @@
     <string name="filter_all">All</string>
     <string name="view_list">List</string>
     <string name="view_grid">Tiles</string>
+
+    <!-- Pagination strip (the kebab's "Add pagination" mode) -->
+    <string name="page_prev">Prev</string>
+    <string name="page_next">Next</string>
 </resources>

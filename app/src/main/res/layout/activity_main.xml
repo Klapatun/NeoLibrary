@@ -98,6 +98,7 @@
     </LinearLayout>
 
     <FrameLayout
+        android:id="@+id/book_container"
         android:layout_width="match_parent"
         android:layout_height="0dp"
         android:layout_weight="1"
@@ -164,4 +165,47 @@
             android:textSize="15sp"
             android:visibility="gone" />
     </FrameLayout>
+
+    <!-- Pagination strip: visible only while pagination is on (the header kebab's
+         "Add/Remove pagination"). Holo small buttons + the "page / pages" counter;
+         MainActivity.updatePageIndicator() is the single place that drives the
+         visibility and the button states. -->
+    <LinearLayout
+        android:id="@+id/pagination_bar"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:gravity="center"
+        android:paddingLeft="8dp"
+        android:paddingRight="8dp"
+        android:paddingTop="4dp"
+        android:paddingBottom="4dp"
+        android:visibility="gone">
+
+        <Button
+            android:id="@+id/page_prev"
+            style="?android:attr/buttonStyleSmall"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="@string/page_prev" />
+
+        <TextView
+            android:id="@+id/page_indicator"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_gravity="center_vertical"
+            android:layout_marginLeft="16dp"
+            android:layout_marginRight="16dp"
+            android:minWidth="64dp"
+            android:gravity="center"
+            android:textColor="#202020"
+            android:textSize="14sp" />
+
+        <Button
+            android:id="@+id/page_next"
+            style="?android:attr/buttonStyleSmall"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="@string/page_next" />
+    </LinearLayout>
 </LinearLayout>
