@@ -44,7 +44,7 @@ Every book's metadata is stored in **two places**:
 | `db/BookProvider` | read-only `ContentProvider` — the `ContentObserver` channel for the `CursorLoader` (all / recent / `format=?`) |
 | `scan/Formats` | canonical formats + ext→id map (handles `.fb2.zip`) |
 | `scan/LibraryScanner` | stage-1 fast scan (skeleton books, no in-file meta) + `scanSingle()` |
-| `meta/MetaEnricher` | stage-2 background worker: per-book `MetaExtractor` + `CoverExtractor` → DB + `CoverCache`, `notifyChange` per batch; `enrichOne` for import/fast path; **per-file parse budget of 2 min** — a parse that overruns it is abandoned and the book is marked un-enriched (`meta_failed=1`, stays `meta_done=0`, retried last on every rescan) |
+| `meta/MetaEnricher` | stage-2 background worker: per-book `MetaExtractor` + `CoverExtractor` → DB + `CoverCache`, `notifyChange` per batch; `enrichOne` for import/fast path; **per-file parse budget of 2 min** — a parse that overruns it is abandoned and the book is marked un-enriched (`meta_failed=1`, stays `meta_done=0`, retried last on every rescan); the pass **works the queue cheapest-format-first** (EPUB/FB2 → FB2ZIP → MOBI → the rest, `Formats.enrichmentPriority`; un-enriched books still last of all) |
 | `meta/MetaExtractor` | read meta: EPUB/FB2/FB2ZIP (inner `.fb2` entry)/MOBI/TXT/HTML |
 | `meta/MobiParser` | shared MOBI/AZW binary reader (package-private): PalmDB record table + MOBI header + EXTH |
 | `meta/MetaWriter` | write meta EPUB/FB2, non-destructive (`.tmp`→swap→`.bak`) |
@@ -125,9 +125,12 @@ are never intercepted.
   `db.upsertBasic()` per book → `notifyChange` → the `CursorLoader` re-queries and the
   list is on screen immediately; the user can already interact with it.
 - **Enrich (stage 2, background)** → `MetaEnricher.start()` — a single worker over
-  `db.needMeta()`: per book `MetaExtractor` + `CoverExtractor` → `db.updateMetadata()`
-  (never clobbers `user_edited` values, keeps `last_read`) + `CoverCache` file write →
-  `notifyChange` every batch → the cursor re-queries and rows refresh in place.
+  `db.needMeta()`, which is split by format type and worked cheapest-first
+  (EPUB, FB2 → FB2ZIP → MOBI → the rest; the un-enriched/timed-out books stay last
+  of all, `Formats.enrichmentPriority`): per book `MetaExtractor` + `CoverExtractor`
+  → `db.updateMetadata()` (never clobbers `user_edited` values, keeps `last_read`) +
+  `CoverCache` file write → `notifyChange` every batch → the cursor re-queries and
+  rows refresh in place.
   Each file's parse (meta + cover) runs on a throwaway thread with a **2-minute
   budget**: a parse that overruns it is abandoned, the book is marked un-enriched
   (`db.markMetaFailed`, `meta_done` stays 0) and the worker moves on to the next

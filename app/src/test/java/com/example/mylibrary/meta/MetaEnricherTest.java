@@ -27,7 +27,12 @@ import org.robolectric.annotation.Config;
 import org.robolectric.shadows.ShadowLooper;
 
 import java.io.File;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Collections;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 
 /**
  * Robolectric tests for {@link MetaEnricher} — stage 2 (background metadata + covers).
@@ -345,6 +350,80 @@ public class MetaEnricherTest {
         } finally {
             MetaEnricher.cancel();
             MetaEnricher.extractTimeoutMs = savedTimeout;
+            MetaEnricher.parseTask = savedTask;
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // ordering: the simplest formats are enriched before the heavy ones
+    // ------------------------------------------------------------------
+
+    /** After the scan the stage-2 queue is split by format type and worked cheapest
+     *  first: EPUB and FB2 (plain XML) come before FB2ZIP, which comes before the
+     *  heavy MOBI binary parse, which comes before the remaining formats. A book
+     *  flagged "un-enriched" (its last parse overran the time budget) keeps the
+     *  absolute last place even when its own format is the cheapest. */
+    @Test
+    public void startWorksTheQueueFromTheCheapestFormatsUp() throws Exception {
+        // The files are seeded in the REVERSE cost order, so the row-id order alone
+        // would process them in the wrong order.
+        File pdf = new File(folder.getRoot(), "plain.pdf");
+        File mobi = new File(folder.getRoot(), "heavy.mobi");
+        File fb2zip = new File(folder.getRoot(), "zipped.fb2.zip");
+        File fb2 = new File(folder.getRoot(), "story.fb2");
+        File epub = new File(folder.getRoot(), "novel.epub");
+        File lateEpub = new File(folder.getRoot(), "late.epub");
+        TestFixtures.writeBytes(pdf, new byte[]{(byte) 0x25, (byte) 0x50, (byte) 0x44, (byte) 0x46});
+        TestFixtures.writeMobi(mobi, "Heavy", "H. Author", "H Press", "A heavy story.", "en",
+                new byte[]{(byte) 0xFF, (byte) 0xD8, (byte) 0xFF, (byte) 0xD9}, 3, 0);
+        Map<String, byte[]> zipEntries = new LinkedHashMap<String, byte[]>();
+        zipEntries.put("inner.fb2", TestFixtures.FB2_FULL.getBytes("UTF-8"));
+        TestFixtures.writeZip(fb2zip, zipEntries);
+        TestFixtures.writeText(fb2, TestFixtures.FB2_FULL);
+        TestFixtures.writeEpub(epub, TestFixtures.OPF_FULL);
+        TestFixtures.writeEpub(lateEpub, TestFixtures.OPF_FULL);
+
+        seedStageOne(pdf, "PDF", "plain");        // tier 3, id 1
+        seedStageOne(mobi, "MOBI", "heavy");      // tier 2, id 2
+        seedStageOne(fb2zip, "FB2ZIP", "zipped"); // tier 1, id 3
+        seedStageOne(fb2, "FB2", "story");        // tier 0, id 4
+        seedStageOne(epub, "EPUB", "novel");      // tier 0, id 5
+        long lateId = seedStageOne(lateEpub, "EPUB", "late"); // tier 0, id 6
+        db.markMetaFailed(lateId); // a cheap format, but its last parse overran the budget
+
+        final List<String> order = Collections.synchronizedList(new ArrayList<String>());
+        final MetaEnricher.ParseTask savedTask = MetaEnricher.parseTask;
+        try {
+            MetaEnricher.parseTask = new MetaEnricher.ParseTask() {
+                @Override
+                public void parse(File file, String format, MetaEnricher.Parsed out) {
+                    order.add(file.getName());
+                    out.meta = new MetaData(); // found = false: enough to mark done
+                }
+            };
+
+            final java.util.concurrent.atomic.AtomicBoolean workerDone =
+                    new java.util.concurrent.atomic.AtomicBoolean(false);
+            MetaEnricher.start(app, db, new MetaEnricher.OnProgress() {
+                @Override public void onProgress(int done, int total) { /* below */ }
+                @Override public void onFinished() { workerDone.set(true); }
+            });
+
+            ShadowLooper looper = shadowOf(Looper.getMainLooper());
+            long deadline = System.currentTimeMillis() + WAIT_MS;
+            while (System.currentTimeMillis() < deadline && !workerDone.get()) {
+                looper.idle();
+                Thread.sleep(10);
+            }
+            looper.idle();
+            assertTrue("the worker must have finished the pass", workerDone.get());
+
+            assertEquals("the queue must be worked cheapest-first, the flagged book last",
+                    Arrays.asList("story.fb2", "novel.epub", "zipped.fb2.zip",
+                            "heavy.mobi", "plain.pdf", "late.epub"), order);
+            assertTrue("the pass must drain the queue", db.needMeta().isEmpty());
+        } finally {
+            MetaEnricher.cancel();
             MetaEnricher.parseTask = savedTask;
         }
     }

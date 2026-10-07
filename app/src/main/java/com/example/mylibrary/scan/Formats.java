@@ -73,4 +73,21 @@ public final class Formats {
         String ext = f.substring(dot + 1);
         return BY_EXT.get(ext);
     }
+
+    /**
+     * The stage-2 enrichment cost tier of a format: the lower the number, the
+     * cheaper extracting its in-file metadata and cover, and the earlier the
+     * enricher should get to it. EPUB and FB2 are plain XML (fastest), FB2ZIP is
+     * the same FB2 content wrapped in an archive, MOBI needs the heaviest parse
+     * (PalmDB + MOBI + EXTH binary), and every remaining format comes last.
+     *
+     * @param formatId a canonical id from {@link #ALL} ({@code null} / unknown -> last)
+     * @return the tier: 0 = EPUB/FB2, 1 = FB2ZIP, 2 = MOBI, 3 = everything else
+     */
+    public static int enrichmentPriority(String formatId) {
+        if ("EPUB".equals(formatId) || "FB2".equals(formatId)) return 0;
+        if ("FB2ZIP".equals(formatId)) return 1;
+        if ("MOBI".equals(formatId)) return 2;
+        return 3;
+    }
 }

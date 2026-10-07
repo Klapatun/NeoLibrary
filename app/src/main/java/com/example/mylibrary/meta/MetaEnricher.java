@@ -9,9 +9,12 @@ import android.util.Log;
 import com.example.mylibrary.db.BookDatabase;
 import com.example.mylibrary.db.BookProvider;
 import com.example.mylibrary.model.Book;
+import com.example.mylibrary.scan.Formats;
 import com.example.mylibrary.util.CoverCache;
 
 import java.io.File;
+import java.util.Collections;
+import java.util.Comparator;
 import java.util.List;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
@@ -39,6 +42,15 @@ import java.util.concurrent.TimeUnit;
  * file can never block the rest of the library. The abandoned thread is harmless —
  * it is read-only, its result is discarded, and it terminates on its own when the
  * file I/O completes (Java cannot kill a thread, so it is simply let go).</p>
+ *
+ * <p><b>Order of the pass.</b> Right after the stage-1 scan the queue is split by
+ * format type and worked in order of enrichment cost
+ * ({@link Formats#enrichmentPriority}): the cheapest formats first (EPUB and FB2 —
+ * plain XML), then FB2ZIP (FB2 wrapped in an archive), then the heavy MOBI binary
+ * parses, and the remaining formats last. The "un-enriched" books of the previous
+ * paragraph keep the absolute last place, so the user sees the cheap wins (titles,
+ * covers) as early as possible while one slow file can still never hold the queue
+ * up.</p>
  *
  * <p><b>Error containment.</b> Every per-book failure is logged and contained: a parse
  * that throws (corrupt file, I/O error) keeps the file-name title and marks the book
@@ -121,6 +133,9 @@ public final class MetaEnricher {
             @Override
             protected Void doInBackground(Void... v) {
                 List<Book> pending = db.needMeta();
+                // Work the queue cheapest-first (EPUB/FB2 -> FB2ZIP -> MOBI -> the
+                // rest); the un-enriched (timed-out) books stay last of all.
+                orderQueueByCost(pending);
                 int total = pending.size();
                 int done = 0;
                 long lastProgress = 0;
@@ -174,6 +189,32 @@ public final class MetaEnricher {
     }
 
     // ------------------------------------------------------------------
+
+    /**
+     * Splits the stage-2 queue by format type and orders it by enrichment cost
+     * ({@link Formats#enrichmentPriority}): the simplest formats first (EPUB, FB2 —
+     * plain XML), then FB2ZIP, then the heavy MOBI binary parses, then everything
+     * else. Books flagged "un-enriched" by the per-file time budget
+     * ({@link Book#metaFailed}) keep the absolute last place, so one pathological
+     * file can never hold the queue up — it is retried after the whole normal
+     * library. Within a tier the database order (row id) is preserved.
+     * Package-private so tests can pin down the ordering directly.
+     */
+    static void orderQueueByCost(List<Book> queue) {
+        if (queue == null || queue.size() < 2) return;
+        Collections.sort(queue, new Comparator<Book>() {
+            @Override
+            public int compare(Book a, Book b) {
+                // The rescan rule: a timed-out ("un-enriched") book is last of all,
+                // whatever its format.
+                if (a.metaFailed != b.metaFailed) return a.metaFailed ? 1 : -1;
+                int tier = Formats.enrichmentPriority(a.format)
+                        - Formats.enrichmentPriority(b.format);
+                if (tier != 0) return tier;
+                return (a.id < b.id) ? -1 : (a.id > b.id) ? 1 : 0;
+            }
+        });
+    }
 
     private static void enrichOneBook(Context app, BookDatabase db, Book book) {
         File f = new File(book.path);
