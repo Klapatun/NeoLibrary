@@ -18,6 +18,7 @@ import com.example.mylibrary.meta.CoverExtractor;
 import com.example.mylibrary.model.Book;
 
 import java.io.File;
+import java.lang.ref.WeakReference;
 
 /**
  * Loads a book's cover bitmap off the UI thread, caching results in memory.
@@ -25,6 +26,12 @@ import java.io.File;
  * <p>To avoid stale images when a row is recycled, each {@link ImageView} is tagged
  * with its book path; the cover is only applied if the tag still matches when loading
  * finishes.</p>
+ *
+ * <p>The in-flight tasks hold their views by WEAK reference only (and the application
+ * context, never the Activity's): the user may leave the screen while a cover is still
+ * loading, and the pool task must not keep the dead screen's view hierarchy (and with
+ * it the Activity) alive — the task simply drops its drawing work, and the decoded
+ * bitmap still lands in the static cache, so the next bind for that book is instant.</p>
  */
 public class CoverLoader {
 
@@ -75,16 +82,21 @@ public class CoverLoader {
         return b.format + "|" + b.path + "|" + shape;
     }
 
+    /** One in-flight cover load. Runs on the shared pool, so it may outlive the screen
+     *  that started it: it holds its views ONLY WEAKLY (see the class javadoc) and the
+     *  application context — never the view's (Activity's) context. */
     private static class CoverTask extends AsyncTask<Book, Void, Bitmap> {
-        private final ImageView imageView;
+        private final android.content.Context context;
+        private final WeakReference<ImageView> imageView;
         private final String key;
-        private final View badgeToHide;
+        private final WeakReference<View> badgeToHide;
         private final Shape shape;
 
         CoverTask(ImageView iv, String key, View badgeToHide, Shape shape) {
-            this.imageView = iv;
+            this.context = iv.getContext().getApplicationContext();
+            this.imageView = new WeakReference<ImageView>(iv);
             this.key = key;
-            this.badgeToHide = badgeToHide;
+            this.badgeToHide = new WeakReference<View>(badgeToHide);
             this.shape = shape;
         }
 
@@ -92,12 +104,13 @@ public class CoverLoader {
             Book b = params[0];
             try {
                 // Prefer the durable file cache (warmed by the background enricher);
-                // fall back to extracting from the book and cache the result.
-                android.content.Context ctx = imageView.getContext();
-                byte[] bytes = CoverCache.load(ctx, b.path);
+                // fall back to extracting from the book and cache the result. The
+                // app context is all CoverCache needs (it only resolves the external
+                // files dir).
+                byte[] bytes = CoverCache.load(context, b.path);
                 if (bytes == null) {
                     bytes = CoverExtractor.extract(new File(b.path));
-                    if (bytes != null && bytes.length > 0) CoverCache.save(ctx, b.path, bytes);
+                    if (bytes != null && bytes.length > 0) CoverCache.save(context, b.path, bytes);
                 }
                 if (bytes == null || bytes.length == 0) return null;
                 Bitmap bmp = BitmapFactory.decodeByteArray(bytes, 0, bytes.length);
@@ -120,18 +133,25 @@ public class CoverLoader {
         }
 
         @Override protected void onPostExecute(Bitmap result) {
-            Object tag = imageView.getTag(R.id.cover_tag);
+            // The decode is done — land it in the static cache regardless of what
+            // happened to the views: even if the tile was recycled for another book
+            // (or the screen went away), the next bind for THIS book is instant.
+            if (result != null) CACHE.put(key, result);
+            ImageView iv = imageView.get();
+            if (iv == null) return; // the screen went away while the load was in flight
+            Object tag = iv.getTag(R.id.cover_tag);
             if (!key.equals(tag)) return; // tile was recycled for another book meanwhile
             if (result == null) {
                 // No extractable cover: restore the letter badge so the tile never
                 // shows neither a cover nor its placeholder (bindGrid hid it in
                 // advance while the load was in flight).
-                if (badgeToHide != null) badgeToHide.setVisibility(View.VISIBLE);
+                View badge = badgeToHide.get();
+                if (badge != null) badge.setVisibility(View.VISIBLE);
                 return;
             }
-            CACHE.put(key, result);
-            imageView.setImageBitmap(result);
-            if (badgeToHide != null) badgeToHide.setVisibility(View.GONE);
+            iv.setImageBitmap(result);
+            View badge = badgeToHide.get();
+            if (badge != null) badge.setVisibility(View.GONE);
         }
     }
 
