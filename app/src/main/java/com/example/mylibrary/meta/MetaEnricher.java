@@ -13,6 +13,7 @@ import com.example.mylibrary.scan.Formats;
 import com.example.mylibrary.util.CoverCache;
 
 import java.io.File;
+import java.lang.ref.WeakReference;
 import java.util.Collections;
 import java.util.Comparator;
 import java.util.List;
@@ -69,12 +70,17 @@ public final class MetaEnricher {
 
     private static final String TAG = "MetaEnricher";
 
-    /** Progress callback; every method is invoked on the main thread. */
+    /** Progress callback; every method is invoked on the main thread.
+     *  <b>Never implement this with a long-lived Activity</b>: the worker (and its
+     *  posted callbacks) only hold the listener WEAKLY, so it must be an inner class
+     *  of the screen that started the pass (or a dedicated, short-lived object) —
+     *  see {@link #start}. */
     public interface OnProgress {
         /** Called after each (throttled) batch. {@code done} books out of {@code total}. */
         void onProgress(int done, int total);
 
-        /** Called when the whole queue is exhausted (or the worker was cancelled). */
+        /** Called when the whole queue is exhausted. NOT called after a cancel:
+         *  by then the screen that started the pass is gone and its callback dead. */
         void onFinished();
     }
 
@@ -129,6 +135,13 @@ public final class MetaEnricher {
         cancel();
         final Context appContext = app.getApplicationContext();
         final Handler main = new Handler(Looper.getMainLooper());
+        // The listener is (in production) an inner class of the screen that started
+        // the pass; cancel() comes from that screen's onDestroy, so the worker (which
+        // can run on for minutes) and its posted callbacks must NOT hold the listener
+        // strongly — a dead screen's Activity would be pinned. It is referenced
+        // weakly and re-resolved at each use; a gone screen is simply skipped.
+        final WeakReference<OnProgress> listenerRef =
+                new WeakReference<OnProgress>(listener);
         worker = new AsyncTask<Void, Void, Void>() {
             @Override
             protected Void doInBackground(Void... v) {
@@ -144,13 +157,16 @@ public final class MetaEnricher {
                     enrichOneBook(appContext, db, book);
                     done++;
                     long now = System.currentTimeMillis();
-                    if (listener != null
+                    if (listenerRef.get() != null
                             && (done % BATCH_NOTIFY_EVERY == 0 || done == total || now - lastProgress > PROGRESS_MIN_INTERVAL_MS)) {
                         lastProgress = now;
                         final int d = done, t = total;
+                        // The runnable re-resolves the (weak) listener at fire time,
+                        // so even the main-queue never pins a dead screen's callback.
                         main.post(new Runnable() {
                             @Override public void run() {
-                                listener.onProgress(d, t);
+                                OnProgress l = listenerRef.get();
+                                if (l != null) l.onProgress(d, t);
                             }
                         });
                     }
@@ -159,14 +175,20 @@ public final class MetaEnricher {
                                 .notifyChange(BookProvider.CONTENT_URI, null);
                     }
                 }
-                // Final notify even when the queue was empty or we broke early.
-                appContext.getContentResolver().notifyChange(BookProvider.CONTENT_URI, null);
-                if (listener != null) {
-                    main.post(new Runnable() {
-                        @Override public void run() {
-                            listener.onFinished();
-                        }
-                    });
+                // Final notify on a NORMAL finish (empty queue or last batch). After a
+                // cancel the screen is gone (cancel() comes from onDestroy / a
+                // "Clear"): the listener may be dead and no one is listening, so
+                // neither the notify nor the onFinished post is worth sending.
+                if (!isCancelled()) {
+                    appContext.getContentResolver().notifyChange(BookProvider.CONTENT_URI, null);
+                    if (listenerRef.get() != null) {
+                        main.post(new Runnable() {
+                            @Override public void run() {
+                                OnProgress l = listenerRef.get();
+                                if (l != null) l.onFinished();
+                            }
+                        });
+                    }
                 }
                 return null;
             }
