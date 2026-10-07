@@ -8,15 +8,22 @@ import static org.junit.Assert.assertTrue;
 import static org.robolectric.Shadows.shadowOf;
 
 import android.app.Activity;
-import android.content.Intent;
 import android.content.Context;
+import android.content.Intent;
+import android.content.SharedPreferences;
 import android.database.ContentObserver;
 import android.net.Uri;
+import android.graphics.Bitmap;
+import android.graphics.drawable.BitmapDrawable;
+import android.graphics.drawable.Drawable;
+import android.graphics.drawable.StateListDrawable;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
 import android.provider.OpenableColumns;
+import android.view.MotionEvent;
 import android.view.View;
+import android.widget.AbsListView;
 import android.widget.GridView;
 import android.widget.ImageButton;
 import android.widget.ListView;
@@ -27,6 +34,7 @@ import com.example.mylibrary.db.BookDatabase;
 import com.example.mylibrary.db.BookProvider;
 import com.example.mylibrary.model.Book;
 import com.example.mylibrary.scan.Formats;
+import com.example.mylibrary.scan.LibraryScanner;
 import com.example.mylibrary.testutil.TestFixtures;
 
 import org.junit.Before;
@@ -112,6 +120,9 @@ public class MainActivityTest {
             Thread.sleep(10);
         }
         looper.idle();
+        if (db.all(null).size() < expected) {
+            dumpThreads("the catalog to hold " + expected + " book(s)");
+        }
         assertTrue("timed out waiting for the catalog to hold " + expected
                 + " book(s), got " + db.all(null).size(), db.all(null).size() >= expected);
     }
@@ -119,18 +130,21 @@ public class MainActivityTest {
     /** Waits until the visible adapter shows exactly {@code expected} rows. The cursor
      *  updates asynchronously (notifyChange -> loader re-query -> onLoadFinished), so
      *  both the real worker threads and the main looper have to be given time. */
-    private void awaitAdapterCount(ListView list, int expected) throws InterruptedException {
+    private void awaitAdapterCount(AbsListView view, int expected) throws InterruptedException {
         long deadline = System.currentTimeMillis() + WAIT_MS;
         ShadowLooper looper = shadowOf(Looper.getMainLooper());
         while (System.currentTimeMillis() < deadline) {
             looper.idle();
-            if (list.getAdapter().getCount() == expected) return;
+            if (view.getAdapter().getCount() == expected) return;
             Thread.sleep(10);
         }
         looper.idle();
+        if (view.getAdapter().getCount() != expected) {
+            dumpThreads("the adapter to show " + expected + " row(s)");
+        }
         assertTrue("timed out waiting for the adapter to show " + expected
-                + " row(s), got " + list.getAdapter().getCount(),
-                list.getAdapter().getCount() == expected);
+                + " row(s), got " + view.getAdapter().getCount(),
+                view.getAdapter().getCount() == expected);
     }
 
     /** A lazily-evaluated condition, so the wait loop can re-check it every round. */
@@ -151,12 +165,33 @@ public class MainActivityTest {
             }
             Thread.sleep(10);
         }
+        if (!ok) dumpThreads("the condition [" + what + "]");
         assertTrue("timed out waiting for: " + what, ok);
         looper.idle();
     }
 
-    private boolean adapterHasCount(ListView list, int expected) {
-        return list.getAdapter().getCount() == expected;
+    /** On a wait timeout: dump every thread's stack so the test report shows what
+     *  the background work was doing (in particular the SHARED single-threaded
+     *  AsyncTask pool: the scan/enrichment tasks queue on it, and the rotating
+     *  30s timeout victims of 8.4 keep happening on an idle machine — a stack
+     *  dump at the moment of timeout is the only way to see what held the pool). */
+    private static void dumpThreads(String context) {
+        StringBuilder sb = new StringBuilder();
+        sb.append("TIMEOUT (").append(WAIT_MS).append("ms) waiting for [")
+          .append(context).append("]; all threads:\n");
+        for (java.util.Map.Entry<Thread, StackTraceElement[]> e
+                : Thread.getAllStackTraces().entrySet()) {
+            sb.append("--- ").append(e.getKey().getName())
+              .append(" [").append(e.getKey().getState()).append("]\n");
+            for (StackTraceElement el : e.getValue()) {
+                sb.append("    at ").append(el).append('\n');
+            }
+        }
+        System.err.println(sb);
+    }
+
+    private boolean adapterHasCount(AbsListView view, int expected) {
+        return view.getAdapter().getCount() == expected;
     }
 
     // ------------------------------------------------------------------
@@ -183,11 +218,12 @@ public class MainActivityTest {
         assertTrue(formats.contains("FB2ZIP"));
         assertEquals(3, formats.size()); // TXT counted once: {TXT, PDF, FB2ZIP}
 
-        // The list is now driven by the cursor loader: wait until it caught up with
-        // the stage-1 upserts (notifyChange -> re-query -> onLoadFinished).
-        ListView list = a.findViewById(R.id.book_list);
-        awaitAdapterCount(list, 4);
-        assertEquals(4, list.getAdapter().getCount());
+        // The view is now driven by the cursor loader: wait until it caught up with
+        // the stage-1 upserts (notifyChange -> re-query -> onLoadFinished). The
+        // default (and initially visible) view is the tile grid.
+        GridView grid = a.findViewById(R.id.book_grid);
+        awaitAdapterCount(grid, 4);
+        assertEquals(4, grid.getAdapter().getCount());
         assertEquals(View.GONE, a.findViewById(R.id.progress).getVisibility());
         assertTrue(ShadowToast.showedToast("Found 4 book(s)"));
     }
@@ -284,27 +320,27 @@ public class MainActivityTest {
                         && dbLocal.all(null).isEmpty();
             }
         });
-        ListView list = a.findViewById(R.id.book_list);
-        assertEquals("no books after the first (empty) scan", 0, list.getAdapter().getCount());
+        GridView grid = a.findViewById(R.id.book_grid);
+        assertEquals("no books after the first (empty) scan", 0, grid.getAdapter().getCount());
 
         // The user drops two books onto storage while the app is still open...
         TestFixtures.writeText(new File(storage, "story_a.txt"), "alpha\n");
         TestFixtures.writeText(new File(storage, "story_b.txt"), "beta\n");
 
-        // ...and taps "Rescan" in the indigo header. The button's listener calls
+        // ...and picks "Rescan" from the header kebab. The kebab's menu pick calls
         // startScan() 1:1, so drive that same entry point (reflection: it is
-        // private, and the listener is an inline anonymous class not reachable
-        // from the test).
+        // private; the real kebab flow is covered separately in
+        // headerKebabRescanPickRunsTheScanAndDrawsTheNewBooks).
         java.lang.reflect.Method rescan = MainActivity.class.getDeclaredMethod("startScan");
         rescan.setAccessible(true);
         rescan.invoke(a);
 
         // The new books land in the catalog...
         awaitCatalogSize(2);
-        // ...and must be drawn in the list (the original bug: catalog updated,
-        // list stayed empty until the app was restarted).
-        awaitAdapterCount(list, 2);
-        assertEquals(2, list.getAdapter().getCount());
+        // ...and must be drawn in the visible view (the original bug: catalog
+        // updated, the view stayed empty until the app was restarted).
+        awaitAdapterCount(grid, 2);
+        assertEquals(2, grid.getAdapter().getCount());
     }
 
     // ------------------------------------------------------------------
@@ -322,28 +358,269 @@ public class MainActivityTest {
         ListView list = a.findViewById(R.id.book_list);
         GridView grid = a.findViewById(R.id.book_grid);
 
-        // Initial state: list mode, with the two books on the cursor.
-        awaitAdapterCount(list, 2);
+        // Initial state: tile (grid) mode — the default view — with the two books
+        // on the cursor.
+        awaitAdapterCount(grid, 2);
+        assertEquals(View.GONE, list.getVisibility());
+        assertEquals(View.VISIBLE, grid.getVisibility());
+        assertNull("adapter not yet attached to the list", list.getAdapter());
+        assertNotNull("adapter attached to grid", grid.getAdapter());
+
+        // Switch to list: the adapter must move (a CursorAdapter cannot serve two views).
+        ImageButton toggle = a.findViewById(R.id.toggle_view);
+        toggle.performClick();
         assertEquals(View.VISIBLE, list.getVisibility());
         assertEquals(View.GONE, grid.getVisibility());
-        assertNotNull("adapter attached to list", list.getAdapter());
-        assertNull("adapter not yet attached to grid", grid.getAdapter());
+        assertNotNull("adapter must be attached to the list", list.getAdapter());
+        assertNull("adapter must be detached from the grid", grid.getAdapter());
+        assertEquals(2, list.getAdapter().getCount());
 
-        // Switch to grid: the adapter must move (a CursorAdapter cannot serve two views).
-        ImageButton toggle = a.findViewById(R.id.toggle_view);
+        // Switch back to the tiles.
         toggle.performClick();
         assertEquals(View.GONE, list.getVisibility());
         assertEquals(View.VISIBLE, grid.getVisibility());
+        assertNotNull("adapter must be attached to the grid again", grid.getAdapter());
         assertNull("adapter must be detached from the list", list.getAdapter());
-        assertNotNull("adapter must be attached to the grid", grid.getAdapter());
-        assertEquals(2, grid.getAdapter().getCount());
+    }
 
-        // Switch back to list.
-        toggle.performClick();
-        assertEquals(View.VISIBLE, list.getVisibility());
+    /** The user's view-mode choice (list/tiles) is stored in the phone's memory
+     *  (SharedPreferences) and must be applied on the next launch — even a cold
+     *  start with no saved instance state, i.e. the app was simply closed. */
+    @Test
+    public void viewModeChoiceIsPersistedAcrossAppRestarts() throws Exception {
+        TestFixtures.writeText(new File(storage, "story_a.txt"), "alpha\n");
+        TestFixtures.writeText(new File(storage, "story_b.txt"), "beta\n");
+        // Seed the catalog the way stage 1 would, BEFORE the activity launches:
+        // this test's subject is the persisted view-mode choice, not the scan, and
+        // waiting on the cold-start scan is exactly what made it a flake victim —
+        // the scan runs on the shared single-threaded AsyncTask pool, which a
+        // loaded machine starves for tens of seconds (8.4), and the wait would
+        // time out at 30s. With the catalog already in the DB, the activity's
+        // constructor cursor carries the rows and nothing here depends on the
+        // background pool (the cold-start scan still runs and harmlessly
+        // re-upserts the same two rows; the scan itself is covered by
+        // scanOnLaunchFindsBooksInExternalStorage).
+        for (Book b : LibraryScanner.scan(app, null)) {
+            db.upsertBasic(b);
+        }
+
+        ActivityController<MainActivity> c = Robolectric.buildActivity(MainActivity.class);
+        MainActivity a = c.setup().get();
+
+        ListView list = a.findViewById(R.id.book_list);
+        GridView grid = a.findViewById(R.id.book_grid);
+
+        // Initial state: tiles — the default view. The rows are already on the
+        // constructor cursor, so this is just a looper pump; with an EMPTY
+        // adapter the framework would show the empty view instead (AbsListView
+        // checkForDisabledView hides the view itself), so raw visibility is only
+        // meaningful once data is on screen.
+        awaitAdapterCount(grid, 2);
+        assertEquals(View.VISIBLE, grid.getVisibility());
+        assertEquals(View.GONE, list.getVisibility());
+        assertNotNull("adapter attached to the grid", grid.getAdapter());
+        assertNull("adapter not attached to the list", list.getAdapter());
+
+        // The user switches to the list...
+        a.findViewById(R.id.toggle_view).performClick();
+        assertEquals("the toggle switches to the list", View.VISIBLE, list.getVisibility());
         assertEquals(View.GONE, grid.getVisibility());
-        assertNotNull("adapter must be attached to the list again", list.getAdapter());
-        assertNull("adapter must be detached from the grid", grid.getAdapter());
+        assertNotNull("adapter attached to the list", list.getAdapter());
+        assertNull("adapter not attached to the grid", grid.getAdapter());
+
+        // ...and the choice is saved to the phone's memory (MainActivity's private
+        // prefs file "library_prefs", key "view_mode" — mirrors the private
+        // constants in MainActivity).
+        SharedPreferences prefs = a.getSharedPreferences("library_prefs", Context.MODE_PRIVATE);
+        assertEquals(BookAdapter.MODE_LIST, prefs.getInt("view_mode", -1));
+
+        // "Close the app" and relaunch: the persisted choice, not the default,
+        // must be the initial view mode.
+        c.destroy();
+        MainActivity a2 = Robolectric.buildActivity(MainActivity.class).setup().get();
+        ListView list2 = a2.findViewById(R.id.book_list);
+        GridView grid2 = a2.findViewById(R.id.book_grid);
+        awaitAdapterCount(list2, 2);
+        assertEquals("the list choice must survive the restart",
+                View.VISIBLE, list2.getVisibility());
+        assertEquals("the grid must stay hidden", View.GONE, grid2.getVisibility());
+        assertNotNull("adapter attached to the list", list2.getAdapter());
+        assertNull("adapter not attached to the grid", grid2.getAdapter());
+    }
+
+    /** The FIRST layout in the default (grid) mode must bind the TILE layout
+     *  (item_book_grid), not the list layout (item_book) with its circle covers.
+     *  Regression test: the adapter's own class default is MODE_LIST, and on a
+     *  grid launch setViewMode() takes its early-return path — without forcing
+     *  the adapter onto the initial mode, the first layout pass would inflate
+     *  list rows (small circle covers) inside the GridView until the user
+     *  toggles once. */
+    @Test
+    public void firstLayoutInDefaultGridModeBindsGridTilesNotListRows() throws Exception {
+        TestFixtures.writeText(new File(storage, "story_a.txt"), "alpha\n");
+        TestFixtures.writeText(new File(storage, "story_b.txt"), "beta\n");
+
+        MainActivity a = launchMain();
+        awaitCatalogSize(2);
+        GridView grid = a.findViewById(R.id.book_grid);
+        awaitAdapterCount(grid, 2);
+
+        // The grid is the visible view and materializes its rows on the layout pass.
+        assertEquals(View.VISIBLE, grid.getVisibility());
+        View row = rowAt(grid, 0);
+        assertNotNull("the tile must carry the grid cover",
+                row.findViewById(R.id.book_grid_cover));
+        assertNotNull("the tile must carry the grid title",
+                row.findViewById(R.id.book_grid_title));
+        assertNull("a list row must not be inflated inside the grid",
+                row.findViewById(R.id.book_title));
+    }
+
+    // ------------------------------------------------------------------
+    // header kebab (import / rescan)
+    // ------------------------------------------------------------------
+
+    /** The header kebab (the rightmost header button) opens the overflow menu
+     *  (import + rescan), and picking "Rescan" runs the stage-1 scan — the same
+     *  entry point the old header rescan button called. */
+    @Test
+    public void headerKebabRescanPickRunsTheScanAndDrawsTheNewBooks() throws Exception {
+        MainActivity a = launchMain();
+        final BookDatabase dbLocal = db;
+
+        // First load: storage is empty -> the catalog and the view stay empty.
+        awaitCondition("the first scan to finish on empty storage", new Cond() {
+            public boolean holds() {
+                return a.findViewById(R.id.progress).getVisibility() == View.GONE
+                        && dbLocal.all(null).isEmpty();
+            }
+        });
+
+        // The user drops two books onto storage while the app is still open...
+        TestFixtures.writeText(new File(storage, "story_a.txt"), "alpha\n");
+        TestFixtures.writeText(new File(storage, "story_b.txt"), "beta\n");
+
+        // ...and picks "Rescan" from the header kebab. The kebab click opens the
+        // popup; performIdentifierAction picks the item exactly like a tap on the
+        // popup window would.
+        a.findViewById(R.id.btn_menu).performClick();
+        android.widget.PopupMenu menu = a.getLastHeaderMenu();
+        assertNotNull("the kebab click must open the menu", menu);
+        assertEquals("the menu must carry import, rescan, clear and the pagination toggle",
+                4, menu.getMenu().size());
+        menu.getMenu().performIdentifierAction(R.id.main_menu_rescan, 0);
+
+        // The new books land in the catalog...
+        awaitCatalogSize(2);
+        // ...and must be drawn in the visible view (the grid, the default).
+        GridView grid = a.findViewById(R.id.book_grid);
+        awaitAdapterCount(grid, 2);
+        assertEquals(2, grid.getAdapter().getCount());
+    }
+
+    /** Picking "Import" from the header kebab launches the document picker. */
+    @Test
+    public void headerKebabImportPickLaunchesTheDocumentPicker() throws Exception {
+        MainActivity a = launchMain();
+
+        a.findViewById(R.id.btn_menu).performClick();
+        android.widget.PopupMenu menu = a.getLastHeaderMenu();
+        assertNotNull("the kebab click must open the menu", menu);
+        menu.getMenu().performIdentifierAction(R.id.main_menu_import, 0);
+        shadowOf(Looper.getMainLooper()).idle();
+
+        Intent started = shadowOf(a).getNextStartedActivity();
+        assertNotNull("the Import pick must start an activity", started);
+        // launchImport wraps the ACTION_OPEN_DOCUMENT intent in a system chooser.
+        assertEquals(Intent.ACTION_CHOOSER, started.getAction());
+    }
+
+    /** The kebab's "Clear library" asks for confirmation; on confirm the whole
+     *  catalog is wiped (rows + covers) while the on-disk files stay untouched,
+     *  and the visible view settles on the empty state. */
+    @Test
+    public void headerKebabClearAsksForConfirmationAndWipesTheCatalogKeepingTheFiles()
+            throws Exception {
+        TestFixtures.writeText(new File(storage, "story_a.txt"), "alpha\n");
+        TestFixtures.writeText(new File(storage, "story_b.txt"), "beta\n");
+
+        MainActivity a = launchMain();
+        awaitCatalogSize(2);
+        GridView grid = a.findViewById(R.id.book_grid);
+        awaitAdapterCount(grid, 2);
+        final BookAdapter adapter = (BookAdapter) grid.getAdapter();
+
+        FiringObserver onBooks = new FiringObserver();
+        FiringObserver onRecent = new FiringObserver();
+        app.getContentResolver().registerContentObserver(BookProvider.CONTENT_URI, true, onBooks);
+        app.getContentResolver().registerContentObserver(BookProvider.RECENT_URI, true, onRecent);
+
+        a.findViewById(R.id.btn_menu).performClick();
+        android.widget.PopupMenu menu = a.getLastHeaderMenu();
+        assertNotNull("the kebab click must open the menu", menu);
+        menu.getMenu().performIdentifierAction(R.id.main_menu_clear, 0);
+
+        // The pick must ask for confirmation first.
+        android.app.Dialog d = ShadowDialog.getLatestDialog();
+        assertNotNull("the Clear pick must ask for confirmation", d);
+        assertEquals(a.getString(R.string.clear_confirm_title), shadowOf(d).getTitle());
+        TextView msgView = d.getWindow().getDecorView().findViewById(android.R.id.message);
+        assertNotNull("the dialog must carry a message view", msgView);
+        String msg = msgView.getText().toString();
+        assertTrue("the message must be the clear confirmation: " + msg,
+                msg.contains(a.getString(R.string.clear_confirm_message)));
+        assertTrue("the message must note the files stay: " + msg,
+                msg.contains(a.getString(R.string.clear_file_note)));
+
+        // Confirm ("Clear" — the positive button, the standard alert button-1 view).
+        shadowOf(d).clickOn(android.R.id.button1);
+        shadowOf(Looper.getMainLooper()).idle();
+
+        // The catalog is empty...
+        assertTrue("the catalog must be empty", db.all(null).isEmpty());
+        // ...and the visible view has settled on the empty state.
+        final BookAdapter adapterRef = adapter;
+        awaitCondition("the view to settle on the empty state after the clear",
+                new Cond() {
+                    public boolean holds() {
+                        return adapterRef.getCount() == 0;
+                    }
+                });
+        assertTrue(ShadowToast.showedToast(a.getString(R.string.library_cleared)));
+
+        // The files themselves must not be touched.
+        assertTrue("the files must stay on disk",
+                new File(storage, "story_a.txt").exists()
+                        && new File(storage, "story_b.txt").exists());
+
+        // Both catalog cursors must have been notified.
+        assertTrue("the all-books cursor must be notified", onBooks.fired);
+        assertTrue("the recently-read cursor must be notified", onRecent.fired);
+        app.getContentResolver().unregisterContentObserver(onBooks);
+        app.getContentResolver().unregisterContentObserver(onRecent);
+    }
+
+    /** Cancelling the "Clear library" confirmation must leave the catalog intact. */
+    @Test
+    public void cancellingTheClearConfirmationKeepsTheCatalog() throws Exception {
+        TestFixtures.writeText(new File(storage, "story_a.txt"), "alpha\n");
+        TestFixtures.writeText(new File(storage, "story_b.txt"), "beta\n");
+
+        MainActivity a = launchMain();
+        awaitCatalogSize(2);
+
+        a.findViewById(R.id.btn_menu).performClick();
+        android.widget.PopupMenu menu = a.getLastHeaderMenu();
+        assertNotNull("the kebab click must open the menu", menu);
+        menu.getMenu().performIdentifierAction(R.id.main_menu_clear, 0);
+
+        android.app.Dialog d = ShadowDialog.getLatestDialog();
+        assertNotNull("the Clear pick must ask for confirmation", d);
+        // "Cancel" — the negative button (the standard alert button-2 view).
+        shadowOf(d).clickOn(android.R.id.button2);
+        shadowOf(Looper.getMainLooper()).idle();
+
+        assertEquals("the catalog must be untouched", 2, db.all(null).size());
     }
 
     // ------------------------------------------------------------------
@@ -359,19 +636,19 @@ public class MainActivityTest {
         MainActivity a = launchMain();
         awaitCatalogSize(3);
 
-        ListView list = a.findViewById(R.id.book_list);
-        awaitAdapterCount(list, 3);
+        GridView grid = a.findViewById(R.id.book_grid);
+        awaitAdapterCount(grid, 3);
         Spinner spinner = a.findViewById(R.id.filter_spinner);
-        final BookAdapter adapter = (BookAdapter) list.getAdapter();
+        final BookAdapter adapter = (BookAdapter) grid.getAdapter();
 
         final int txtPos = 2 + Arrays.asList(Formats.ALL).indexOf("TXT");
         spinner.setSelection(txtPos);
 
         // The re-query for the filtered cursor is asynchronous; wait it out.
-        final ListView listRef = list;
+        final AbsListView gridRef = grid;
         awaitCondition("TXT filter to apply", new Cond() {
             public boolean holds() {
-                return adapterHasCount(listRef, 2);
+                return adapterHasCount(gridRef, 2);
             }
         });
         for (int i = 0; i < adapter.getCount(); i++) {
@@ -383,7 +660,7 @@ public class MainActivityTest {
         final MainActivity act = a;
         awaitCondition("recent filter to apply", new Cond() {
             public boolean holds() {
-                return adapterHasCount(listRef, 0)
+                return adapterHasCount(gridRef, 0)
                         && "No books read yet.".equals(
                         ((TextView) act.findViewById(R.id.empty_view)).getText().toString());
             }
@@ -416,16 +693,17 @@ public class MainActivityTest {
         return -1;
     }
 
-    /** The laid-out row view of adapter position {@code pos}: ListView materializes
-     *  its rows on a layout pass, so pump the main looper until the row exists. */
-    private View rowAt(ListView list, int pos) throws InterruptedException {
+    /** The laid-out row view of adapter position {@code pos}: AbsListView
+     *  (ListView and GridView alike) materializes its rows on a layout pass, so
+     *  pump the main looper until the row exists. */
+    private View rowAt(AbsListView view, int pos) throws InterruptedException {
         View row = null;
         long deadline = System.currentTimeMillis() + WAIT_MS;
         while (System.currentTimeMillis() < deadline && row == null) {
             shadowOf(Looper.getMainLooper()).idle();
-            int index = pos - list.getFirstVisiblePosition();
-            if (index >= 0 && index < list.getChildCount()) {
-                row = list.getChildAt(index);
+            int index = pos - view.getFirstVisiblePosition();
+            if (index >= 0 && index < view.getChildCount()) {
+                row = view.getChildAt(index);
             } else {
                 Thread.sleep(10);
             }
@@ -435,25 +713,25 @@ public class MainActivityTest {
     }
 
     /**
-     * Taps the row of {@code target} in the visible list. The tap goes through the
-     * row view's own OnClickListener (BookAdapter binds it, because a row with a
+     * Taps the row/tile of {@code target} in the visible view. The tap goes through
+     * the row view's own OnClickListener (BookAdapter binds it, because a row with a
      * clickable kebab never fires ListView.onItemClick) — the same listener a real
      * finger triggers.
      */
-    private void tapBook(ListView list, Book target) throws InterruptedException {
-        BookAdapter adapter = (BookAdapter) list.getAdapter();
+    private void tapBook(AbsListView view, Book target) throws InterruptedException {
+        BookAdapter adapter = (BookAdapter) view.getAdapter();
         int pos = positionOf(adapter, target);
-        assertTrue("the book must be in the visible list", pos >= 0);
-        rowAt(list, pos).performClick();
+        assertTrue("the book must be in the visible view", pos >= 0);
+        rowAt(view, pos).performClick();
     }
 
-    /** Opens the kebab menu for the book at adapter position {@code pos} (row view
-     *  built by the adapter, kebab click) and returns the popup — so the test can
-     *  pick an item exactly like a tap on the popup window would. */
-    private android.widget.PopupMenu openKebabFor(ListView list, int pos)
+    /** Opens the kebab menu for the book at adapter position {@code pos} (row/tile
+     *  view built by the adapter, kebab click) and returns the popup — so the test
+     *  can pick an item exactly like a tap on the popup window would. */
+    private android.widget.PopupMenu openKebabFor(AbsListView view, int pos)
             throws InterruptedException {
-        BookAdapter adapter = (BookAdapter) list.getAdapter();
-        rowAt(list, pos).findViewById(R.id.book_more).performClick();
+        BookAdapter adapter = (BookAdapter) view.getAdapter();
+        rowAt(view, pos).findViewById(R.id.book_more).performClick();
         android.widget.PopupMenu menu = adapter.getLastPopupMenu();
         assertNotNull("the kebab click must open the menu", menu);
         return menu;
@@ -477,12 +755,12 @@ public class MainActivityTest {
 
         MainActivity a = launchMain();
         awaitCatalogSize(2);
-        ListView list = a.findViewById(R.id.book_list);
-        awaitAdapterCount(list, 2);
+        GridView grid = a.findViewById(R.id.book_grid);
+        awaitAdapterCount(grid, 2);
 
         Book target = findBook("story_a.txt");
         assertNotNull(target);
-        tapBook(list, target);
+        tapBook(grid, target);
 
         // The tap must not open anything — it only asks first.
         android.app.Dialog d = ShadowDialog.getLatestDialog();
@@ -508,12 +786,12 @@ public class MainActivityTest {
 
         MainActivity a = launchMain();
         awaitCatalogSize(2);
-        ListView list = a.findViewById(R.id.book_list);
-        awaitAdapterCount(list, 2);
+        GridView grid = a.findViewById(R.id.book_grid);
+        awaitAdapterCount(grid, 2);
 
         Book target = findBook("story_a.txt");
         assertNotNull(target);
-        tapBook(list, target);
+        tapBook(grid, target);
         android.app.Dialog d = ShadowDialog.getLatestDialog();
         assertNotNull("the tap must show the confirmation dialog", d);
 
@@ -545,12 +823,12 @@ public class MainActivityTest {
 
         MainActivity a = launchMain();
         awaitCatalogSize(2);
-        ListView list = a.findViewById(R.id.book_list);
-        awaitAdapterCount(list, 2);
+        GridView grid = a.findViewById(R.id.book_grid);
+        awaitAdapterCount(grid, 2);
 
         Book target = findBook("story_a.txt");
         assertNotNull(target);
-        tapBook(list, target);
+        tapBook(grid, target);
         android.app.Dialog d = ShadowDialog.getLatestDialog();
         assertNotNull("the tap must show the confirmation dialog", d);
 
@@ -569,6 +847,407 @@ public class MainActivityTest {
     }
 
     // ------------------------------------------------------------------
+    // pagination (the kebab's "Add/Remove pagination")
+    // ------------------------------------------------------------------
+
+    /** The kebab's "Add pagination" switches the catalog from one long scroll to
+     *  fixed pages: in tiles that is 6 books per page, with the strip's Prev /
+     *  "X / Y" / Next navigating. Picking the item again ("Remove pagination",
+     *  shown checked) restores the long scroll. */
+    @Test
+    public void headerKebabPaginationToggleSwitchesBetweenScrollAndPages() throws Exception {
+        for (int i = 1; i <= 8; i++) {
+            TestFixtures.writeText(new File(storage, "story_" + i + ".txt"), "text " + i + "\n");
+        }
+
+        MainActivity a = launchMain();
+        awaitCatalogSize(8);
+        GridView grid = a.findViewById(R.id.book_grid);
+        awaitAdapterCount(grid, 8);
+        View bar = a.findViewById(R.id.pagination_bar);
+        assertEquals("no pagination: the strip is hidden", View.GONE, bar.getVisibility());
+        TextView indicator = (TextView) a.findViewById(R.id.page_indicator);
+        ImageButton prev = a.findViewById(R.id.page_prev);
+        ImageButton next = a.findViewById(R.id.page_next);
+
+        // The kebab item offers the OPPOSITE action; its checkmark mirrors the state.
+        a.findViewById(R.id.btn_menu).performClick();
+        android.widget.PopupMenu menu = a.getLastHeaderMenu();
+        assertNotNull(menu);
+        android.view.MenuItem paginationItem = menu.getMenu().findItem(R.id.main_menu_pagination);
+        assertEquals(a.getString(R.string.menu_pagination_add),
+                paginationItem.getTitle().toString());
+        assertFalse(paginationItem.isChecked());
+        menu.getMenu().performIdentifierAction(R.id.main_menu_pagination, 0);
+
+        // Pagination on in tiles: 6 books per page (8 books -> 2 pages).
+        assertEquals(View.VISIBLE, bar.getVisibility());
+        assertEquals(6, grid.getAdapter().getCount());
+        assertEquals("1 / 2", indicator.getText().toString());
+        assertFalse("Prev must be disabled on the first page", prev.isEnabled());
+        // ...and the disabled button must show the DIMMED chevron (the selector's
+        // state_enabled item — a static PNG cannot dim itself, see 12.1).
+        assertChevron(prev, R.drawable.ic_page_prev_disabled);
+
+        // Next: the last (partial) page.
+        next.performClick();
+        assertEquals(2, grid.getAdapter().getCount());
+        assertEquals("2 / 2", indicator.getText().toString());
+        assertFalse("Next must be disabled on the last page", next.isEnabled());
+        assertChevron(next, R.drawable.ic_page_next_disabled);
+
+        // Prev: back to the first page.
+        prev.performClick();
+        assertEquals(6, grid.getAdapter().getCount());
+        assertEquals("1 / 2", indicator.getText().toString());
+        assertFalse(prev.isEnabled());
+        assertTrue(next.isEnabled());
+        // ...and the re-enabled button is back to the full chevron.
+        assertChevron(next, R.drawable.ic_page_next);
+
+        // The kebab now offers "Remove pagination" (checked)...
+        a.findViewById(R.id.btn_menu).performClick();
+        android.view.MenuItem paginationItem2 = a.getLastHeaderMenu()
+                .getMenu().findItem(R.id.main_menu_pagination);
+        assertEquals(a.getString(R.string.menu_pagination_remove),
+                paginationItem2.getTitle().toString());
+        assertTrue(paginationItem2.isChecked());
+        a.getLastHeaderMenu().getMenu().performIdentifierAction(R.id.main_menu_pagination, 0);
+
+        // ...and the long scroll is back.
+        assertEquals(View.GONE, bar.getVisibility());
+        assertEquals(8, grid.getAdapter().getCount());
+    }
+
+    /** The pagination choice is stored in the phone's memory (SharedPreferences)
+     *  and must be applied on the next launch, like the view-mode choice. */
+    @Test
+    public void paginationChoiceIsPersistedAcrossAppRestarts() throws Exception {
+        for (int i = 1; i <= 8; i++) {
+            TestFixtures.writeText(new File(storage, "story_" + i + ".txt"), "text " + i + "\n");
+        }
+
+        ActivityController<MainActivity> c = Robolectric.buildActivity(MainActivity.class);
+        MainActivity a = c.setup().get();
+        awaitCatalogSize(8);
+        GridView grid = a.findViewById(R.id.book_grid);
+        awaitAdapterCount(grid, 8);
+
+        a.findViewById(R.id.btn_menu).performClick();
+        a.getLastHeaderMenu().getMenu().performIdentifierAction(R.id.main_menu_pagination, 0);
+        assertEquals("the choice is written to the phone's memory",
+                true, a.getSharedPreferences("library_prefs", Context.MODE_PRIVATE)
+                        .getBoolean("pagination_enabled", false));
+        assertEquals(6, grid.getAdapter().getCount());
+
+        // "Close the app" and relaunch: the persisted choice must be applied.
+        c.destroy();
+        MainActivity a2 = Robolectric.buildActivity(MainActivity.class).setup().get();
+        GridView grid2 = a2.findViewById(R.id.book_grid);
+        awaitAdapterCount(grid2, 6);
+        assertEquals("the pagination must survive the restart",
+                View.VISIBLE, a2.findViewById(R.id.pagination_bar).getVisibility());
+        assertEquals("1 / 2",
+                ((TextView) a2.findViewById(R.id.page_indicator)).getText().toString());
+    }
+
+    /** In list mode "Add pagination" shows as many rows as fit on the screen (a
+     *  measured screenful — not a fixed number), so 12 books span several pages. */
+    @Test
+    public void listModePaginationShowsAScreenfulOfRows() throws Exception {
+        for (int i = 1; i <= 12; i++) {
+            TestFixtures.writeText(new File(storage, "story_" + i + ".txt"), "text " + i + "\n");
+        }
+
+        MainActivity a = launchMain();
+        awaitCatalogSize(12);
+        GridView grid = a.findViewById(R.id.book_grid);
+        awaitAdapterCount(grid, 12);
+
+        // Switch to the list...
+        a.findViewById(R.id.toggle_view).performClick();
+        ListView list = a.findViewById(R.id.book_list);
+        assertEquals(12, list.getAdapter().getCount());
+
+        // ...and enable pagination from the kebab.
+        a.findViewById(R.id.btn_menu).performClick();
+        a.getLastHeaderMenu().getMenu().performIdentifierAction(R.id.main_menu_pagination, 0);
+
+        // A screenful: shorter than the whole catalog, at least one row.
+        int shown = list.getAdapter().getCount();
+        assertTrue("the list page must be shorter than the whole catalog: " + shown,
+                shown < 12);
+        assertTrue("the list page must show at least one row: " + shown, shown >= 1);
+        assertEquals(View.VISIBLE, a.findViewById(R.id.pagination_bar).getVisibility());
+
+        String indicator = ((TextView) a.findViewById(R.id.page_indicator)).getText().toString();
+        assertTrue("the indicator must read '1 / N': " + indicator,
+                indicator.startsWith("1 / "));
+        assertEquals("one screenful = ceil(12 / screenful) pages",
+                (12 + shown - 1) / shown, Integer.parseInt(indicator.split(" / ")[1]));
+    }
+
+    /** In list mode the page size is "as many rows as fit on the screen", and the
+     *  screen changes under the user's fingers: the stage-2 enrichment strip
+     *  appears (taking height from the book area) and later disappears (giving it
+     *  back). The page size must FOLLOW the laid-out height — without it, the list
+     *  keeps the screenful measured before the strip appeared, and (symmetrically)
+     *  stays shorter than the screen after the strip is gone. The re-measure is the
+     *  bookContainer's layout listener (height-only changes re-post the recompute),
+     *  so drive the strip's visibility directly — the same view the real worker
+     *  toggles in {@code startEnrichment} / {@code onFinished}. */
+    @Test
+    public void listPageSizeFollowsTheEnrichmentStripAppearance() throws Exception {
+        for (int i = 1; i <= 12; i++) {
+            TestFixtures.writeText(new File(storage, "story_" + i + ".txt"), "text " + i + "\n");
+        }
+
+        MainActivity a = launchMain();
+        awaitCatalogSize(12);
+        GridView grid = a.findViewById(R.id.book_grid);
+        awaitAdapterCount(grid, 12);
+
+        // Stage 2 must be DONE first: the enrichment strip is GONE, so the page
+        // size measured below is the full-screen one.
+        final BookDatabase dbLocal = db;
+        awaitCondition("stage-2 to finish", new Cond() {
+            public boolean holds() {
+                return dbLocal.needMeta().isEmpty()
+                        && a.findViewById(R.id.enrich_bar).getVisibility() == View.GONE;
+            }
+        });
+
+        // Switch to the list and let it lay out (a GONE list has no height yet).
+        a.findViewById(R.id.toggle_view).performClick();
+        ListView list = a.findViewById(R.id.book_list);
+        awaitCondition("the list to lay out", new Cond() {
+            public boolean holds() {
+                return list.getHeight() > 0;
+            }
+        });
+
+        // Enable pagination; the pager strip itself takes height from the book
+        // area — wait for the layout to settle on the new height before reading
+        // the baseline.
+        int hBeforePagerStrip = list.getHeight();
+        a.findViewById(R.id.btn_menu).performClick();
+        a.getLastHeaderMenu().getMenu().performIdentifierAction(R.id.main_menu_pagination, 0);
+        awaitCondition("the pager strip to take its height", new Cond() {
+            public boolean holds() {
+                return list.getHeight() < hBeforePagerStrip;
+            }
+        });
+        int firstShown = list.getAdapter().getCount();
+        assertTrue("the list page must be shorter than the whole catalog: " + firstShown,
+                firstShown < 12);
+        assertTrue("the list page must show at least one row: " + firstShown, firstShown >= 1);
+
+        // One row's height at the list's width — the same measurement the app does
+        // in computeListPageSize (the row height is constant, so the unbound
+        // measure is exact).
+        View row = android.view.LayoutInflater.from(a).inflate(R.layout.item_book, list, false);
+        row.measure(View.MeasureSpec.makeMeasureSpec(list.getWidth(), View.MeasureSpec.EXACTLY),
+                    View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED));
+        int rowHeight = Math.max(1, row.getMeasuredHeight());
+
+        // The enrichment strip appears (like a stage-2 restart would): it takes
+        // height from the book area...
+        int oldHeight = list.getHeight();
+        a.findViewById(R.id.enrich_bar).setVisibility(View.VISIBLE);
+        awaitCondition("the list to lose height to the strip", new Cond() {
+            public boolean holds() {
+                return list.getHeight() < oldHeight;
+            }
+        });
+
+        // ...and the page size must follow the new (shorter) height — fewer rows,
+        // and the pager counter's page total must grow with the smaller page.
+        int expected = Math.max(1, list.getHeight() / rowHeight);
+        final int expectedRef = expected;
+        awaitCondition("the page to shrink to the new screenful", new Cond() {
+            public boolean holds() {
+                return list.getAdapter().getCount() == expectedRef;
+            }
+        });
+        assertTrue("the shorter list must hold fewer rows: " + expected + " vs " + firstShown,
+                expected < firstShown);
+        assertEquals("the page total must grow with the smaller page",
+                "1 / " + (12 + expected - 1) / expected,
+                ((TextView) a.findViewById(R.id.page_indicator)).getText().toString());
+
+        // ...and the strip goes away again: the height comes back and the page
+        // size must grow back to the full screenful.
+        a.findViewById(R.id.enrich_bar).setVisibility(View.GONE);
+        awaitCondition("the list to get its height back", new Cond() {
+            public boolean holds() {
+                return list.getHeight() == oldHeight;
+            }
+        });
+        final int firstShownRef = firstShown;
+        awaitCondition("the page to grow back to the full screenful", new Cond() {
+            public boolean holds() {
+                return list.getAdapter().getCount() == firstShownRef;
+            }
+        });
+        assertEquals("1 / " + (12 + firstShown - 1) / firstShown,
+                ((TextView) a.findViewById(R.id.page_indicator)).getText().toString());
+    }
+
+    /** With pagination on, a horizontal swipe across the catalog turns the page
+     *  (left = next, right = previous) — the same showPage() path as the
+     *  Prev/Next buttons. A vertical drag must NOT turn a page (it is a scroll),
+     *  a swipe past the last page clamps, a swipe with pagination off is a
+     *  no-op, and a swipe over a tile/row must NOT open the "Open this book?"
+     *  dialog (the list intercepts the swipe from the row, so the row's press
+     *  is cancelled — see PagedListView). Driven
+     *  with a raw MotionEvent sequence (DOWN -> MOVE -> UP) the way a finger
+     *  produces it. */
+    @Test
+    public void swipingTheCatalogTurnsPagesWhenPaginationIsOn() throws Exception {
+        for (int i = 1; i <= 8; i++) {
+            TestFixtures.writeText(new File(storage, "story_" + i + ".txt"), "text " + i + "\n");
+        }
+
+        MainActivity a = launchMain();
+        awaitCatalogSize(8);
+        GridView grid = a.findViewById(R.id.book_grid);
+        awaitAdapterCount(grid, 8);
+        TextView indicator = (TextView) a.findViewById(R.id.page_indicator);
+        View bar = a.findViewById(R.id.pagination_bar);
+
+        // A swipe with pagination OFF does nothing.
+        swipe(grid, -150);
+        assertEquals("no pagination: the strip is hidden", View.GONE, bar.getVisibility());
+        assertEquals(8, grid.getAdapter().getCount());
+
+        // Enable pagination (grid: 6 per page -> 2 pages).
+        a.findViewById(R.id.btn_menu).performClick();
+        a.getLastHeaderMenu().getMenu().performIdentifierAction(R.id.main_menu_pagination, 0);
+        assertEquals("1 / 2", indicator.getText().toString());
+        rowAt(grid, 0); // make sure the tiles are laid out (a press lands on a tile)
+
+        // A left swipe -> page 2 (the remaining 2 books)...
+        swipe(grid, -150);
+        assertEquals("2 / 2", indicator.getText().toString());
+        assertEquals(2, grid.getAdapter().getCount());
+        // ...a swipe past the last page clamps...
+        swipe(grid, -150);
+        assertEquals("2 / 2", indicator.getText().toString());
+        // ...a right swipe -> back to page 1...
+        swipe(grid, 150);
+        assertEquals("1 / 2", indicator.getText().toString());
+        assertEquals(6, grid.getAdapter().getCount());
+        // ...and a vertical drag (a scroll, dx small / dy large) turns no page.
+        swipeVertical(grid, 150);
+        assertEquals("1 / 2", indicator.getText().toString());
+        assertEquals(6, grid.getAdapter().getCount());
+
+        // The same in list mode (a screenful per page: 8 books -> 3 pages).
+        a.findViewById(R.id.toggle_view).performClick();
+        ListView list = a.findViewById(R.id.book_list);
+        rowAt(list, 0);
+        assertEquals("1 / 3", indicator.getText().toString());
+        swipe(list, -150);
+        assertEquals("2 / 3", indicator.getText().toString());
+        assertEquals(3, list.getAdapter().getCount());
+
+        // A swipe over a tile/row must not open the book: no dialog appeared.
+        assertNull("a swipe must not open the confirmation dialog",
+                ShadowDialog.getLatestDialog());
+    }
+
+    /** A horizontal swipe across {@code view} by {@code dx} pixels (negative =
+     *  left, positive = right) with a small vertical wobble — a raw MotionEvent
+     *  sequence (DOWN -> MOVE -> UP) dispatched the way a finger produces it,
+     *  the looper idled between the events the way real input frames interleave
+     *  (the row's press-state check is posted, so it must get a turn BEFORE the
+     *  UP to cancel the press exactly like on a device), and idled once more at
+     *  the end so the posted page turn can run. */
+    private void swipe(AbsListView view, int dx) {
+        long t = 1000;
+        float x0 = 150f, y0 = 40f;
+        MotionEvent down = MotionEvent.obtain(t, t, MotionEvent.ACTION_DOWN, x0, y0, 0);
+        MotionEvent move = MotionEvent.obtain(t, t + 50, MotionEvent.ACTION_MOVE,
+                x0 + dx / 3f, y0 + 5f, 0);
+        MotionEvent up = MotionEvent.obtain(t, t + 100, MotionEvent.ACTION_UP,
+                x0 + dx, y0 + 10f, 0);
+        view.dispatchTouchEvent(down);
+        shadowOf(Looper.getMainLooper()).idle();
+        view.dispatchTouchEvent(move);
+        shadowOf(Looper.getMainLooper()).idle();
+        view.dispatchTouchEvent(up);
+        down.recycle();
+        move.recycle();
+        up.recycle();
+        shadowOf(Looper.getMainLooper()).idle();
+    }
+
+    /** A vertical drag across {@code view} by {@code dy} pixels — a scroll,
+     *  which must NOT turn a page. (Same frame-boundary interleaving as
+     *  {@link #swipe}.) */
+    private void swipeVertical(AbsListView view, int dy) {
+        long t = 1000;
+        float x0 = 150f, y0 = 40f;
+        MotionEvent down = MotionEvent.obtain(t, t, MotionEvent.ACTION_DOWN, x0, y0, 0);
+        MotionEvent move = MotionEvent.obtain(t, t + 50, MotionEvent.ACTION_MOVE,
+                x0 - 5f, y0 + dy / 3f, 0);
+        MotionEvent up = MotionEvent.obtain(t, t + 100, MotionEvent.ACTION_UP,
+                x0 - 10f, y0 + dy, 0);
+        view.dispatchTouchEvent(down);
+        shadowOf(Looper.getMainLooper()).idle();
+        view.dispatchTouchEvent(move);
+        shadowOf(Looper.getMainLooper()).idle();
+        view.dispatchTouchEvent(up);
+        down.recycle();
+        move.recycle();
+        up.recycle();
+        shadowOf(Looper.getMainLooper()).idle();
+    }
+
+    /** The pagination chevrons are stateful selectors (a static PNG cannot dim
+     *  itself, and android:alpha on a selector item needs API 21 — see 12.1).
+     *  The enabled/disabled variants differ only in color (#202020 vs #999999),
+     *  so the assertion compares the DOMINANT OPAQUE COLOR of the resolved PNG
+     *  against the expected resource's (a constant-state equality would not
+     *  hold: Robolectric re-decodes the same resource per theme). */
+    private void assertChevron(ImageButton button, int expectedChevronId) {
+        Drawable d = button.getDrawable();
+        assertTrue("the chevron must be a stateful selector: " + d,
+                d instanceof StateListDrawable);
+        Drawable current = ((StateListDrawable) d).getCurrent();
+        assertTrue("the resolved chevron must be the PNG: " + current,
+                current instanceof BitmapDrawable);
+        Bitmap actual = ((BitmapDrawable) current).getBitmap();
+        Bitmap expected = ((BitmapDrawable) app.getResources()
+                .getDrawable(expectedChevronId)).getBitmap();
+        assertEquals("the button (enabled=" + button.isEnabled() + ") must show the"
+                        + " " + expectedChevronId + " chevron",
+                dominantOpaqueColor(expected), dominantOpaqueColor(actual));
+    }
+
+    /** The most frequent non-transparent pixel color of a (near monochrome) icon. */
+    private static int dominantOpaqueColor(Bitmap bmp) {
+        java.util.HashMap<Integer, Integer> counts = new java.util.HashMap<Integer, Integer>();
+        for (int x = 0; x < bmp.getWidth(); x++) {
+            for (int y = 0; y < bmp.getHeight(); y++) {
+                int p = bmp.getPixel(x, y);
+                if ((p >>> 24) == 0) continue; // transparent
+                int key = p & 0xFFFFFF; // ignore the alpha channel
+                Integer c = counts.get(key);
+                counts.put(key, c == null ? 1 : c + 1);
+            }
+        }
+        int best = 0, bestCount = -1;
+        for (java.util.Map.Entry<Integer, Integer> e : counts.entrySet()) {
+            if (e.getValue() > bestCount) {
+                bestCount = e.getValue();
+                best = e.getKey();
+            }
+        }
+        return best;
+    }
+
+    // ------------------------------------------------------------------
     // kebab end-to-end (through the real screen: row -> kebab -> popup pick)
     // ------------------------------------------------------------------
 
@@ -579,16 +1258,16 @@ public class MainActivityTest {
 
         MainActivity a = launchMain();
         awaitCatalogSize(2);
-        ListView list = a.findViewById(R.id.book_list);
-        awaitAdapterCount(list, 2);
-        BookAdapter adapter = (BookAdapter) list.getAdapter();
+        GridView grid = a.findViewById(R.id.book_grid);
+        awaitAdapterCount(grid, 2);
+        BookAdapter adapter = (BookAdapter) grid.getAdapter();
 
         Book target = findBook("story_a.txt");
         assertNotNull(target);
         int pos = positionOf(adapter, target);
         assertTrue("the book must be in the visible list", pos >= 0);
 
-        android.widget.PopupMenu menu = openKebabFor(list, pos);
+        android.widget.PopupMenu menu = openKebabFor(grid, pos);
         // The framework MenuItem has no public click method — performIdentifierAction
         // goes through the same path a real tap on the popup item would.
         menu.getMenu().performIdentifierAction(R.id.book_menu_details, 0);
@@ -608,16 +1287,16 @@ public class MainActivityTest {
 
         MainActivity a = launchMain();
         awaitCatalogSize(2);
-        ListView list = a.findViewById(R.id.book_list);
-        awaitAdapterCount(list, 2);
-        BookAdapter adapter = (BookAdapter) list.getAdapter();
+        GridView grid = a.findViewById(R.id.book_grid);
+        awaitAdapterCount(grid, 2);
+        BookAdapter adapter = (BookAdapter) grid.getAdapter();
 
         Book target = findBook("story_a.txt");
         assertNotNull(target);
         int pos = positionOf(adapter, target);
         assertTrue("the book must be in the visible list", pos >= 0);
 
-        android.widget.PopupMenu menu = openKebabFor(list, pos);
+        android.widget.PopupMenu menu = openKebabFor(grid, pos);
         menu.getMenu().performIdentifierAction(R.id.book_menu_edit, 0);
         shadowOf(Looper.getMainLooper()).idle();
 
@@ -639,9 +1318,9 @@ public class MainActivityTest {
 
         MainActivity a = launchMain();
         awaitCatalogSize(2);
-        ListView list = a.findViewById(R.id.book_list);
-        awaitAdapterCount(list, 2);
-        BookAdapter adapter = (BookAdapter) list.getAdapter();
+        GridView grid = a.findViewById(R.id.book_grid);
+        awaitAdapterCount(grid, 2);
+        BookAdapter adapter = (BookAdapter) grid.getAdapter();
 
         Book target = findBook("story_a.txt");
         assertNotNull(target);
@@ -655,7 +1334,7 @@ public class MainActivityTest {
         app.getContentResolver().registerContentObserver(BookProvider.CONTENT_URI, true, onBooks);
         app.getContentResolver().registerContentObserver(BookProvider.RECENT_URI, true, onRecent);
 
-        android.widget.PopupMenu menu = openKebabFor(list, pos);
+        android.widget.PopupMenu menu = openKebabFor(grid, pos);
         menu.getMenu().performIdentifierAction(R.id.book_menu_remove, 0);
 
         // The Remove pick must ask for confirmation (the same texts the old
@@ -783,9 +1462,9 @@ public class MainActivityTest {
         assertTrue("the imported book must be enriched", imported.metaDone);
         assertTrue(ShadowToast.showedToast("Imported imported_book.txt"));
 
-        // And the list picked it up through the loader.
-        ListView list = a.findViewById(R.id.book_list);
-        awaitAdapterCount(list, 1);
+        // And the view (the grid, the default) picked it up through the loader.
+        GridView grid = a.findViewById(R.id.book_grid);
+        awaitAdapterCount(grid, 1);
     }
 
     /** Re-importing a file with the same name overwrites it: the catalog row must be

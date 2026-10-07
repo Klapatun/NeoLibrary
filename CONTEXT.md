@@ -51,14 +51,18 @@ Every book's metadata is stored in **two places**:
 | `meta/CoverExtractor` | cover bytes: EPUB (`content.opf`→manifest), FB2 (`coverpage`→`<binary>`), FB2ZIP (inner `<binary>`, else loose image entry like `cover.jpg`), MOBI (EXTH record 201, JPEG trimmed at EOI) |
 | `util/CoverCache` | durable file cache of cover **bytes** (`getExternalFilesDir("covers")/<hash>.img`, atomic `.tmp`→rename); warmed by the enricher |
 | `util/CoverLoader` | async cover bitmap: `CoverCache` first, in-file extraction second, LruCache; hidden badge on success |
-| `BookAdapter` | `CursorAdapter`; list + grid/tile view modes (grid loads covers); `getItem()` maps the cursor row to a `Book` |
+| `BookAdapter` | `CursorAdapter`; list + grid/tile view modes (grid loads covers); `getItem()` maps the cursor row to a `Book`; optional **client-side pagination** — `setPagination()` windows the whole cursor (the adapter keeps the full cursor, so every catalog rebind works unchanged) and serves one page; `changeCursor` walks the page back to the last existing one **before** the swap so the dataset callbacks (the screen's pager bar) see the clamped page |
 | `util/Openers` | MIME map + `ACTION_VIEW` intent (`Uri.fromFile`) |
 
 ### List / tile view toggle
 
 `MainActivity` shows the same `BookAdapter` in both a `ListView` and a `GridView`
 (`activity_main.xml`). The toolbar button (`@+id/toggle_view`) calls `setViewMode()` which
-swaps visibility and tells the adapter which layout to inflate. In **tile** mode
+swaps visibility and tells the adapter which layout to inflate. **Tiles are the
+default view** (the grid starts visible, the list hidden, and the adapter attaches
+to the grid at startup), and the chosen mode is **persisted in `SharedPreferences`**
+(file `library_prefs`, key `view_mode`), so it survives rotation *and* the app
+being closed. In **tile** mode
 (3-column `GridView`) each `item_book_grid.xml` tile is one clickable unit: the cover
 on top, a small uniform-width format label (`bg_format_badge`) at the cover's
 bottom-left corner, the book title under the cover (fixed two lines) — all tiles
@@ -68,10 +72,51 @@ exactly the same size. The grid is sized in **px** for the ONYX Boox Volta 3
 so the columns fit the screen width — portrait 758px → 3 per row
 (3×242 + 2×8 = 742px), landscape 1024px → 4 (4×242 + 3×8 = 992px),
 wider → more. The books' container `FrameLayout` has a 16px top padding
-and 8px left/right padding. Cover 242x387px (5:8), 155px red circle
+and 8px left/right padding. Cover 242x334px, 155px red circle
 (`bg_circle_red`) with the
 title's initial for books without a cover; the scrollbar is `insideOverlay` so
 it never steals column width.
+
+### Pagination (the kebab's "Add/Remove pagination")
+
+A checkable item in the header kebab (`main_menu_pagination`) switches the
+catalog between one long scroll and fixed pages. When on, the strip
+(`@+id/pagination_bar`: Prev / "X / Y" / Next) is shown and the adapter serves
+one page at a time — a **client-side window over the whole cursor**, so every
+catalog change (scan, enrich, import, remove, filter, clear) still rebinds in
+place and the screen's direct-rebind paths work unchanged. The page size is
+**6 tiles** in grid mode or **as many list rows as fit on the screen** in list
+mode (`computeListPageSize()` measures the laid-out books-area height against
+one measured row). Because that height changes under the user's fingers (the
+stage-2 strip appearing/disappearing, the pager strip itself, the first layout
+after a cold start), the `bookContainer` carries an
+`OnLayoutChangeListener` that re-measures the list page size whenever the
+container re-lays out at a **new height** (posted, so it reads the settled
+height and never notifies the adapter mid-layout-pass). The on/off choice is
+persisted in `SharedPreferences` (key `pagination_enabled`, like `view_mode`)
+and is applied *after* the view mode, since the page size depends on it.
+`changeCursor` walks the page back to the last existing one *before* the swap
+so the `DataSetObserver` that refreshes the strip sees the clamped page; an
+empty catalog hides the strip (0 pages).
+
+While pagination is on, a page can also be turned by a **horizontal swipe**
+over the list/grid (left = next, right = previous). The catalog's views are
+`PagedListView`/`PagedGridView` (subclassing `ListView`/`GridView`): they
+detect the gesture in a `dispatchTouchEvent` override feeding
+`PageSwipeTracker` (a swipe = at release, |dx| ≥ 3×touchSlop and |dx| ≥ 2×|dy|;
+a second finger cancels), and the page turn is *posted* so it runs after the
+touch sequence has fully unwound — the same `showPage()` path as the buttons.
+An `OnTouchListener` on the list would never fire for a swipe started on a
+book: `ViewGroup.dispatchTouchEvent` hands the gesture to the row/tile first
+and the (clickable) row consumes it, so the list's own listener only sees
+touches on the bare padding. The views also `onInterceptTouchEvent` a gesture
+the moment it qualifies as a swipe — on API 19 a row keeps its pre-pressed
+state until the finger leaves its *bounds* (not distance from the down
+point), and the list itself only intercepts *vertical* movement, so a swipe
+staying inside a row would otherwise release into a row click ("Open this
+book?"); the framework then sends the row `ACTION_CANCEL` and the remaining
+events are consumed in `onTouchEvent`. Taps and wiggles under the threshold
+are never intercepted.
 
 ## Main workflows
 
@@ -112,8 +157,16 @@ it never steals column width.
 
 ## Header icons (SVG sources → committed PNGs)
 
-The four `MainActivity` header icons (`ic_import`, `ic_refresh`, `ic_grid`,
-`ic_list`) are authored as SVG in `app/icons/` (48×48, white, transparent).
+The five `MainActivity` header icons (`ic_import`, `ic_refresh`, `ic_grid`,
+`ic_list`, `ic_overflow`) are authored as SVG in `app/icons/` (48×48, white,
+transparent). `ic_overflow` is the kebab that replaced the standalone import /
+rescan header buttons: the kebab sits at the header's right corner and its popup
+(`res/menu/main_menu.xml`) carries **Import**, **Rescan**, a checkable
+**Add/Remove pagination** toggle (title + checkmark mirror the state, set in
+`showHeaderMenu`; the mode itself is documented under "List / tile view
+toggle" → Pagination) and **Clear library** (the latter wipes the whole catalog
+— all rows + cover cache, on-disk files untouched — after a confirmation dialog;
+`BookDatabase.clear()` is the backend).
 The runtime PNGs in `app/src/main/res/drawable/` (32×32, the 32dp header
 button size) are generated from them via
 `tools\generate-icons.ps1` (drives `tools/SvgToPng`, a small dependency-free

@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Source of res/drawable/ic_overflow.png. "More options" (the header kebab):
+     three vertical dots, the framework standard for an overflow menu. Regenerate
+     the PNG with tools/generate-icons.ps1. -->
+<svg xmlns="http://www.w3.org/2000/svg" width="48" height="48" viewBox="0 0 48 48">
+    <g fill="#fff">
+        <circle cx="24" cy="12" r="5"/>
+        <circle cx="24" cy="24" r="5"/>
+        <circle cx="24" cy="36" r="5"/>
+    </g>
+</svg>

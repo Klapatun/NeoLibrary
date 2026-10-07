@@ -32,9 +32,11 @@
                 android:layout_marginEnd="8dp"
                 android:prompt="@string/filter_all" />
 
-            <!-- Header actions in one row: import, rescan, then the list/tiles
-                 toggle (rightmost, as before). All icons are 48x48 white PNGs on
-                 the indigo bar; each button keeps the selectable ripple. -->
+            <!-- Header actions in one row: the list/tiles toggle, then the
+                 overflow kebab rightmost (the header's right corner). Import and
+                 rescan live in the kebab's menu (main_menu) now, so the header
+                 stays uncluttered. All icons are 48x48 white PNGs on the indigo
+                 bar; each button keeps the selectable ripple. -->
             <LinearLayout
                 android:id="@+id/header_actions"
                 android:layout_width="wrap_content"
@@ -44,30 +46,21 @@
                 android:orientation="horizontal">
 
                 <ImageButton
-                    android:id="@+id/btn_import"
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:src="@drawable/ic_import"
-                    android:background="?android:attr/selectableItemBackground"
-                    android:contentDescription="@string/menu_import"
-                    android:padding="8dp" />
-
-                <ImageButton
-                    android:id="@+id/btn_rescan"
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:src="@drawable/ic_refresh"
-                    android:background="?android:attr/selectableItemBackground"
-                    android:contentDescription="@string/menu_refresh"
-                    android:padding="8dp" />
-
-                <ImageButton
                     android:id="@+id/toggle_view"
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
-                    android:src="@drawable/ic_grid"
+                    android:src="@drawable/ic_list"
                     android:background="?android:attr/selectableItemBackground"
-                    android:contentDescription="@string/view_grid"
+                    android:contentDescription="@string/view_list"
+                    android:padding="8dp" />
+
+                <ImageButton
+                    android:id="@+id/btn_menu"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:src="@drawable/ic_overflow"
+                    android:background="?android:attr/selectableItemBackground"
+                    android:contentDescription="@string/more_options"
                     android:padding="8dp" />
             </LinearLayout>
         </RelativeLayout>
@@ -105,18 +98,26 @@
     </LinearLayout>
 
     <FrameLayout
+        android:id="@+id/book_container"
         android:layout_width="match_parent"
         android:layout_height="0dp"
         android:layout_weight="1"
-        android:paddingTop="16px"
+        android:paddingTop="8px"
         android:paddingLeft="8px"
         android:paddingRight="8px">
 
-        <ListView
+        <!-- Tiles (the grid) are the DEFAULT view, so the list starts hidden;
+             MainActivity.setViewMode() flips the visibilities on the first toggle
+             (and on a persisted non-default choice). -->
+        <!-- PagedListView: a ListView with the horizontal page-swipe (the
+             dispatchTouchEvent override; see the class javadoc for why an
+             OnTouchListener would not work on a list). -->
+        <com.example.mylibrary.PagedListView
             android:id="@+id/book_list"
             android:layout_width="match_parent"
             android:layout_height="match_parent"
-            android:choiceMode="singleChoice" />
+            android:choiceMode="singleChoice"
+            android:visibility="gone" />
 
         <!-- Uniform tiles, sized in px for the ONYX Boox Volta 3 (6", 1024x758):
              each tile is a fixed 242px wide (stretchMode=none, columnWidth=242px),
@@ -126,7 +127,9 @@
              4 per row (4x242 + 3x8 = 992px), wider screens -> even more.
              insideOverlay: the scrollbar floats above the content so it never
              steals width from the last column. -->
-        <GridView
+        <!-- PagedGridView: a GridView with the horizontal page-swipe (see
+             PagedListView for the rationale). -->
+        <com.example.mylibrary.PagedGridView
             android:id="@+id/book_grid"
             android:layout_width="match_parent"
             android:layout_height="match_parent"
@@ -136,8 +139,7 @@
             android:stretchMode="none"
             android:columnWidth="242px"
             android:scrollbarStyle="insideOverlay"
-            android:verticalScrollbarPosition="defaultPosition"
-            android:visibility="gone" />
+            android:verticalScrollbarPosition="defaultPosition" />
 
         <ProgressBar
             android:id="@+id/progress"
@@ -168,4 +170,52 @@
             android:textSize="15sp"
             android:visibility="gone" />
     </FrameLayout>
+
+    <!-- Pagination strip: visible only while pagination is on (the header kebab's
+         "Add/Remove pagination"). 16x16dp < / > chevron icon buttons + the
+         "page / pages" counter; MainActivity.updatePageIndicator() is the single
+         place that drives the visibility and the button states. -->
+    <LinearLayout
+        android:id="@+id/pagination_bar"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:gravity="center"
+        android:paddingLeft="8dp"
+        android:paddingRight="8dp"
+        android:paddingTop="4dp"
+        android:paddingBottom="4dp"
+        android:visibility="gone">
+
+        <!-- 16x16dp chevron icon buttons (32px PNGs = 16dp on the ONYX at
+             density 2); the selector grayes the icon out when disabled, like
+             the old Holo button text did. -->
+        <ImageButton
+            android:id="@+id/page_prev"
+            android:layout_width="16dp"
+            android:layout_height="16dp"
+            android:src="@drawable/page_prev_icon"
+            android:background="?android:attr/selectableItemBackground"
+            android:contentDescription="@string/page_prev" />
+
+        <TextView
+            android:id="@+id/page_indicator"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_gravity="center_vertical"
+            android:layout_marginLeft="16dp"
+            android:layout_marginRight="16dp"
+            android:minWidth="64dp"
+            android:gravity="center"
+            android:textColor="#202020"
+            android:textSize="14sp" />
+
+        <ImageButton
+            android:id="@+id/page_next"
+            android:layout_width="16dp"
+            android:layout_height="16dp"
+            android:src="@drawable/page_next_icon"
+            android:background="?android:attr/selectableItemBackground"
+            android:contentDescription="@string/page_next" />
+    </LinearLayout>
 </LinearLayout>

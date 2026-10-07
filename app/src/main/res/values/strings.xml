@@ -4,7 +4,12 @@
 
     <string name="menu_refresh">Rescan</string>
     <string name="menu_import">Import</string>
+    <string name="menu_clear">Clear library</string>
     <string name="menu_settings">Settings</string>
+    <!-- The kebab's pagination toggle offers the OPPOSITE action (set in
+         MainActivity.showHeaderMenu); the title below is the XML default. -->
+    <string name="menu_pagination_add">Add pagination</string>
+    <string name="menu_pagination_remove">Remove pagination</string>
 
     <string name="title_scan">Scanning library…</string>
     <string name="title_no_books">No books found</string>
@@ -24,6 +29,11 @@
     <string name="remove_file_note">The file itself will not be deleted.</string>
     <string name="delete_yes">Remove</string>
     <string name="delete_no">Cancel</string>
+    <string name="clear_confirm_title">Clear the library?</string>
+    <string name="clear_confirm_message">Remove all books from the library?</string>
+    <string name="clear_file_note">The files themselves will not be deleted.</string>
+    <string name="clear_yes">Clear</string>
+    <string name="library_cleared">Library cleared</string>
 
     <!-- Tap confirmation: "Open this book?" (Open / Cancel) -->
     <string name="open_confirm_title">Open this book?</string>
@@ -42,4 +52,8 @@
     <string name="filter_all">All</string>
     <string name="view_list">List</string>
     <string name="view_grid">Tiles</string>
+
+    <!-- Pagination strip (the kebab's "Add pagination" mode) -->
+    <string name="page_prev">Prev</string>
+    <string name="page_next">Next</string>
 </resources>

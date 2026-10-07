@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The prev-page chevron with its disabled state (grayed): a static PNG does
+     not dim on its own the way the old Holo button text did, and android:alpha
+     on a selector item needs API 21 (minSdk is 19), so the dimmed variant is a
+     separate PNG. -->
+<selector xmlns:android="http://schemas.android.com/apk/res/android">
+    <item android:state_enabled="false" android:drawable="@drawable/ic_page_prev_disabled" />
+    <item android:drawable="@drawable/ic_page_prev" />
+</selector>

@@ -1,10 +1,11 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!-- Tile (grid) layout, per the reference screenshot, sized for the
      ONYX Boox Volta 3 (6", 1024x758, portrait width 758px):
-     3 tiles of 242px + 2 gaps of 16px = exactly 758px.
-     - cover on top (242 x 387px, keeps the old 5:8 cover proportion) inside a
-        frame with 8px rounded corners (bg_cover_frame); the cover bitmap is
-        clipped to the same shape by CoverLoader (Shape.ROUNDED_RECT),
+     3 tiles of 242px + 2 gaps of 8px = 742px — exactly the 758px width
+     minus the 8px+8px container padding (activity_main.xml).
+     - cover on top (242 x 334px) inside a frame with 8px rounded corners
+       (bg_cover_frame); the cover bitmap is clipped to the same shape by
+       CoverLoader (Shape.ROUNDED_RECT),
      - a small format label pinned to the bottom-left corner of the cover,
      - the book title right under the cover.
      The whole tile (cover + label + title) is ONE clickable item — GridView
@@ -21,7 +22,7 @@
     <FrameLayout
         android:id="@+id/cover_frame"
         android:layout_width="match_parent"
-        android:layout_height="387px"
+        android:layout_height="328px"
         android:background="@drawable/bg_cover_frame">
 
         <!-- centerCrop: the cover is scaled (uniformly, no distortion) to fill the
