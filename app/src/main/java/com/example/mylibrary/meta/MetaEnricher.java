@@ -15,6 +15,7 @@ import com.example.mylibrary.util.CoverCache;
 import java.io.ByteArrayInputStream;
 import java.io.File;
 import java.lang.ref.WeakReference;
+import java.util.ArrayList;
 import java.util.zip.ZipFile;
 import java.util.Collections;
 import java.util.Comparator;
@@ -28,13 +29,16 @@ import java.util.concurrent.TimeUnit;
  * (title/author/publisher/...) and the cover image.
  *
  * <p>Works book by book, fully off the UI thread: for every catalog row with
- * {@code meta_done = 0} it runs {@link MetaExtractor} and (for formats that can
- * carry a cover) {@link CoverExtractor}, persists the result through
- * {@link BookDatabase#updateMetadata} (which preserves {@code last_read} and never
- * clobbers user edits) and stores the cover bytes in {@link CoverCache}. After each
- * batch it calls {@code notifyChange} so the UI's {@code CursorLoader} picks the
- * new values up automatically — the user has been able to see and interact with
- * the whole library since stage 1 finished.</p>
+ * {@code meta_done = 0} it runs the single-pass parsers and stores the cover bytes
+ * in {@link CoverCache}, then commits the group's results through
+ * {@link BookDatabase#updateMetadataBatch} — every {@code BATCH_NOTIFY_EVERY} books
+ * in one SQLite transaction (same contract as the single-book path: it preserves
+ * {@code last_read} and never clobbers user edits). After each batch it calls
+ * {@code notifyChange} (throttled — no more often than once per
+ * {@code notifyMinIntervalMs} — plus one final, unthrottled notify at the end of
+ * the pass) so the UI's {@code CursorLoader} picks the new values up automatically
+ * — the user has been able to see and interact with the whole library since stage 1
+ * finished.</p>
  *
  * <p><b>Time budget.</b> Each file is parsed on a throwaway thread with a deadline
  * of {@link #DEFAULT_EXTRACT_TIMEOUT_MS} (2 minutes) for the whole per-file parse
@@ -88,6 +92,17 @@ public final class MetaEnricher {
 
     private static final int BATCH_NOTIFY_EVERY = 5;
     private static final long PROGRESS_MIN_INTERVAL_MS = 150L;
+
+    /** Default minimum gap between two of the worker's in-loop {@code notifyChange}
+     *  posts (the resolver callback is expensive, and a big pass would otherwise
+     *  fire it every few books): 300 ms, the middle of the 250-500 ms band. The
+     *  FINAL notify of a finished pass is never throttled. */
+    private static final long DEFAULT_NOTIFY_MIN_INTERVAL_MS = 300L;
+
+    /** The enforced minimum gap in milliseconds (see the default above).
+     *  Package-private so tests can widen it (and restore it) without waiting real
+     *  time, like {@link #extractTimeoutMs}. */
+    static volatile long notifyMinIntervalMs = DEFAULT_NOTIFY_MIN_INTERVAL_MS;
 
     /** Per-file parse time budget: 2 minutes for the whole (metadata + cover) parse. */
     static final long DEFAULT_EXTRACT_TIMEOUT_MS = 2 * 60 * 1000L;
@@ -319,27 +334,60 @@ public final class MetaEnricher {
                 int total = pending.size();
                 int done = 0;
                 long lastProgress = 0;
-                for (final Book book : pending) {
+                long lastNotify = 0;
+                for (int i = 0; i < total; i += BATCH_NOTIFY_EVERY) {
                     if (isCancelled()) break;
-                    enrichOneBook(appContext, db, book);
-                    done++;
-                    long now = System.currentTimeMillis();
-                    if (listenerRef.get() != null
-                            && (done % BATCH_NOTIFY_EVERY == 0 || done == total || now - lastProgress > PROGRESS_MIN_INTERVAL_MS)) {
-                        lastProgress = now;
-                        final int d = done, t = total;
-                        // The runnable re-resolves the (weak) listener at fire time,
-                        // so even the main-queue never pins a dead screen's callback.
-                        main.post(new Runnable() {
-                            @Override public void run() {
-                                OnProgress l = listenerRef.get();
-                                if (l != null) l.onProgress(d, t);
-                            }
-                        });
+                    final int to = Math.min(i + BATCH_NOTIFY_EVERY, total);
+                    // 1) Parse the group (each book on its own throwaway thread,
+                    //    under the per-file time budget) and collect the stage-2
+                    //    results: the database work of the whole group goes into ONE
+                    //    batch commit (below), not one autocommit per book.
+                    List<BookDatabase.MetaUpdate> batch =
+                            new ArrayList<BookDatabase.MetaUpdate>(to - i);
+                    for (int j = i; j < to; j++) {
+                        if (isCancelled()) break;
+                        Book book = pending.get(j);
+                        BookDatabase.MetaUpdate update = enrichOneBook(appContext, db, book);
+                        if (update != null) batch.add(update);
+                        done++;
+                        long now = System.currentTimeMillis();
+                        if (listenerRef.get() != null
+                                && (done % BATCH_NOTIFY_EVERY == 0 || done == total
+                                        || now - lastProgress > PROGRESS_MIN_INTERVAL_MS)) {
+                            lastProgress = now;
+                            final int d = done, t = total;
+                            // The runnable re-resolves the (weak) listener at fire
+                            // time, so even the main-queue never pins a dead
+                            // screen's callback.
+                            main.post(new Runnable() {
+                                @Override public void run() {
+                                    OnProgress l = listenerRef.get();
+                                    if (l != null) l.onProgress(d, t);
+                                }
+                            });
+                        }
                     }
-                    if (done % BATCH_NOTIFY_EVERY == 0 || done == total) {
-                        appContext.getContentResolver()
-                                .notifyChange(BookProvider.CONTENT_URI, null);
+                    if (!batch.isEmpty()) {
+                        try {
+                            db.updateMetadataBatch(batch);
+                        } catch (Exception e) {
+                            // A database error can never kill the worker: the failed
+                            // group was rolled back as a whole (nothing of it was
+                            // persisted) and its books keep meta_done = 0 — the next
+                            // rescan retries them.
+                            Log.e(TAG, "Could not persist the metadata batch (rolled back)", e);
+                        }
+                    }
+                    // 2) Announce the batch, THROTTLED: the resolver callback is
+                    //    expensive, and the final notify of a finished pass (below)
+                    //    is never throttled.
+                    if (done % BATCH_NOTIFY_EVERY == 0 && done < total) {
+                        long now = System.currentTimeMillis();
+                        if (now - lastNotify >= notifyMinIntervalMs) {
+                            lastNotify = now;
+                            appContext.getContentResolver()
+                                    .notifyChange(BookProvider.CONTENT_URI, null);
+                        }
                     }
                 }
                 // Final notify on a NORMAL finish (empty queue or last batch). After a
@@ -364,10 +412,16 @@ public final class MetaEnricher {
 
     /**
      * Extracts metadata (and the cover, if the format can carry one) for a single
-     * book and persists the result. Call from a background thread; idempotent.
+     * book and persists the result — a single-book commit (the import/detail fast
+     * path; the bulk worker uses the batch commit). Call from a background thread;
+     * idempotent.
      */
     public static void enrichOne(Context app, BookDatabase db, Book book) {
-        enrichOneBook(app.getApplicationContext(), db, book);
+        BookDatabase.MetaUpdate update =
+                enrichOneBook(app.getApplicationContext(), db, book);
+        if (update != null) {
+            persistMetadata(db, update.id, update.meta, update.fileReadable);
+        }
     }
 
     /** Stops the running worker (idempotent). Call from the UI lifecycle (onDestroy). */
@@ -405,12 +459,19 @@ public final class MetaEnricher {
         });
     }
 
-    private static void enrichOneBook(Context app, BookDatabase db, Book book) {
+    /**
+     * Parses one book (on a throwaway thread, under the per-file time budget) and
+     * returns the stage-2 result for the caller's batch commit — or {@code null}
+     * when the book overran the budget (it is flagged "un-enriched" right here and
+     * left in the queue for the next rescan, with nothing to commit). The cover,
+     * when found, is cached right away: it is a file write, independent of the
+     * database batch.
+     */
+    private static BookDatabase.MetaUpdate enrichOneBook(Context app, BookDatabase db, Book book) {
         File f = new File(book.path);
         if (!f.isFile()) {
             // File is gone: keep the file-name title and drain the queue slot.
-            persistMetadata(db, book.id, new MetaData(), false);
-            return;
+            return new BookDatabase.MetaUpdate(book.id, new MetaData(), false);
         }
 
         // Parse on a throwaway thread with a time budget (extractTimeoutMs).
@@ -445,7 +506,7 @@ public final class MetaEnricher {
             Thread.currentThread().interrupt();
             // The worker was cancelled while waiting: leave the book pending
             // (nothing written) for the next start; the parse thread is let go.
-            return;
+            return null;
         }
         if (!finished) {
             // Timed out. The book stays in the stage-2 queue (meta_done = 0) and is
@@ -456,7 +517,7 @@ public final class MetaEnricher {
                     + " ms; marked un-enriched (id=" + book.id
                     + "), retried last on the next rescan");
             markFailed(db, book.id);
-            return;
+            return null;
         }
         if (parseError[0] != null) {
             // The parse threw (corrupt file, I/O error, parser bug). Follow the
@@ -464,11 +525,9 @@ public final class MetaEnricher {
             // book done (no retry loop) and log the cause.
             Log.e(TAG, "Parse of " + f + " (id=" + book.id + ") failed; "
                     + "keeping the file-name title", parseError[0]);
-            persistMetadata(db, book.id, new MetaData(), true);
-            return;
+            return new BookDatabase.MetaUpdate(book.id, new MetaData(), true);
         }
 
-        persistMetadata(db, book.id, parsed.meta, true);
         byte[] cover = parsed.cover;
         if (cover != null && cover.length > 0) {
             // The cover may be a range of a larger array (the MOBI in-place trim):
@@ -480,13 +539,15 @@ public final class MetaEnricher {
                 try {
                     CoverCache.save(app, book.path, cover, off, len);
                 } catch (Exception e) {
-                    // The metadata is already persisted; a failed cover-cache write (e.g.
-                    // full disk) must not kill the worker — CoverLoader re-extracts on
-                    // demand when the cover is next shown.
+                    // The metadata is persisted with the group's batch commit; a
+                    // failed cover-cache write (e.g. full disk) must not kill the
+                    // worker — CoverLoader re-extracts on demand when the cover is
+                    // next shown.
                     Log.e(TAG, "Could not cache cover of " + f + " (id=" + book.id + ")", e);
                 }
             }
         }
+        return new BookDatabase.MetaUpdate(book.id, parsed.meta, true);
     }
 
     /** {@link BookDatabase#updateMetadata} isolated: a database error on one book

@@ -12,6 +12,7 @@ import android.content.Context;
 import android.os.Looper;
 
 import com.example.mylibrary.db.BookDatabase;
+import com.example.mylibrary.db.BookProvider;
 import com.example.mylibrary.model.Book;
 import com.example.mylibrary.testutil.TestFixtures;
 import com.example.mylibrary.util.CoverCache;
@@ -600,6 +601,68 @@ public class MetaEnricherTest {
         assertTrue(out.meta.found);
         assertEquals("Original Title", out.meta.title);
         assertArrayEquals(TestFixtures.coverBytes(), out.cover);
+    }
+
+    /** The worker's in-loop {@code notifyChange} posts are throttled (no more
+     *  often than once per {@code notifyMinIntervalMs}), but the FINAL notify of a
+     *  finished pass is always kept. A fast 12-book pass has TWO in-loop notify
+     *  opportunities (done=5 and done=10) plus the final one — under a 10-second
+     *  throttle the second in-loop post falls inside the window of the first and is
+     *  suppressed, so the observer sees exactly two changes: the first batch and
+     *  the final notify (an unthrottled pass would post three). */
+    @Test
+    public void startThrottlesTheBatchNotifiesButKeepsTheFinalOne() throws Exception {
+        for (int i = 0; i < 12; i++) {
+            File f = new File(folder.getRoot(), "t" + i + ".txt");
+            TestFixtures.writeText(f, "x" + i + "\n");
+            seedStageOne(f, "TXT", "t" + i);
+        }
+
+        final java.util.concurrent.atomic.AtomicInteger notifies =
+                new java.util.concurrent.atomic.AtomicInteger(0);
+        android.content.ContentResolver resolver = app.getContentResolver();
+        android.database.ContentObserver observer = new android.database.ContentObserver(null) {
+            @Override public void onChange(boolean selfChange) {
+                notifies.incrementAndGet();
+            }
+        };
+        resolver.registerContentObserver(BookProvider.CONTENT_URI, true, observer);
+
+        final MetaEnricher.ParseTask savedTask = MetaEnricher.parseTask;
+        final long savedInterval = MetaEnricher.notifyMinIntervalMs;
+        try {
+            MetaEnricher.notifyMinIntervalMs = 10000; // throttle the in-loop notifies away
+            MetaEnricher.parseTask = new MetaEnricher.ParseTask() {
+                @Override
+                public void parse(File file, String format, MetaEnricher.Parsed out) {
+                    out.meta = new MetaData(); // found = false: enough to mark done
+                }
+            };
+
+            final java.util.concurrent.atomic.AtomicBoolean workerDone =
+                    new java.util.concurrent.atomic.AtomicBoolean(false);
+            MetaEnricher.start(app, db, new MetaEnricher.OnProgress() {
+                @Override public void onProgress(int done, int total) { /* below */ }
+                @Override public void onFinished() { workerDone.set(true); }
+            });
+
+            ShadowLooper looper = shadowOf(Looper.getMainLooper());
+            long deadline = System.currentTimeMillis() + WAIT_MS;
+            while (System.currentTimeMillis() < deadline && !workerDone.get()) {
+                looper.idle();
+                Thread.sleep(10);
+            }
+            looper.idle(); // flush any pending observer callback
+            assertTrue("the worker must have finished the pass", workerDone.get());
+        } finally {
+            MetaEnricher.cancel();
+            MetaEnricher.notifyMinIntervalMs = savedInterval;
+            MetaEnricher.parseTask = savedTask;
+            resolver.unregisterContentObserver(observer);
+        }
+        assertTrue("the pass must drain the queue", db.needMeta().isEmpty());
+        assertEquals("under a huge throttle: first batch + final notify, the second "
+                + "in-loop post is suppressed", 2, notifies.get());
     }
 
     /** MOBI single-pass: the cover record is handed out IN PLACE — the record's own

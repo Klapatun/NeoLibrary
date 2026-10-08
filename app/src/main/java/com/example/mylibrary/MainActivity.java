@@ -752,8 +752,11 @@ public class MainActivity extends Activity
             // metadata, enrichment state and last_read timestamps in sync. The
             // catalog work completes even if the screen is gone — the upserts are
             // the scan's actual result (the next launch only re-binds the UI).
+            // The rows go in as batch commits (groups of
+            // BookDatabase.BATCH_SIZE rows per transaction), not one autocommit
+            // per book.
             if (found != null) {
-                for (Book b : found) db.upsertBasic(b);
+                db.upsertBasicBatch(found);
                 if (screenAlive) {
                     // The upserts above were committed on this (UI) thread, just now —
                     // so re-query the catalog ourselves and rebind the adapter.
