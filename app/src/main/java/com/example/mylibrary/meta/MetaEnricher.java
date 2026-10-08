@@ -12,8 +12,10 @@ import com.example.mylibrary.model.Book;
 import com.example.mylibrary.scan.Formats;
 import com.example.mylibrary.util.CoverCache;
 
+import java.io.ByteArrayInputStream;
 import java.io.File;
 import java.lang.ref.WeakReference;
+import java.util.zip.ZipFile;
 import java.util.Collections;
 import java.util.Comparator;
 import java.util.List;
@@ -117,44 +119,173 @@ public final class MetaEnricher {
         int coverLen = -1;
     }
 
-    /** The default {@link ParseTask}: the real extractors. */
+    /**
+     * The default {@link ParseTask}: the single-pass parsers. EPUB, FB2, FB2ZIP and
+     * MOBI are each parsed in ONE file session (metadata + cover together — see the
+     * {@code parse*SinglePass} methods below) instead of the public extractors'
+     * separate passes; the remaining formats keep the public extractors' best-effort
+     * path (metadata only, no cover).
+     */
     static volatile ParseTask parseTask = new ParseTask() {
         @Override
         public void parse(File file, String format, Parsed out) {
-            out.meta = MetaExtractor.extract(file);
-            if (format != null && format.equals("MOBI")) {
-                // In-place: the cover record array is kept as-is and only its image
-                // boundary is reported (the JPEG is trimmed at the EOI inside the
-                // array), so the cache write below stores exactly the image — no copy.
-                parseMobiCoverInPlace(file, out);
-            } else if (CoverExtractor.canHaveCover(format)) {
-                out.cover = CoverExtractor.extract(file);
+            if (format != null) {
+                if (format.equals("EPUB")) { parseEpubSinglePass(file, out); return; }
+                if (format.equals("FB2")) { parseFb2SinglePass(file, out); return; }
+                if (format.equals("FB2ZIP")) { parseFb2ZipSinglePass(file, out); return; }
+                if (format.equals("MOBI")) { parseMobiSinglePass(file, out); return; }
             }
+            // Everything else (TXT, HTML, PDF, ...): best-effort metadata, no cover.
+            out.meta = MetaExtractor.extract(file);
         }
     };
 
+    // ------------------------------------------------------------------
+    // single-pass parse: one file session per book (metadata + cover together)
+    // ------------------------------------------------------------------
+
     /**
-     * The in-place MOBI cover lookup for the default parse task: one parser session,
-     * the cover record's own array is handed out (untrimmed) together with the image
-     * length inside it ({@link CoverExtractor#imageLen}). A malformed file simply
-     * yields no cover (same contract as {@link CoverExtractor#extract}).
+     * EPUB, one session: a single {@link ZipFile} open and three entry reads
+     * (container.xml, the OPF, the cover image) — instead of the public fallback's
+     * five sequential archive passes. A malformed archive degrades to "not found"
+     * (the same contract as the public extractors). Package-private so the tests
+     * share it with the default parse task.
      */
-    private static void parseMobiCoverInPlace(File file, Parsed out) {
+    static void parseEpubSinglePass(File file, Parsed out) {
+        ZipFile zip = null;
+        try {
+            zip = new ZipFile(file);
+            String opfPath = MetaExtractor.opfPathFromContainer(zip);
+            if (opfPath == null) {
+                out.meta = notFound();
+                return;
+            }
+            byte[] opfBytes = CoverExtractor.readEntryBytes(zip, opfPath);
+            if (opfBytes == null) {
+                out.meta = notFound();
+                return;
+            }
+            MetaData md = new MetaData();
+            MetaExtractor.parseOpf(new ByteArrayInputStream(opfBytes), md);
+            md.found = md.title != null && md.title.length() > 0;
+            out.meta = md;
+            // The cover is best-effort on top: a missing/unreadable image keeps the
+            // metadata (same as the two-public-call path).
+            try {
+                out.cover = CoverExtractor.coverFromOpf(new String(opfBytes, "UTF-8"),
+                        opfPath, zip);
+            } catch (Exception e) {
+                Log.w(TAG, "EPUB cover of " + file + " could not be read", e);
+            }
+        } catch (Exception e) {
+            Log.w(TAG, "Single-pass EPUB parse of " + file, e);
+            out.meta = notFound();
+        } finally {
+            closeQuietly(zip);
+        }
+    }
+
+    /**
+     * FB2, one pass: the batch-1 streaming header read ({@link
+     * CoverExtractor#readFb2Header}) yields BOTH the metadata (the description block)
+     * and the cover (the binary blocks) from a single pass over the file — the body
+     * (the bulk of a real book) is never read or parsed.
+     */
+    static void parseFb2SinglePass(File file, Parsed out) {
+        try {
+            byte[] header = CoverExtractor.readFb2Header(file);
+            out.meta = MetaExtractor.parseFb2Xml(new ByteArrayInputStream(header));
+            out.cover = CoverExtractor.coverFromFb2Bytes(header);
+        } catch (Exception e) {
+            Log.w(TAG, "Single-pass FB2 parse of " + file, e);
+            out.meta = notFound();
+        }
+    }
+
+    /**
+     * FB2ZIP, one session: a single {@link ZipFile} open — the central directory is
+     * scanned for the inner {@code .fb2} (nothing else is decompressed); the
+     * metadata + cover come from the inner document's bytes, and when the inner
+     * document carries no cover, the first image entry (a name containing "cover"
+     * wins outright) is read instead.
+     */
+    static void parseFb2ZipSinglePass(File file, Parsed out) {
+        ZipFile zip = null;
+        try {
+            zip = new ZipFile(file);
+            byte[] fb2 = CoverExtractor.readFb2EntryBytes(zip);
+            if (fb2 == null) {
+                out.meta = notFound();
+                return;
+            }
+            out.meta = MetaExtractor.parseFb2Xml(new ByteArrayInputStream(fb2));
+            out.cover = CoverExtractor.coverFromFb2Bytes(fb2);
+            if (out.cover == null) {
+                try {
+                    out.cover = CoverExtractor.looseImageFromZip(zip);
+                } catch (Exception e) {
+                    Log.w(TAG, "FB2ZIP loose cover of " + file + " could not be read", e);
+                }
+            }
+        } catch (Exception e) {
+            Log.w(TAG, "Single-pass FB2ZIP parse of " + file, e);
+            out.meta = notFound();
+        } finally {
+            closeQuietly(zip);
+        }
+    }
+
+    /**
+     * MOBI, one session: a single {@link MobiParser} — open (the PalmDB/MOBI/EXTH
+     * headers give the metadata), then the cover record with the batch-3 in-place
+     * trim: the record's own array is handed out with the image length inside it
+     * (JPEG cut at its EOI), so nothing is copied.
+     */
+    static void parseMobiSinglePass(File file, Parsed out) {
         MobiParser p = new MobiParser();
         try {
-            if (!p.open(file)) return;
-            if (p.coverRecord < 0) return;
-            byte[] raw = p.readRecord(p.coverRecord);
-            if (raw == null || raw.length == 0) return;
-            int len = CoverExtractor.imageLen(raw);
-            if (len <= 0) return;
-            out.cover = raw;
-            out.coverOff = 0;
-            out.coverLen = len;
-        } catch (Exception ignored) {
-            // Malformed file: no cover (metadata already recorded by the caller).
+            if (!p.open(file)) {
+                out.meta = notFound();
+                return;
+            }
+            MetaData md = new MetaData();
+            md.title = p.title;
+            md.author = p.author;
+            md.publisher = p.publisher;
+            md.description = p.description;
+            md.language = p.language;
+            md.found = md.title != null && md.title.length() > 0;
+            out.meta = md;
+            if (p.coverRecord >= 0) {
+                byte[] raw = p.readRecord(p.coverRecord);
+                if (raw != null && raw.length > 0) {
+                    int len = CoverExtractor.imageLen(raw);
+                    if (len > 0) {
+                        out.cover = raw;
+                        out.coverOff = 0;
+                        out.coverLen = len;
+                    }
+                }
+            }
+        } catch (Exception e) {
+            Log.w(TAG, "Single-pass MOBI parse of " + file, e);
+            out.meta = notFound();
         } finally {
             p.close();
+        }
+    }
+
+    private static MetaData notFound() {
+        MetaData md = new MetaData();
+        md.found = false;
+        return md;
+    }
+
+    private static void closeQuietly(java.io.Closeable c) {
+        if (c == null) return;
+        try {
+            c.close();
+        } catch (Exception ignored) {
         }
     }
 

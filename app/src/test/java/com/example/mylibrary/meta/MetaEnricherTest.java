@@ -29,6 +29,7 @@ import org.robolectric.shadows.ShadowLooper;
 import java.io.File;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Base64;
 import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -537,5 +538,95 @@ public class MetaEnricherTest {
             MetaEnricher.cancel();
             MetaEnricher.parseTask = savedTask;
         }
+    }
+
+    // ------------------------------------------------------------------
+    // single-pass parse: one file session per book (metadata + cover together)
+    // ------------------------------------------------------------------
+
+    /** EPUB single-pass: one ZipFile session yields BOTH the metadata and the cover —
+     *  the OPF's title and the cover image entry's exact bytes, no second pass. */
+    @Test
+    public void parseEpubSinglePassReadsMetadataAndCoverTogether() throws Exception {
+        File epub = new File(folder.getRoot(), "single.epub");
+        TestFixtures.writeEpub(epub, TestFixtures.OPF_WITH_COVER);
+
+        MetaEnricher.Parsed out = new MetaEnricher.Parsed();
+        MetaEnricher.parseEpubSinglePass(epub, out);
+
+        assertNotNull(out.meta);
+        assertTrue(out.meta.found);
+        assertEquals("Covered Book", out.meta.title);
+        assertEquals("Author", out.meta.author);
+        assertNotNull("the cover must come from the same session", out.cover);
+        assertArrayEquals(TestFixtures.coverBytes(), out.cover);
+    }
+
+    /** FB2ZIP single-pass: the inner FB2's own {@code <binary>} block is the cover
+     *  source (the same path as a plain FB2), everything in one ZipFile session. */
+    @Test
+    public void parseFb2ZipSinglePassTakesTheCoverFromTheInnerBinary() throws Exception {
+        byte[] cover = TestFixtures.coverBytes();
+        String inner = TestFixtures.buildFb2WithCover(
+                Base64.getEncoder().encodeToString(cover));
+        Map<String, byte[]> entries = new LinkedHashMap<String, byte[]>();
+        entries.put("inner.fb2", inner.getBytes("UTF-8"));
+        File z = new File(folder.getRoot(), "inner.fb2.zip");
+        TestFixtures.writeZip(z, entries);
+
+        MetaEnricher.Parsed out = new MetaEnricher.Parsed();
+        MetaEnricher.parseFb2ZipSinglePass(z, out);
+
+        assertNotNull(out.meta);
+        assertTrue(out.meta.found);
+        assertEquals("With Cover", out.meta.title);
+        assertArrayEquals(cover, out.cover);
+    }
+
+    /** FB2ZIP single-pass fallback: when the inner document carries no coverpage, the
+     *  loose image entry ({@code cover.jpg}) wins — still one ZipFile session. */
+    @Test
+    public void parseFb2ZipSinglePassFallsBackToTheLooseImageEntry() throws Exception {
+        Map<String, byte[]> entries = new LinkedHashMap<String, byte[]>();
+        entries.put("inner.fb2", TestFixtures.FB2_FULL.getBytes("UTF-8"));
+        entries.put("cover.jpg", TestFixtures.coverBytes());
+        File z = new File(folder.getRoot(), "loose.fb2.zip");
+        TestFixtures.writeZip(z, entries);
+
+        MetaEnricher.Parsed out = new MetaEnricher.Parsed();
+        MetaEnricher.parseFb2ZipSinglePass(z, out);
+
+        assertNotNull(out.meta);
+        assertTrue(out.meta.found);
+        assertEquals("Original Title", out.meta.title);
+        assertArrayEquals(TestFixtures.coverBytes(), out.cover);
+    }
+
+    /** MOBI single-pass: the cover record is handed out IN PLACE — the record's own
+     *  array (JPEG + the 4 padding bytes the record carries past the EOI) with the
+     *  image length reported inside it, so nothing is copied. */
+    @Test
+    public void parseMobiSinglePassHandsOutTheCoverRecordInPlace() throws Exception {
+        byte[] jpeg = new byte[36];
+        jpeg[0] = (byte) 0xFF; jpeg[1] = (byte) 0xD8; // SOI
+        for (int i = 2; i < 34; i++) jpeg[i] = (byte) (i * 3 + 1);
+        jpeg[34] = (byte) 0xFF; jpeg[35] = (byte) 0xD9; // EOI
+        File mobi = new File(folder.getRoot(), "onepass.mobi");
+        TestFixtures.writeMobi(mobi, "One Pass", "O. Author", "O Press", "A story.", "en",
+                jpeg, 2, 1);
+
+        MetaEnricher.Parsed out = new MetaEnricher.Parsed();
+        MetaEnricher.parseMobiSinglePass(mobi, out);
+
+        assertNotNull(out.meta);
+        assertTrue(out.meta.found);
+        assertEquals("One Pass", out.meta.title);
+        assertNotNull(out.cover);
+        assertEquals("the record's own array is handed out (jpeg + 4 padding bytes)",
+                jpeg.length + 4, out.cover.length);
+        assertEquals(0, out.coverOff);
+        assertEquals("the image range is reported in place, nothing is copied",
+                jpeg.length, out.coverLen);
+        assertArrayEquals(jpeg, Arrays.copyOfRange(out.cover, 0, out.coverLen));
     }
 }

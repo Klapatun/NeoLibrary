@@ -8,14 +8,16 @@ import java.io.BufferedInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.FileInputStream;
+import java.io.IOException;
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
+import java.util.Enumeration;
 import java.util.HashMap;
 import java.util.Locale;
 import java.util.Map;
 import java.util.zip.ZipEntry;
-import java.util.zip.ZipInputStream;
+import java.util.zip.ZipFile;
 
 /**
  * Extracts a cover image (as raw image bytes) from a book file.
@@ -83,14 +85,32 @@ public final class CoverExtractor {
     // -------------------------------------------------------------------
 
     private static byte[] extractEpub(File file) throws Exception {
-        String opfPath = findOpfPath(file);
-        if (opfPath == null) return null;
+        // One ZipFile session: container.xml -> OPF path -> the cover's entry.
+        ZipFile zip = new ZipFile(file);
+        try {
+            String opfPath = MetaExtractor.opfPathFromContainer(zip);
+            if (opfPath == null) return null;
+            String opf = readEntryAsString(zip, opfPath);
+            if (opf == null) return null;
+            return coverFromOpf(opf, opfPath, zip);
+        } finally {
+            zip.close();
+        }
+    }
 
-        // Read the OPF once and parse out: (a) cover-image specification, (b) manifest
-        // items (id -> href) so we can resolve the cover's href inside the archive.
-        String opf = readZipEntry(file, opfPath);
-        if (opf == null) return null;
-
+    /**
+     * Resolves the cover image an OPF document refers to and returns its bytes from the
+     * given (already open) archive — one entry read. The cover's id comes from the
+     * EPUB2 {@code <meta name="cover" content="id"/>} or the EPUB3
+     * {@code <meta property="cover-image" id="..."/>} form, maps through the manifest
+     * (id -> href) to the image's href, and the href is resolved relative to the OPF's
+     * directory inside the archive. {@code null} when the OPF declares no resolvable
+     * cover or the entry is missing.
+     *
+     * <p>Package-private so the single-pass enricher parse shares it with the public
+     * {@link #extract} fallback.</p>
+     */
+    static byte[] coverFromOpf(String opf, String opfPath, ZipFile zip) throws Exception {
         String coverId = null;
         // EPUB2: <meta name="cover" content="id"/>
         int idx = opf.indexOf("name=\"cover\"");
@@ -139,7 +159,7 @@ public final class CoverExtractor {
         String entry = dir + href;
         // Normalise "../" and "./" segments best-effort.
         entry = normalise(entry);
-        return readZipEntryBytes(file, entry);
+        return readEntryBytes(zip, entry);
     }
 
     private static Map<String, String> parseManifest(String opf) {
@@ -245,12 +265,19 @@ public final class CoverExtractor {
      * (e.g. {@code cover.jpg}) shipped next to the {@code .fb2} inside the archive.
      */
     private static byte[] extractFb2Zip(File file) throws Exception {
-        byte[] xml = readFb2Entry(file);
-        if (xml != null) {
-            byte[] inner = coverFromFb2Bytes(xml);
-            if (inner != null) return inner;
+        // One ZipFile session: the central directory is scanned for the inner .fb2
+        // (nothing is decompressed until the chosen entry is actually read).
+        ZipFile zip = new ZipFile(file);
+        try {
+            byte[] xml = readFb2EntryBytes(zip);
+            if (xml != null) {
+                byte[] inner = coverFromFb2Bytes(xml);
+                if (inner != null) return inner;
+            }
+            return looseImageFromZip(zip);
+        } finally {
+            zip.close();
         }
-        return findLooseImageEntry(file);
     }
 
     /**
@@ -468,45 +495,41 @@ public final class CoverExtractor {
     }
 
     /**
-     * Returns the bytes of the first {@code .fb2} file entry in the given ZIP archive
-     * (entry names matched case-insensitively, so a book tucked into a subfolder is
-     * found too), or {@code null} if the archive contains no FB2 document.
+     * Returns the bytes of the first {@code .fb2} file entry in the given (already
+     * open) ZIP archive — the central directory is scanned, nothing is decompressed
+     * except the entry itself (entry names matched case-insensitively, so a book
+     * tucked into a subfolder is found too). {@code null} when the archive contains
+     * no FB2 document. Package-private so the single-pass enricher shares it with the
+     * public {@link #extract} fallback.
      */
-    private static byte[] readFb2Entry(File file) throws Exception {
-        ZipInputStream zip = new ZipInputStream(new BufferedInputStream(new FileInputStream(file)));
-        try {
-            ZipEntry e;
-            while ((e = zip.getNextEntry()) != null) {
-                if (!e.isDirectory() && e.getName().toLowerCase(Locale.US).endsWith(".fb2")) {
-                    return readToEndBytes(zip);
-                }
+    static byte[] readFb2EntryBytes(ZipFile zip) throws IOException {
+        Enumeration<? extends ZipEntry> it = zip.entries();
+        while (it.hasMoreElements()) {
+            ZipEntry e = it.nextElement();
+            if (!e.isDirectory() && e.getName().toLowerCase(Locale.US).endsWith(".fb2")) {
+                return readEntryBytes(zip, e);
             }
-        } finally {
-            zip.close();
         }
         return null;
     }
 
     /**
-     * Scans the archive for a loose image entry: an entry whose name ends with a common
-     * image extension. An entry whose name also contains "cover" (the typical
-     * {@code cover.jpg} layout of FB2.ZIP packages) wins outright; otherwise the first
-     * image entry in archive order is returned. {@code null} when there is no image.
+     * Scans the given (already open) archive for a loose image entry: an entry whose
+     * name ends with a common image extension. An entry whose name also contains
+     * "cover" (the typical {@code cover.jpg} layout of FB2.ZIP packages) wins
+     * outright; otherwise the first image entry in archive order is returned.
+     * {@code null} when there is no image.
      */
-    private static byte[] findLooseImageEntry(File file) throws Exception {
+    static byte[] looseImageFromZip(ZipFile zip) throws IOException {
         byte[] fallback = null;
-        ZipInputStream zip = new ZipInputStream(new BufferedInputStream(new FileInputStream(file)));
-        try {
-            ZipEntry e;
-            while ((e = zip.getNextEntry()) != null) {
-                if (e.isDirectory()) continue;
-                String name = e.getName().toLowerCase(Locale.US);
-                if (!isImageName(name)) continue;
-                if (name.contains("cover")) return readToEndBytes(zip);
-                if (fallback == null) fallback = readToEndBytes(zip);
-            }
-        } finally {
-            zip.close();
+        Enumeration<? extends ZipEntry> it = zip.entries();
+        while (it.hasMoreElements()) {
+            ZipEntry e = it.nextElement();
+            if (e.isDirectory()) continue;
+            String name = e.getName().toLowerCase(Locale.US);
+            if (!isImageName(name)) continue;
+            if (name.contains("cover")) return readEntryBytes(zip, e);
+            if (fallback == null) fallback = readEntryBytes(zip, e);
         }
         return fallback;
     }
@@ -594,62 +617,31 @@ public final class CoverExtractor {
     // shared helpers
     // -------------------------------------------------------------------
 
-    private static String findOpfPath(File file) throws Exception {
-        ZipInputStream zip = new ZipInputStream(new BufferedInputStream(new FileInputStream(file)));
+    /** The bytes of the named entry of an already-open archive (one random read),
+     *  or {@code null} when the archive has no such entry. */
+    static byte[] readEntryBytes(ZipFile zip, String entryName) throws IOException {
+        return readEntryBytes(zip, zip.getEntry(entryName));
+    }
+
+    /** The bytes of the given entry of an already-open archive (one random read),
+     *  or {@code null} for a {@code null} entry. */
+    static byte[] readEntryBytes(ZipFile zip, ZipEntry entry) throws IOException {
+        if (entry == null) return null;
+        InputStream in = zip.getInputStream(entry);
         try {
-            ZipEntry e;
-            while ((e = zip.getNextEntry()) != null) {
-                if (e.getName().equalsIgnoreCase("META-INF/container.xml")) {
-                    String xml = readToEnd(zip);
-                    int idx = xml.indexOf("full-path");
-                    if (idx < 0) return null;
-                    int s = xml.indexOf('\"', idx);
-                    int en = xml.indexOf('\"', s + 1);
-                    return xml.substring(s + 1, en);
-                }
-            }
+            return readToEndBytes(in);
         } finally {
-            zip.close();
+            in.close();
         }
-        return null;
     }
 
-    private static String readZipEntry(File file, String entryName) throws Exception {
-        ZipInputStream zip = new ZipInputStream(new BufferedInputStream(new FileInputStream(file)));
-        try {
-            ZipEntry e;
-            while ((e = zip.getNextEntry()) != null) {
-                if (e.getName().equals(entryName)) {
-                    byte[] data = readToEndBytes(zip);
-                    return new String(data, "UTF-8");
-                }
-            }
-        } finally {
-            zip.close();
-        }
-        return null;
+    /** The UTF-8 text of the named entry, or {@code null} when absent. */
+    static String readEntryAsString(ZipFile zip, String entryName) throws IOException {
+        byte[] data = readEntryBytes(zip, entryName);
+        return data == null ? null : new String(data, "UTF-8");
     }
 
-    private static byte[] readZipEntryBytes(File file, String entryName) throws Exception {
-        ZipInputStream zip = new ZipInputStream(new BufferedInputStream(new FileInputStream(file)));
-        try {
-            ZipEntry e;
-            while ((e = zip.getNextEntry()) != null) {
-                if (e.getName().equals(entryName)) {
-                    return readToEndBytes(zip);
-                }
-            }
-        } finally {
-            zip.close();
-        }
-        return null;
-    }
-
-    private static String readToEnd(ZipInputStream zip) throws Exception {
-        return new String(readToEndBytes(zip), "UTF-8");
-    }
-
-    private static byte[] readToEndBytes(InputStream in) throws Exception {
+    private static byte[] readToEndBytes(InputStream in) throws IOException {
         ByteArrayOutputStream baos = new ByteArrayOutputStream();
         byte[] buf = new byte[8192];
         int n;
