@@ -19,6 +19,10 @@ import com.example.mylibrary.model.Book;
 
 import java.io.File;
 import java.lang.ref.WeakReference;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
 
 /**
  * Loads a book's cover bitmap off the UI thread, caching results in memory.
@@ -26,6 +30,12 @@ import java.lang.ref.WeakReference;
  * <p>To avoid stale images when a row is recycled, each {@link ImageView} is tagged
  * with its book path; the cover is only applied if the tag still matches when loading
  * finishes.</p>
+ *
+ * <p>Loads are deduplicated per key: while a cover is decoding, every tile that gets
+ * bound to the same book joins the in-flight task instead of spawning a second decode
+ * (see {@link #load}), and the result is applied to all of them when the decode lands.
+ * CIRCLE bitmaps (the small list-mode badge) are deliberately NOT put into the memory
+ * cache — the other shapes are.</p>
  *
  * <p>The in-flight tasks hold their views by WEAK reference only (and the application
  * context, never the Activity's): the user may leave the screen while a cover is still
@@ -64,10 +74,38 @@ public class CoverLoader {
         ROUNDED_RECT
     }
 
-    /** Applies the cached cover to {@code imageView} or kicks off an async load.
-     *  When a cover is successfully shown, {@code badgeToHide} (if any) is hidden. */
+    /** The in-flight registry: one shared decode per {@link #coverKey}. Keyed by the
+     *  FULL key (format|path|shape) — never just format|path — because the decoded
+     *  bitmap depends on the shape (a CIRCLE tile and a grid tile of the same book
+     *  would otherwise share one decode and get the wrong bitmap). Touched from the
+     *  main thread only ({@link #load} and the tasks' {@code onPostExecute} both run
+     *  there), so it needs no locking. */
+    private static final Map<String, InFlight> IN_FLIGHT = new HashMap<String, InFlight>();
+
+    /** How many {@link CoverTask}s have been spawned. Package-private so a test can
+     *  verify the in-flight dedup (two loads of the same key must spawn one task). */
+    static int spawnedTasks = 0;
+
+    /** Applies the cached cover to {@code imageView} or joins/kicks off the shared
+     *  async load for the key. When a cover is successfully shown, {@code badgeToHide}
+     *  (if any) is hidden.
+     *
+     *  <p><b>In-flight dedup.</b> When a decode for the key is already running, this
+     *  call does NOT spawn a second task: the tile is simply added to the in-flight
+     *  task's target list, and when the decode finishes the bitmap is applied to every
+     *  tile still bound to the key (each after its own tag check). A fast list scroll
+     *  re-binds the same book to several recycled tiles while the first decode is still
+     *  running — without the registry each rebind would re-decode the same cover.</p>
+     *
+     *  <p><b>No flicker on rebind.</b> {@code setImageBitmap(null)} is skipped when the
+     *  tile was already bound to this key before the call (a re-layout pass, not a
+     *  recycle to another book): such a tile already shows this book's placeholder
+     *  state, and clearing it again would only blink it.</p> */
     public static void load(Book book, ImageView imageView, final View badgeToHide, Shape shape) {
         String key = coverKey(book, shape);
+        // What the tile was bound to before this call: if it was already bound to THIS
+        // key, it is being re-bound (a re-layout), not recycled from another book.
+        Object prevTag = imageView.getTag(R.id.cover_tag);
         imageView.setTag(R.id.cover_tag, key);
 
         Bitmap cached = CACHE.get(key);
@@ -76,8 +114,25 @@ public class CoverLoader {
             if (badgeToHide != null) badgeToHide.setVisibility(View.GONE);
             return;
         }
-        imageView.setImageBitmap(null);
-        new CoverTask(imageView, key, badgeToHide, shape).execute(book);
+
+        InFlight inFlight = IN_FLIGHT.get(key);
+        if (inFlight == null) {
+            inFlight = new InFlight();
+            IN_FLIGHT.put(key, inFlight);
+        }
+        inFlight.targets.add(new Target(imageView, badgeToHide));
+        if (inFlight.task == null) {
+            // The first load for this key spawns the shared task; later loads just join.
+            inFlight.task = new CoverTask(
+                    imageView.getContext().getApplicationContext(), key, shape, inFlight);
+            inFlight.task.execute(book);
+        }
+        if (!key.equals(prevTag)) {
+            // The tile was showing another book's content: clear it so the old cover
+            // does not linger until the shared decode lands. (A tile already bound to
+            // this key is left alone — see the javadoc.)
+            imageView.setImageBitmap(null);
+        }
     }
 
     private static String coverKey(Book b, Shape shape) {
@@ -87,22 +142,43 @@ public class CoverLoader {
         return b.format + "|" + b.path + "|" + shape;
     }
 
+    /** One in-flight decode and the tiles waiting on it. The task runs on the shared
+     *  pool and may outlive the screen that started it, so every target is held ONLY
+     *  WEAKLY (see the class javadoc); a tile recycled for another book (or a dead
+     *  screen) simply drops out at apply time — the decode itself still lands in the
+     *  static cache, so the next bind for that book is instant. */
+    private static final class InFlight {
+        CoverTask task;
+        final List<Target> targets = new ArrayList<Target>(4);
+    }
+
+    /** One tile (and its letter badge, if it has one) waiting for a shared decode. */
+    private static final class Target {
+        final WeakReference<ImageView> imageView;
+        final WeakReference<View> badge;
+        Target(ImageView iv, View badgeToHide) {
+            this.imageView = new WeakReference<ImageView>(iv);
+            this.badge = (badgeToHide == null) ? null : new WeakReference<View>(badgeToHide);
+        }
+    }
+
     /** One in-flight cover load. Runs on the shared pool, so it may outlive the screen
-     *  that started it: it holds its views ONLY WEAKLY (see the class javadoc) and the
-     *  application context — never the view's (Activity's) context. */
+     *  that started it: it holds its targets (in {@link InFlight}) ONLY WEAKLY (see
+     *  the class javadoc) and the application context — never the view's (Activity's)
+     *  context. One task serves EVERY tile bound to its key (the in-flight registry in
+     *  {@link #load} deduplicates the loads). */
     private static class CoverTask extends AsyncTask<Book, Void, Bitmap> {
         private final android.content.Context context;
-        private final WeakReference<ImageView> imageView;
         private final String key;
-        private final WeakReference<View> badgeToHide;
         private final Shape shape;
+        private final InFlight inFlight;
 
-        CoverTask(ImageView iv, String key, View badgeToHide, Shape shape) {
-            this.context = iv.getContext().getApplicationContext();
-            this.imageView = new WeakReference<ImageView>(iv);
+        CoverTask(android.content.Context context, String key, Shape shape, InFlight inFlight) {
+            this.context = context;
             this.key = key;
-            this.badgeToHide = new WeakReference<View>(badgeToHide);
             this.shape = shape;
+            this.inFlight = inFlight;
+            spawnedTasks++;
         }
 
         @Override protected Bitmap doInBackground(Book... params) {
@@ -142,25 +218,33 @@ public class CoverLoader {
         }
 
         @Override protected void onPostExecute(Bitmap result) {
-            // The decode is done — land it in the static cache regardless of what
-            // happened to the views: even if the tile was recycled for another book
-            // (or the screen went away), the next bind for THIS book is instant.
-            if (result != null) CACHE.put(key, result);
-            ImageView iv = imageView.get();
-            if (iv == null) return; // the screen went away while the load was in flight
-            Object tag = iv.getTag(R.id.cover_tag);
-            if (!key.equals(tag)) return; // tile was recycled for another book meanwhile
-            if (result == null) {
-                // No extractable cover: restore the letter badge so the tile never
-                // shows neither a cover nor its placeholder (bindGrid hid it in
-                // advance while the load was in flight).
-                View badge = badgeToHide.get();
-                if (badge != null) badge.setVisibility(View.VISIBLE);
-                return;
+            // The decode is done: take the key out of the in-flight registry (a later
+            // load for the same key spawns a fresh task) and apply the result to every
+            // tile that is STILL bound to this key — each after its own tag check,
+            // because a tile may have been recycled for another book meanwhile (or the
+            // screen may have gone away).
+            IN_FLIGHT.remove(key);
+            // CIRCLE bitmaps are NOT cached (option (v) of the optimization plan):
+            // the 48dp badge is tiny and — thanks to the in-flight dedup — a list
+            // scroll re-decodes it at most once per book, while caching it would push
+            // the expensive ROUNDED_RECT/SQUARE bitmaps out of the LruCache.
+            if (result != null && shape != Shape.CIRCLE) CACHE.put(key, result);
+            for (Target t : inFlight.targets) {
+                ImageView iv = t.imageView.get();
+                if (iv == null) continue; // the screen went away while the load was in flight
+                if (!key.equals(iv.getTag(R.id.cover_tag))) continue; // recycled for another book
+                if (result == null) {
+                    // No extractable cover: restore the letter badge so the tile never
+                    // shows neither a cover nor its placeholder (the bind hid it in
+                    // advance while the load was in flight).
+                    View badge = (t.badge == null) ? null : t.badge.get();
+                    if (badge != null) badge.setVisibility(View.VISIBLE);
+                    continue;
+                }
+                iv.setImageBitmap(result);
+                View badge = (t.badge == null) ? null : t.badge.get();
+                if (badge != null) badge.setVisibility(View.GONE);
             }
-            iv.setImageBitmap(result);
-            View badge = badgeToHide.get();
-            if (badge != null) badge.setVisibility(View.GONE);
         }
     }
 
