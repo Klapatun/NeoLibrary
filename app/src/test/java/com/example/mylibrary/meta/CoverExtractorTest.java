@@ -135,6 +135,118 @@ public class CoverExtractorTest {
         assertNull(CoverExtractor.extract(fb2));
     }
 
+    /**
+     * A real FB2's body (the bulk of the file) follows the binary block: the streaming
+     * reader must stop at {@code <body} and still find the cover — and the metadata
+     * path (separate pass, same {@code </description>} stop) must work on the same file.
+     */
+    @Test
+    public void fb2WithLargeBodyAfterDescriptionStillYieldsCoverAndMeta() throws Exception {
+        byte[] cover = TestFixtures.coverBytes();
+        String base64 = Base64.getEncoder().encodeToString(cover);
+        StringBuilder sb = new StringBuilder(1 << 20);
+        sb.append("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n");
+        sb.append("<FictionBook xmlns=\"http://www.gribuser.ru/xml/fictionbook/2.0\" "
+                + "xmlns:l=\"http://www.w3.org/1999/xlink\">\n");
+        sb.append("  <description>\n");
+        sb.append("    <title-info>\n");
+        sb.append("      <title>Big Body</title>\n");
+        sb.append("    </title-info>\n");
+        sb.append("    <coverpage>\n");
+        sb.append("      <image l:href=\"#coverimg\"/>\n");
+        sb.append("    </coverpage>\n");
+        sb.append("  </description>\n");
+        sb.append("  <binary id=\"coverimg\" content-type=\"image/jpeg\">")
+                .append(base64).append("</binary>\n");
+        sb.append("  <body>\n");
+        for (int i = 0; i < 12000; i++) {
+            sb.append("    <p>Filler paragraph number ").append(i).append(". </p>\n");
+        }
+        sb.append("  </body>\n");
+        sb.append("</FictionBook>\n");
+        TestFixtures.writeText(fb2, sb.toString());
+
+        byte[] extracted = CoverExtractor.extract(fb2);
+        assertNotNull("cover must be found before the body", extracted);
+        assertTrue(java.util.Arrays.equals(extracted, cover));
+
+        MetaData md = MetaExtractor.extract(fb2);
+        assertTrue(md.found);
+        assertEquals("Big Body", md.title);
+    }
+
+    /** base64 with newlines and tabs (wrapped lines are common in real FB2 files) must
+     *  decode to exactly the original bytes. */
+    @Test
+    public void fb2CoverBase64WithLineBreaksAndTabsIsDecoded() throws Exception {
+        byte[] cover = TestFixtures.coverBytes();
+        String raw = Base64.getEncoder().encodeToString(cover);
+        StringBuilder broken = new StringBuilder(raw.length() + 64);
+        for (int i = 0; i < raw.length(); i++) {
+            broken.append(raw.charAt(i));
+            if (i % 20 == 0) broken.append('\n');
+            else if (i % 7 == 0) broken.append('\t');
+        }
+        TestFixtures.writeText(fb2, TestFixtures.buildFb2WithCover(broken.toString()));
+
+        byte[] extracted = CoverExtractor.extract(fb2);
+        assertNotNull("cover must be found", extracted);
+        assertTrue("whitespace in the base64 must be skipped",
+                java.util.Arrays.equals(extracted, cover));
+    }
+
+    /**
+     * The streaming reader reads in 8 KB chunks: when the closing {@code </description>}
+     * tag is split across two reads (the marker straddles the chunk boundary) it must
+     * still be found — the search tail is what makes that work. A ~100 KB body after
+     * the binary block proves the reader actually stopped at {@code <body} (a reader
+     * that missed the split tag would buffer the whole file).
+     */
+    @Test
+    public void closingDescriptionSplitAcrossReadChunksIsStillFound() throws Exception {
+        byte[] cover = TestFixtures.coverBytes();
+        String base64 = Base64.getEncoder().encodeToString(cover);
+        String prefix = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+                + "<FictionBook xmlns=\"http://www.gribuser.ru/xml/fictionbook/2.0\" "
+                + "xmlns:l=\"http://www.w3.org/1999/xlink\">\n"
+                + "  <description>\n"
+                + "    <title-info>\n"
+                + "      <title>Split Tag</title>\n"
+                + "    </title-info>\n"
+                + "    <coverpage>\n"
+                + "      <image l:href=\"#coverimg\"/>\n"
+                + "    </coverpage>\n"
+                + "    <annotation>";
+        // Pad the annotation so </description> starts 3 bytes before a chunk boundary
+        // (it spans two 8 KB reads: 3 bytes in the first chunk, 11 in the next).
+        int pad = (int) ((8189 - (prefix.length() % 8192) + 8192) % 8192);
+        StringBuilder sb = new StringBuilder(prefix);
+        for (int i = 0; i < pad; i++) sb.append('x');
+        sb.append("</description>\n");
+        sb.append("  <binary id=\"coverimg\" content-type=\"image/jpeg\">")
+                .append(base64).append("</binary>\n");
+        sb.append("  <body>\n");
+        for (int i = 0; i < 12000; i++) sb.append("    <p>Filler paragraph ").append(i).append(". </p>\n");
+        sb.append("  </body>\n");
+        sb.append("</FictionBook>\n");
+        String xml = sb.toString();
+        // Sanity: the 14-byte marker really does straddle a chunk boundary.
+        int at = xml.indexOf("</description>");
+        assertTrue("test setup: the tag must straddle a chunk boundary",
+                at % 8192 >= 8192 - 13 && at % 8192 < 8192);
+        TestFixtures.writeText(fb2, xml);
+
+        byte[] header = CoverExtractor.readFb2Header(fb2);
+        assertNotNull(header);
+        assertTrue("the reader must stop at <body> (a 100 KB body must not be buffered)",
+                header.length < 100 * 1024);
+        byte[] coverFromRegion = CoverExtractor.coverFromFb2Bytes(header);
+        assertTrue("the cover must be found in the streamed region",
+                java.util.Arrays.equals(coverFromRegion, cover));
+
+        assertNotNull(CoverExtractor.extract(fb2));
+    }
+
     // ------------------------------------------------------------------
     // FB2ZIP covers
     // ------------------------------------------------------------------

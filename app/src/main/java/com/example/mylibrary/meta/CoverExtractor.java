@@ -1,6 +1,5 @@
 package com.example.mylibrary.meta;
 
-import android.util.Base64;
 import android.util.Log;
 
 import com.example.mylibrary.scan.Formats;
@@ -10,6 +9,8 @@ import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.InputStream;
+import java.nio.charset.StandardCharsets;
+import java.util.Arrays;
 import java.util.HashMap;
 import java.util.Locale;
 import java.util.Map;
@@ -192,10 +193,48 @@ public final class CoverExtractor {
     // FB2
     // -------------------------------------------------------------------
 
+    /** The closing tag of the FB2 description block (all metadata and the cover
+     *  reference live before it; per the FB2 XSD the {@code <binary>} blocks sit
+     *  between the description and the body, and the body is the bulk of a file). */
+    private static final byte[] FB2_DESC_END = ascii("</description>");
+    /** The start of the book body: the header region (description + binary blocks)
+     *  ends where the body begins, so the streaming read stops there. */
+    private static final byte[] FB2_BODY_START = ascii("<body");
+    /** Hard cap on the header region buffered for the cover: beyond it the cover is
+     *  abandoned (logged) rather than risking an OOM on a pathological document. */
+    static final int FB2_HEADER_CAP = 32 * 1024 * 1024;
+    /** Streaming read size for the FB2 header region. */
+    private static final int FB2_READ_CHUNK = 8192;
+
+    private static final byte[] TAG_COVERPAGE_OPEN = ascii("<coverpage");
+    private static final byte[] TAG_COVERPAGE_OPEN_HYPHEN = ascii("<cover-page");
+    private static final byte[] TAG_COVERPAGE_CLOSE = ascii("</coverpage");
+    private static final byte[] TAG_COVERPAGE_CLOSE_HYPHEN = ascii("</cover-page");
+    private static final byte[] TAG_BINARY_CLOSE = ascii("</binary");
+
+    /**
+     * base64 decode table (one entry per input byte value; -1 = not a base64 data
+     * character — whitespace, padding '=' and anything else is simply skipped).
+     */
+    private static final int[] B64 = new int[256];
+    static {
+        Arrays.fill(B64, -1);
+        for (int i = 0; i < 26; i++) {
+            B64['A' + i] = i;
+            B64['a' + i] = 26 + i;
+        }
+        for (int i = 0; i < 10; i++) B64['0' + i] = 52 + i;
+        B64['+'] = 62;
+        B64['/'] = 63;
+    }
+
     private static byte[] extractFb2(File file) throws Exception {
-        String xml = readTextFile(file);
-        if (xml == null) return null;
-        return coverFromFb2Xml(xml);
+        // One streaming pass over the header region only: the <description> block and
+        // the <binary> blocks that follow it (both precede the body). The book body —
+        // the bulk of a real FB2 — is never read, and the data never becomes a String
+        // (no char[] copies): a 100 MB book costs a few MB of buffer, not hundreds.
+        byte[] header = readFb2Header(file);
+        return coverFromFb2Bytes(header);
     }
 
     /**
@@ -208,57 +247,224 @@ public final class CoverExtractor {
     private static byte[] extractFb2Zip(File file) throws Exception {
         byte[] xml = readFb2Entry(file);
         if (xml != null) {
-            byte[] inner = coverFromFb2Xml(new String(xml, "UTF-8"));
+            byte[] inner = coverFromFb2Bytes(xml);
             if (inner != null) return inner;
         }
         return findLooseImageEntry(file);
     }
 
     /**
-     * The shared FB2 cover lookup: finds {@code <coverpage>} →
-     * {@code href="#id"} → {@code <binary id="...">base64</binary>} in the given XML
-     * text and returns the decoded image bytes, or {@code null} when absent.
+     * Streams an FB2 file up to the end of its header region and returns the region's
+     * bytes: from the start of the file through {@code </description>} and on to
+     * {@code <body} (or end-of-file). The {@code <binary>} blocks — where the cover's
+     * base64 lives — sit between the two, per the FB2 XSD order.
+     *
+     * <p>The read is bounded by {@link #FB2_HEADER_CAP}: when a (pathological or
+     * non-conformant) file's header region exceeds it, a warning is logged and the
+     * cover is abandoned — the partial bytes are still returned, so a caller that only
+     * needs the metadata can use whatever is complete.</p>
+     *
+     * <p>Package-private so the single-pass enricher (and the tests) share the reader.</p>
      */
-    private static byte[] coverFromFb2Xml(String xml) {
-        // Find <coverpage> ... <image l:href="#someId" /> ... </coverpage>
-        int coverStart = xml.indexOf("<coverpage");
-        if (coverStart < 0) coverStart = xml.indexOf("<cover-page");
-        if (coverStart < 0) return null;
-        int coverEnd = xml.indexOf("</coverpage", coverStart);
-        if (coverEnd < 0) coverEnd = xml.indexOf("</cover-page", coverStart);
-        if (coverEnd < 0) coverEnd = Math.min(xml.length(), coverStart + 2000);
-        String coverSection = xml.substring(coverStart, coverEnd);
-
-        // Extract href="#id" (allow l:href, href, xlink:href with or without quotes/space).
-        java.util.regex.Matcher m = java.util.regex.Pattern
-                .compile("(?:l:)?href=\\s*[\"']#([^\"'#]+)[\"']", java.util.regex.Pattern.CASE_INSENSITIVE)
-                .matcher(coverSection);
-        String binaryId = null;
-        if (m.find()) binaryId = m.group(1);
-        if (binaryId == null) {
-            // fallback: href="cover.jpg" style (bare, not #id)
-            m = java.util.regex.Pattern
-                    .compile("(?:l:)?href=\\s*[\"'](?:#)?([^\"'#]+)[\"']", java.util.regex.Pattern.CASE_INSENSITIVE)
-                    .matcher(coverSection);
-            if (m.find()) binaryId = m.group(1);
+    static byte[] readFb2Header(File file) throws Exception {
+        InputStream in = new BufferedInputStream(new FileInputStream(file));
+        try {
+            byte[] chunk = new byte[FB2_READ_CHUNK];
+            byte[] data = new byte[16 * 1024]; // grown as needed; the region is small in practice
+            int size = 0;
+            // One streaming pass with a two-phase marker search: first the end of the
+            // description block, then the start of the body. Each chunk is scanned only
+            // once (from the last searched offset, plus the overlap a marker split across
+            // the chunk seam needs), so a 100 MB book costs the header region, not the file.
+            byte[] marker = FB2_DESC_END;
+            int searchFrom = 0;
+            boolean descClosed = false;
+            int n;
+            while ((n = in.read(chunk)) > 0) {
+                if (size + n > data.length) {
+                    data = Arrays.copyOf(data, Math.max(data.length * 2, size + n));
+                }
+                int before = size;
+                System.arraycopy(chunk, 0, data, size, n);
+                size += n;
+                // Scan the freshly added region: a marker straddling the seam with the
+                // previous data starts within its last (marker.length - 1) bytes.
+                int from = Math.max(searchFrom, before - (marker.length - 1));
+                int at = indexOf(data, from, size, marker);
+                if (at >= 0) {
+                    if (!descClosed) {
+                        // The description is over: the binary blocks (if any) follow,
+                        // and the region ends where the body starts.
+                        descClosed = true;
+                        marker = FB2_BODY_START;
+                        searchFrom = at + FB2_DESC_END.length;
+                        if (indexOf(data, searchFrom, size, FB2_BODY_START) >= 0) break;
+                    } else {
+                        break; // the body has started: the header region is complete
+                    }
+                }
+                if (size > FB2_HEADER_CAP) {
+                    Log.w(TAG, "FB2 header of " + file + " exceeds " + (FB2_HEADER_CAP >> 20)
+                            + " MB; giving up on the cover");
+                    break;
+                }
+            }
+            return Arrays.copyOf(data, size);
+        } finally {
+            in.close();
         }
-        if (binaryId == null) return null;
+    }
 
-        // Find <binary id="binaryId" content-type="...">base64</binary>
-        String idQuoted = "id=\"" + binaryId + "\"";
-        int b = xml.indexOf(idQuoted);
-        if (b < 0) b = xml.indexOf("id='" + binaryId + "'");
+    /**
+     * The shared FB2 cover lookup on raw XML bytes (no String, no regex): finds
+     * {@code <coverpage>} → the {@code href="#id"} reference → the matching
+     * {@code <binary id="...">} block and decodes its base64 payload straight off the
+     * bytes (whitespace skipped, 768-character chunks into a growing buffer). Returns
+     * the decoded image bytes, or {@code null} when there is no coverpage, no matching
+     * binary block, or an empty payload.
+     */
+    static byte[] coverFromFb2Bytes(byte[] xml) {
+        if (xml == null) return null;
+        int len = xml.length;
+
+        // 1) The <coverpage> section (the cover reference lives in the description).
+        int coverStart = indexOf(xml, 0, len, TAG_COVERPAGE_OPEN);
+        if (coverStart < 0) coverStart = indexOf(xml, 0, len, TAG_COVERPAGE_OPEN_HYPHEN);
+        if (coverStart < 0) return null;
+        int coverEnd = indexOf(xml, coverStart, len, TAG_COVERPAGE_CLOSE);
+        if (coverEnd < 0) coverEnd = indexOf(xml, coverStart, len, TAG_COVERPAGE_CLOSE_HYPHEN);
+        if (coverEnd < 0) coverEnd = Math.min(len, coverStart + 2000);
+
+        // 2) The binary id from the section's href attribute (any (l:)href, either
+        //    quote style, optional '#' — the bare form names a file, never a binary).
+        String binaryId = findHrefValue(xml, coverStart, coverEnd);
+        if (binaryId == null || binaryId.length() == 0) return null;
+        if (binaryId.charAt(0) == '#') binaryId = binaryId.substring(1);
+        if (binaryId.length() == 0) return null;
+
+        // 3) The <binary> block carrying that id. The search spans the whole region:
+        //    a base64 payload cannot contain a quote character, so the quoted id can
+        //    only ever match an attribute, even with several binary blocks present.
+        int b = indexOf(xml, 0, len, ascii("id=\"" + binaryId + "\""));
+        if (b < 0) b = indexOf(xml, 0, len, ascii("id='" + binaryId + "'"));
         if (b < 0) return null;
-        int gt = xml.indexOf('>', b);
+        int gt = nextByte(xml, b, '>');
         if (gt < 0) return null;
-        int endTag = xml.indexOf("</binary", gt);
+        int endTag = indexOf(xml, gt, len, TAG_BINARY_CLOSE);
         if (endTag < 0) return null;
-        String base64 = xml.substring(gt + 1, endTag).trim();
-        // If the binary content itself starts with "base64,-" or has HTML-unescaped
-        // entities, handle a couple of commonisations.
-        base64 = base64.replaceAll("\\s", "");
-        if (base64.length() == 0) return null;
-        return Base64.decode(base64, Base64.DEFAULT);
+
+        // 4) The base64 payload, decoded directly from the XML bytes (no String).
+        byte[] decoded = decodeBase64(xml, gt + 1, endTag - gt - 1);
+        return decoded.length > 0 ? decoded : null;
+    }
+
+    /**
+     * Extracts the first {@code href} attribute value in {@code xml[from..to)} —
+     * matching {@code (?:l:)?href="..."} with either quote style and optional
+     * whitespace around {@code =} (case-insensitively, as a byte scan — no regex) —
+     * or {@code null} when the section carries no href.
+     */
+    private static String findHrefValue(byte[] xml, int from, int to) {
+        for (int i = from; i + 4 <= to; i++) {
+            if (!wordEquals(xml, i, "href")) continue;
+            // Not a suffix of a longer attribute name (the ':' of l:href is allowed).
+            if (i > 0 && isNameByte(xml[i - 1])) continue;
+            int j = i + 4;
+            while (j < to && isSpace(xml[j])) j++;
+            if (j >= to || xml[j] != '=') continue;
+            j++;
+            while (j < to && isSpace(xml[j])) j++;
+            if (j >= to) continue;
+            int q = xml[j] & 0xFF;
+            if (q != '"' && q != '\'') continue;
+            int end = j + 1;
+            while (end < to && xml[end] != (byte) q) end++;
+            if (end >= to) continue;
+            return new String(xml, j + 1, end - j - 1, StandardCharsets.US_ASCII);
+        }
+        return null;
+    }
+
+    /**
+     * Decodes the base64 payload straight from {@code src[off, off+len)} — the raw XML
+     * bytes (the payload is ASCII): whitespace and padding are skipped, and each 768
+     * data characters yield 576 output bytes written into a growing buffer, so no
+     * intermediate String (char[]) ever exists.
+     */
+    private static byte[] decodeBase64(byte[] src, int off, int len) {
+        int[] q = new int[4];
+        int qi = 0;
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        int end = off + len;
+        for (int i = off; i < end; i++) {
+            int v = B64[src[i] & 0xFF];
+            if (v < 0) continue; // whitespace, '=' padding, anything non-base64
+            q[qi] = v;
+            if (++qi == 4) {
+                out.write((q[0] << 2) | (q[1] >> 4));
+                out.write(((q[1] & 0xF) << 4) | (q[2] >> 2));
+                out.write(((q[2] & 0x3) << 6) | q[3]);
+                qi = 0;
+            }
+        }
+        if (qi == 2) {
+            out.write((q[0] << 2) | (q[1] >> 4));
+        } else if (qi == 3) {
+            out.write((q[0] << 2) | (q[1] >> 4));
+            out.write(((q[1] & 0xF) << 4) | (q[2] >> 2));
+        }
+        return out.toByteArray();
+    }
+
+    // -------------------------------------------------------------------
+    // small byte-level helpers (no String / regex on the hot path)
+    // -------------------------------------------------------------------
+
+    private static byte[] ascii(String s) {
+        return s.getBytes(StandardCharsets.US_ASCII);
+    }
+
+    /** True when the letters at {@code b[off]} equal {@code w} (case-insensitively). */
+    private static boolean wordEquals(byte[] b, int off, String w) {
+        for (int i = 0; i < w.length(); i++) {
+            int c = b[off + i] & 0xFF;
+            if (c >= 'A' && c <= 'Z') c += 'a' - 'A';
+            if (c != w.charAt(i)) return false;
+        }
+        return true;
+    }
+
+    private static boolean isNameByte(byte c) {
+        c &= 0xFF;
+        return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')
+                || (c >= '0' && c <= '9') || c == '_' || c == '-';
+    }
+
+    private static boolean isSpace(byte c) {
+        c &= 0xFF;
+        return c == ' ' || c == '\t' || c == '\n' || c == '\r';
+    }
+
+    /** Finds {@code marker} in {@code buf[off, off+len)} with a plain byte scan; -1 if absent. */
+    private static int indexOf(byte[] buf, int off, int len, byte[] marker) {
+        if (len < marker.length) return -1;
+        int last = off + len - marker.length;
+        for (int i = off; i <= last; i++) {
+            int j;
+            for (j = 0; j < marker.length; j++) {
+                if (buf[i + j] != marker[j]) break;
+            }
+            if (j == marker.length) return i;
+        }
+        return -1;
+    }
+
+    /** The index of the first {@code c} at or after {@code from}; -1 when absent. */
+    private static int nextByte(byte[] b, int from, int c) {
+        for (int i = from; i < b.length; i++) {
+            if ((b[i] & 0xFF) == (c & 0xFF)) return i;
+        }
+        return -1;
     }
 
     /**
@@ -438,19 +644,5 @@ public final class CoverExtractor {
         int n;
         while ((n = in.read(buf)) > 0) baos.write(buf, 0, n);
         return baos.toByteArray();
-    }
-
-    private static String readTextFile(File f) {
-        try {
-            InputStream in = new BufferedInputStream(new FileInputStream(f));
-            ByteArrayOutputStream baos = new ByteArrayOutputStream();
-            byte[] buf = new byte[8192];
-            int n;
-            while ((n = in.read(buf)) > 0) baos.write(buf, 0, n);
-            in.close();
-            return new String(baos.toByteArray(), "UTF-8");
-        } catch (Exception e) {
-            return null;
-        }
     }
 }

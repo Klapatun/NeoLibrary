@@ -226,6 +226,11 @@ public final class MetaExtractor {
                 else if (pending.equals("lang") && md.language == null) md.language = text;
                 else if (pending.equals("genre") && md.genre == null) md.genre = text;
             } else if (event == XmlPullParser.END_TAG) {
+                // Every metadata element (and the cover's binary id) lives inside
+                // <description>, which the FB2 XSD places before <body>: stop here —
+                // the body (the bulk of a real file) is never parsed. A non-conformant
+                // file without the closing tag simply parses to the end, as before.
+                if (localName(p.getName()).equals("description")) break;
                 pending = null;
             }
         }
