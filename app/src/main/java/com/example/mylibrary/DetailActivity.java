@@ -2,6 +2,7 @@ package com.example.mylibrary;
 
 import android.app.Activity;
 import android.app.AlertDialog;
+import android.content.Context;
 import android.os.AsyncTask;
 import android.os.Bundle;
 import android.view.View;
@@ -19,6 +20,7 @@ import com.example.mylibrary.util.CoverLoader;
 import com.example.mylibrary.util.Openers;
 
 import java.io.File;
+import java.lang.ref.WeakReference;
 
 /**
  * Shows a single book's details and offers to open it in Neo Reader.
@@ -39,7 +41,9 @@ public class DetailActivity extends Activity {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_detail);
 
-        db = new BookDatabase(this);
+        // The app context, not the Activity's: the database is process-wide state,
+        // and the in-flight enrichment task holds it — it must not pin the Activity.
+        db = new BookDatabase(getApplicationContext());
         long id = getIntent().getLongExtra(EXTRA_BOOK_ID, -1);
         book = db.getById(id);
         if (book == null) {
@@ -70,18 +74,7 @@ public class DetailActivity extends Activity {
             // user sees real values instead of the file-name placeholder. The bulk
             // worker and this call may parse the same file in parallel: both are
             // read-only, and the DB update is idempotent.
-            final Book target = book;
-            new AsyncTask<Void, Void, Book>() {
-                @Override protected Book doInBackground(Void... v) {
-                    MetaEnricher.enrichOne(DetailActivity.this, db, target);
-                    return db.getById(target.id);
-                }
-                @Override protected void onPostExecute(Book fresh) {
-                    if (isFinishing() || fresh == null) return;
-                    book = fresh;
-                    showBook(fresh);
-                }
-            }.execute();
+            new EnrichTask(this, book).execute();
         }
 
         ((Button) findViewById(R.id.btn_open)).setOnClickListener(new View.OnClickListener() {
@@ -131,6 +124,37 @@ public class DetailActivity extends Activity {
         if (b.description != null && b.description.length() > 0)
             other.append("\n").append(b.description);
         ((TextView) findViewById(R.id.detail_other)).setText(other.toString());
+    }
+
+    /** The fast-path enrichment task. A STATIC nested class on purpose: an anonymous
+     *  inner class would carry a synthetic strong reference to the Activity (javac
+     *  emits it for every anonymous class inside an instance method, used or not),
+     *  and the parse can run up to the enricher's per-file budget (2 minutes).
+     *  Holds the app context for the work and the Activity weakly for the update. */
+    private static final class EnrichTask extends AsyncTask<Void, Void, Book> {
+        private final Context appContext;
+        private final BookDatabase db;
+        private final Book target;
+        private final WeakReference<DetailActivity> self;
+
+        EnrichTask(DetailActivity host, Book target) {
+            this.appContext = host.getApplicationContext();
+            this.db = host.db; // safe: it holds the app context
+            this.target = target;
+            this.self = new WeakReference<DetailActivity>(host);
+        }
+
+        @Override protected Book doInBackground(Void... v) {
+            MetaEnricher.enrichOne(appContext, db, target);
+            return db.getById(target.id);
+        }
+
+        @Override protected void onPostExecute(Book fresh) {
+            DetailActivity a = self.get();
+            if (a == null || a.isFinishing() || fresh == null) return;
+            a.book = fresh;
+            a.showBook(fresh);
+        }
     }
 
     private static String nz(String s) {

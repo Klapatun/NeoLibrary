@@ -766,4 +766,137 @@ public class BookDatabaseTest {
         assertFalse("new file contents get normal queue priority",
                 db.getById(id).metaFailed);
     }
+
+    // ------------------------------------------------------------------
+    // migration (v4 -> v5: title index)
+    // ------------------------------------------------------------------
+
+    /** Old (v4) table definition, exactly as shipped in version 4 (with the
+     *  meta_failed column but no title index). */
+    private static final String V4_CREATE =
+            "CREATE TABLE books ("
+            + "_id INTEGER PRIMARY KEY AUTOINCREMENT, "
+            + "path TEXT UNIQUE NOT NULL, "
+            + "format TEXT, "
+            + "title TEXT, "
+            + "author TEXT, "
+            + "publisher TEXT, "
+            + "description TEXT, "
+            + "series TEXT, "
+            + "size_bytes INTEGER, "
+            + "exported INTEGER DEFAULT 0, "
+            + "meta_done INTEGER NOT NULL DEFAULT 0, "
+            + "user_edited INTEGER NOT NULL DEFAULT 0, "
+            + "meta_failed INTEGER NOT NULL DEFAULT 0, "
+            + "last_read INTEGER"
+            + ")";
+
+    /**
+     * Opening a v4 database must upgrade it in place to v5: the existing row
+     * (including last_read) survives and the new {@code idx_books_title_nocase}
+     * index appears (the older indexes are already there and are not re-created).
+     */
+    @Test
+    public void openingAV4DatabaseUpgradesInPlaceAndAddsTitleIndex() {
+        db.close(); // release setUp()'s connection so the raw open below can proceed
+        java.io.File f = context.getDatabasePath("library.db");
+        if (f.getParentFile() != null) f.getParentFile().mkdirs();
+        SQLiteDatabase rawDb = SQLiteDatabase.openOrCreateDatabase(f.getAbsolutePath(), null);
+        try {
+            rawDb.execSQL(V4_CREATE);
+            rawDb.execSQL("INSERT INTO books (path, format, title, last_read) VALUES "
+                    + "('/x/v4.epub', 'EPUB', 'V4 Title', 66666)");
+            rawDb.execSQL("PRAGMA user_version = 4");
+        } finally {
+            rawDb.close();
+        }
+
+        BookDatabase upgraded = new BookDatabase(context);
+        SQLiteDatabase raw = upgraded.getReadableDatabase();
+        Cursor c = raw.rawQuery("SELECT title, last_read FROM books", null);
+        try {
+            assertTrue("row must survive the upgrade", c.moveToFirst());
+            assertEquals("V4 Title", c.getString(0));
+            assertEquals(66666L, c.getLong(1));
+        } finally {
+            c.close();
+        }
+        List<String> indexes = indexNames(raw);
+        assertTrue("the nocase title index must be created on upgrade",
+                indexes.contains("idx_books_title_nocase"));
+        assertTrue("the old indexes must still be there",
+                indexes.contains("idx_books_meta_done"));
+        assertTrue(indexes.contains("idx_books_last_read"));
+    }
+
+    /** A brand-new database (onCreate path) must have the title index too. */
+    @Test
+    public void freshDatabaseHasTheTitleNocaseIndex() {
+        List<String> indexes = indexNames(db.getReadableDatabase());
+        assertTrue(indexes.contains("idx_books_title_nocase"));
+    }
+
+    // ------------------------------------------------------------------
+    // batch commits (groups of BATCH_SIZE books per transaction)
+    // ------------------------------------------------------------------
+
+    @Test
+    public void upsertBasicBatchPersistsTheWholeGroup() {
+        List<Book> group = new ArrayList<Book>();
+        for (int i = 0; i < BookDatabase.BATCH_SIZE; i++) {
+            group.add(book("/x/g" + i + ".txt", "TXT", "G" + i, null));
+        }
+        db.upsertBasicBatch(group);
+        assertEquals("all rows of the group must be persisted",
+                BookDatabase.BATCH_SIZE, db.all(null).size());
+    }
+
+    /** A list spanning several batch sizes must persist every row (the grouping
+     *  is internal: 12 rows -> 5 + 5 + 2 transactions). */
+    @Test
+    public void upsertBasicBatchGroupsALargeListIntoBatches() {
+        List<Book> all = new ArrayList<Book>();
+        for (int i = 0; i < 12; i++) all.add(book("/x/l" + i + ".txt", "TXT", "L" + i, null));
+        db.upsertBasicBatch(all);
+        assertEquals(12, db.all(null).size());
+    }
+
+    /** Atomicity: a row that violates the schema (path is NOT NULL) rolls back the
+     *  WHOLE group — none of the batch is persisted (the failed group's rows are
+     *  simply picked up again on the next scan). */
+    @Test
+    public void upsertBasicBatchRollsTheWholeGroupBackWhenOneRowFails() {
+        List<Book> group = new ArrayList<Book>();
+        for (int i = 0; i < BookDatabase.BATCH_SIZE - 1; i++) {
+            group.add(book("/x/ok" + i + ".txt", "TXT", "OK" + i, null));
+        }
+        group.add(book(null, "TXT", "Broken", null)); // path is NOT NULL in the schema
+        db.upsertBasicBatch(group);
+        assertTrue("no row of the failed group may be persisted", db.all(null).isEmpty());
+    }
+
+    @Test
+    public void updateMetadataBatchPersistsTheWholeGroup() {
+        List<Long> ids = new ArrayList<Long>();
+        List<BookDatabase.MetaUpdate> updates = new ArrayList<BookDatabase.MetaUpdate>();
+        for (int i = 0; i < BookDatabase.BATCH_SIZE; i++) {
+            Book b = book("/x/m" + i + ".epub", "EPUB", "File " + i, null);
+            long id = db.upsertBasic(b);
+            ids.add(id);
+            MetaData md = new MetaData();
+            md.title = "Embedded " + i;
+            md.author = "Author " + i;
+            md.found = true;
+            updates.add(new BookDatabase.MetaUpdate(id, md, true));
+        }
+        db.updateMetadataBatch(updates);
+
+        assertEquals(BookDatabase.BATCH_SIZE, db.all(null).size());
+        for (int i = 0; i < ids.size(); i++) {
+            Book got = db.getById(ids.get(i));
+            assertEquals("Embedded " + i, got.title);
+            assertEquals("Author " + i, got.author);
+            assertTrue("the book must be marked enriched", got.metaDone);
+        }
+    }
 }

@@ -5,6 +5,7 @@ import android.content.Context;
 import android.database.Cursor;
 import android.database.sqlite.SQLiteDatabase;
 import android.database.sqlite.SQLiteOpenHelper;
+import android.util.Log;
 
 import com.example.mylibrary.meta.MetaData;
 import com.example.mylibrary.model.Book;
@@ -20,12 +21,23 @@ import java.util.List;
  */
 public class BookDatabase extends SQLiteOpenHelper {
 
+    private static final String TAG = "BookDatabase";
     private static final String DB_NAME = "library.db";
-    private static final int DB_VERSION = 4;
+    private static final int DB_VERSION = 5;
 
-    /** Serializes all write operations. A static lock (not an instance monitor) so
-     *  that concurrent writers from different BookDatabase instances (each Activity
-     *  creates its own) still cannot interleave and lose updates. */
+    /** How many books go into one batch commit (one SQLite transaction per group;
+     *  see {@link #upsertBasicBatch} and {@link #updateMetadataBatch}): one commit
+     *  per group instead of one per book. The enricher keeps the same cadence for
+     *  its progress/notify steps (its own copy of the constant). */
+    public static final int BATCH_SIZE = 5;
+
+    /** Serializes ALL database access. A static lock (not an instance monitor) so
+     *  that concurrent users of DIFFERENT BookDatabase instances (each Activity and
+     *  the provider create their own — and so do the tests) cannot interleave:
+     *  writers never lose updates to each other, and a one-shot read (or a fresh
+     *  connection open) never lands inside another instance's write transaction —
+     *  a cross-connection collision there is a hard SQLITE_BUSY ("database is
+     *  locked"), not a wait. */
     private static final Object WRITE_LOCK = new Object();
 
     /** Kept for {@link CoverCache} calls in {@link #deleteByPath}/{@link #clear}
@@ -85,14 +97,21 @@ public class BookDatabase extends SQLiteOpenHelper {
             } catch (Exception ignored) { // column already present (partial upgrade)
             }
         }
+        if (oldVersion < 5) {
+            // The v5 title index. createIndexes is idempotency-guarded, so it only
+            // creates what is missing (the older indexes already exist).
+            createIndexes(db);
+        }
     }
 
-    /** Indexes for the two hot query paths: the stage-2 queue
-     *  ({@link #needMeta()}, {@code WHERE meta_done = 0}) and the "Recently read"
-     *  view ({@code WHERE last_read IS NOT NULL ORDER BY last_read DESC}). Without
-     *  them both walk the whole table on a large library. Non-unique on purpose
-     *  (many books share a value); CREATE INDEX is idempotency-guarded like the
-     *  ALTER statements above, so a re-run of a partial upgrade is safe. */
+    /** Indexes for the hot query paths: the stage-2 queue
+     *  ({@link #needMeta()}, {@code WHERE meta_done = 0}), the "Recently read"
+     *  view ({@code WHERE last_read IS NOT NULL ORDER BY last_read DESC}) and the
+     *  catalog list (sorted by {@code title COLLATE NOCASE} — the main screen's
+     *  default order). Without them all three walk the whole table on a large
+     *  library. Non-unique on purpose (many books share a value); CREATE INDEX is
+     *  idempotency-guarded like the ALTER statements above, so a re-run of a
+     *  partial upgrade is safe. */
     private static void createIndexes(SQLiteDatabase db) {
         try {
             db.execSQL("CREATE INDEX idx_books_meta_done ON books (meta_done)");
@@ -101,6 +120,27 @@ public class BookDatabase extends SQLiteOpenHelper {
         try {
             db.execSQL("CREATE INDEX idx_books_last_read ON books (last_read)");
         } catch (Exception ignored) {
+        }
+        try {
+            db.execSQL("CREATE INDEX idx_books_title_nocase ON books (title COLLATE NOCASE)");
+        } catch (Exception ignored) {
+        }
+    }
+
+    /**
+     * Opens a READ connection while holding {@link #WRITE_LOCK}. A fresh SQLite
+     * connection executes {@code PRAGMA user_version} on open, and that read collides
+     * (SQLITE_BUSY, "database is locked") when another connection of this same class
+     * is mid-batch-write (the enricher's {@link #updateMetadataBatch} group, the scan's
+     * {@link #upsertBasicBatch}): the static lock makes a fresh open wait for the group
+     * to finish instead of racing it. The callers of this helper run their whole
+     * one-shot read under the same lock; only the LIVE cursors handed out by
+     * {@link #cursorAll}/{@link #cursorRecent} outlive it (a cursor keeps using its
+     * handle freely after the lock is released).
+     */
+    private SQLiteDatabase readableDb() {
+        synchronized (WRITE_LOCK) {
+            return getReadableDatabase();
         }
     }
 
@@ -148,30 +188,63 @@ public class BookDatabase extends SQLiteOpenHelper {
      *  the catalog metadata. */
     public long upsertBasic(Book b) {
         synchronized (WRITE_LOCK) {
-            SQLiteDatabase db = getWritableDatabase();
-            Cursor c = db.rawQuery("SELECT _id FROM books WHERE path=?", new String[]{b.path});
-            long existing = -1;
-            try {
-                if (c.moveToFirst()) existing = c.getLong(0);
-            } finally {
-                c.close();
-            }
-            if (existing >= 0) {
-                ContentValues cv = new ContentValues();
-                cv.put("format", b.format);
-                cv.put("size_bytes", b.sizeBytes);
-                db.update("books", cv, "_id=?", new String[]{String.valueOf(existing)});
-                b.id = existing;
-            } else {
-                ContentValues cv = new ContentValues();
-                cv.put("path", b.path);
-                cv.put("format", b.format);
-                cv.put("title", b.title);
-                cv.put("size_bytes", b.sizeBytes);
-                b.id = db.insert("books", null, cv);
-            }
-            return b.id;
+            return upsertBasicOn(getWritableDatabase(), b);
         }
+    }
+
+    /** Stage-1 batch commit: applies the scanned skeleton rows in groups of
+     *  {@link #BATCH_SIZE} books per SQLite transaction instead of one autocommit
+     *  per row (one commit per group, not per book). A group is atomic — a row
+     *  that fails rolls the whole group back (none of it is persisted) and the
+     *  cause is logged; the unapplied rows are simply picked up again on the next
+     *  scan (the upserts are idempotent). */
+    public void upsertBasicBatch(List<Book> books) {
+        synchronized (WRITE_LOCK) {
+            SQLiteDatabase db = getWritableDatabase();
+            for (int i = 0; i < books.size(); ) {
+                final int to = Math.min(i + BATCH_SIZE, books.size());
+                db.beginTransaction();
+                try {
+                    for (int j = i; j < to; j++) upsertBasicOn(db, books.get(j));
+                    db.setTransactionSuccessful();
+                } catch (Exception e) {
+                    // endTransaction() (without setTransactionSuccessful) rolls the
+                    // whole group back; the scan is a full rescan, so the rows are
+                    // simply upserted again next time.
+                    Log.w(TAG, "Scan batch " + (i + 1) + ".." + to + " rolled back", e);
+                } finally {
+                    db.endTransaction();
+                }
+                i = to;
+            }
+        }
+    }
+
+    /** The stage-1 upsert itself (row lookup + insert/update), run against the
+     *  given database so it joins the caller's transaction when batched. */
+    private static long upsertBasicOn(SQLiteDatabase db, Book b) {
+        Cursor c = db.rawQuery("SELECT _id FROM books WHERE path=?", new String[]{b.path});
+        long existing = -1;
+        try {
+            if (c.moveToFirst()) existing = c.getLong(0);
+        } finally {
+            c.close();
+        }
+        if (existing >= 0) {
+            ContentValues cv = new ContentValues();
+            cv.put("format", b.format);
+            cv.put("size_bytes", b.sizeBytes);
+            db.update("books", cv, "_id=?", new String[]{String.valueOf(existing)});
+            b.id = existing;
+        } else {
+            ContentValues cv = new ContentValues();
+            cv.put("path", b.path);
+            cv.put("format", b.format);
+            cv.put("title", b.title);
+            cv.put("size_bytes", b.sizeBytes);
+            b.id = db.insert("books", null, cv);
+        }
+        return b.id;
     }
 
     /** Stage-2 (background enrichment) update. When the user has edited the catalog
@@ -183,40 +256,95 @@ public class BookDatabase extends SQLiteOpenHelper {
      *  last_read is never touched. */
     public void updateMetadata(long id, MetaData md, boolean fileReadable) {
         synchronized (WRITE_LOCK) {
-            SQLiteDatabase db = getWritableDatabase();
-            String[] cols = {"title", "author", "publisher", "description", "series",
-                    "user_edited"};
-            Cursor cur = db.query("books", cols, "_id=?", new String[]{String.valueOf(id)},
-                    null, null, null);
-            if (!cur.moveToFirst()) {
-                cur.close();
-                return; // row deleted meanwhile
-            }
-            boolean userEdited = cur.getInt(cur.getColumnIndexOrThrow("user_edited")) == 1;
-            // The current field values come from this same cursor (already fetched
-            // above), so "is this field blank?" is decided in Java — no extra
-            // per-field SELECT on the hottest path of stage 2.
-            String curTitle = cur.getString(cur.getColumnIndexOrThrow("title"));
-            String curAuthor = cur.getString(cur.getColumnIndexOrThrow("author"));
-            String curPublisher = cur.getString(cur.getColumnIndexOrThrow("publisher"));
-            String curDescription = cur.getString(cur.getColumnIndexOrThrow("description"));
-            String curSeries = cur.getString(cur.getColumnIndexOrThrow("series"));
-            cur.close();
-
-            ContentValues cv = new ContentValues();
-            cv.put("meta_done", 1);
-            // A parse that completed (in time) is no longer "un-enriched".
-            cv.put("meta_failed", 0);
-            if (md != null && md.found && fileReadable) {
-                if (!userEdited || isBlank(curTitle)) cv.put("title", md.title);
-                if (!userEdited || isBlank(curAuthor)) cv.put("author", md.author);
-                if (!userEdited || isBlank(curPublisher)) cv.put("publisher", md.publisher);
-                if (!userEdited || isBlank(curDescription)) cv.put("description", md.description);
-                if (!userEdited || isBlank(curSeries)) cv.put("series", md.series);
-            }
-            // cv always carries at least meta_done, so the update is unconditional.
-            db.update("books", cv, "_id=?", new String[]{String.valueOf(id)});
+            applyUpdate(getWritableDatabase(), id, md, fileReadable);
         }
+    }
+
+    /** One pre-parsed stage-2 result for {@link #updateMetadataBatch}: the book's
+     *  row id and the metadata to persist for it. The parse itself happens OUTSIDE
+     *  the database (on the enricher's throwaway thread, under its own time
+     *  budget) — the batch only commits the finished results. */
+    public static final class MetaUpdate {
+        public final long id;
+        public final MetaData meta;
+        public final boolean fileReadable;
+
+        public MetaUpdate(long id, MetaData meta, boolean fileReadable) {
+            this.id = id;
+            this.meta = meta;
+            this.fileReadable = fileReadable;
+        }
+    }
+
+    /** Stage-2 batch commit: applies a group of pre-parsed results in groups of
+     *  {@link #BATCH_SIZE} books per SQLite transaction instead of one autocommit
+     *  per book (the enricher's time budget goes into the file, not the database).
+     *  A group is atomic — a statement that fails rolls the whole group back
+     *  (none of it is persisted) and the cause is logged; the unapplied books keep
+     *  {@code meta_done = 0} and are retried on the next rescan. */
+    public void updateMetadataBatch(List<MetaUpdate> updates) {
+        synchronized (WRITE_LOCK) {
+            SQLiteDatabase db = getWritableDatabase();
+            for (int i = 0; i < updates.size(); ) {
+                final int to = Math.min(i + BATCH_SIZE, updates.size());
+                db.beginTransaction();
+                try {
+                    for (int j = i; j < to; j++) {
+                        MetaUpdate u = updates.get(j);
+                        applyUpdate(db, u.id, u.meta, u.fileReadable);
+                    }
+                    db.setTransactionSuccessful();
+                } catch (Exception e) {
+                    // endTransaction() (without setTransactionSuccessful) rolls the
+                    // whole group back; the books stay in the stage-2 queue for the
+                    // next rescan.
+                    Log.w(TAG, "Metadata batch " + (i + 1) + ".." + to + " rolled back", e);
+                } finally {
+                    db.endTransaction();
+                }
+                i = to;
+            }
+        }
+    }
+
+    /** The stage-2 update itself (row lookup + user-edit merge + write), run
+     *  against the given database so it joins the caller's transaction when
+     *  batched. See {@link #updateMetadata} for the contract (user edits are never
+     *  clobbered, last_read is never touched). */
+    private static void applyUpdate(SQLiteDatabase db, long id, MetaData md,
+                                     boolean fileReadable) {
+        String[] cols = {"title", "author", "publisher", "description", "series",
+                "user_edited"};
+        Cursor cur = db.query("books", cols, "_id=?", new String[]{String.valueOf(id)},
+                null, null, null);
+        if (!cur.moveToFirst()) {
+            cur.close();
+            return; // row deleted meanwhile
+        }
+        boolean userEdited = cur.getInt(cur.getColumnIndexOrThrow("user_edited")) == 1;
+        // The current field values come from this same cursor (already fetched
+        // above), so "is this field blank?" is decided in Java — no extra
+        // per-field SELECT on the hottest path of stage 2.
+        String curTitle = cur.getString(cur.getColumnIndexOrThrow("title"));
+        String curAuthor = cur.getString(cur.getColumnIndexOrThrow("author"));
+        String curPublisher = cur.getString(cur.getColumnIndexOrThrow("publisher"));
+        String curDescription = cur.getString(cur.getColumnIndexOrThrow("description"));
+        String curSeries = cur.getString(cur.getColumnIndexOrThrow("series"));
+        cur.close();
+
+        ContentValues cv = new ContentValues();
+        cv.put("meta_done", 1);
+        // A parse that completed (in time) is no longer "un-enriched".
+        cv.put("meta_failed", 0);
+        if (md != null && md.found && fileReadable) {
+            if (!userEdited || isBlank(curTitle)) cv.put("title", md.title);
+            if (!userEdited || isBlank(curAuthor)) cv.put("author", md.author);
+            if (!userEdited || isBlank(curPublisher)) cv.put("publisher", md.publisher);
+            if (!userEdited || isBlank(curDescription)) cv.put("description", md.description);
+            if (!userEdited || isBlank(curSeries)) cv.put("series", md.series);
+        }
+        // cv always carries at least meta_done, so the update is unconditional.
+        db.update("books", cv, "_id=?", new String[]{String.valueOf(id)});
     }
 
     /** A field value is "blank" when it is NULL or empty/whitespace-only. */
@@ -230,92 +358,108 @@ public class BookDatabase extends SQLiteOpenHelper {
      *  rescan works through the normal books first and only retries the slow ones
      *  at the end of the pass. */
     public List<Book> needMeta() {
-        List<Book> list = new ArrayList<Book>();
-        SQLiteDatabase db = getReadableDatabase();
-        Cursor c = db.query("books", null, "meta_done=0", null, null, null,
-                "meta_failed ASC, _id ASC");
-        try {
-            while (c.moveToNext()) list.add(fromCursor(c));
-        } finally {
-            c.close();
+        synchronized (WRITE_LOCK) {
+            List<Book> list = new ArrayList<Book>();
+            SQLiteDatabase db = readableDb();
+            Cursor c = db.query("books", null, "meta_done=0", null, null, null,
+                    "meta_failed ASC, _id ASC");
+            try {
+                while (c.moveToNext()) list.add(fromCursor(c));
+            } finally {
+                c.close();
+            }
+            return list;
         }
-        return list;
     }
 
     /** Same query as {@link #all(String)} but returning a live cursor (for the
      *  ContentProvider / CursorAdapter). */
     public Cursor cursorAll(String formatFilter) {
-        SQLiteDatabase db = getReadableDatabase();
-        if (formatFilter == null || formatFilter.length() == 0) {
-            return db.query("books", null, null, null, null, null, "title COLLATE NOCASE ASC");
+        synchronized (WRITE_LOCK) {
+            SQLiteDatabase db = readableDb();
+            if (formatFilter == null || formatFilter.length() == 0) {
+                return db.query("books", null, null, null, null, null,
+                        "title COLLATE NOCASE ASC");
+            }
+            return db.query("books", null, "format=?", new String[]{formatFilter},
+                    null, null, "title COLLATE NOCASE ASC");
         }
-        return db.query("books", null, "format=?", new String[]{formatFilter},
-                null, null, "title COLLATE NOCASE ASC");
     }
 
     /** Same query as {@link #recent(int)} but returning a live cursor. */
     public Cursor cursorRecent(int limit) {
-        if (limit <= 0) limit = 200;
-        SQLiteDatabase db = getReadableDatabase();
-        return db.query("books", null, "last_read IS NOT NULL", null, null, null,
-                "last_read DESC", String.valueOf(limit));
+        synchronized (WRITE_LOCK) {
+            if (limit <= 0) limit = 200;
+            SQLiteDatabase db = readableDb();
+            return db.query("books", null, "last_read IS NOT NULL", null, null, null,
+                    "last_read DESC", String.valueOf(limit));
+        }
     }
 
     /** Returns a fresh row id for a path that already exists (for updating other fields). */
     public long getIdForPath(String path) {
-        SQLiteDatabase db = getReadableDatabase();
-        Cursor c = db.rawQuery("SELECT _id FROM books WHERE path=?", new String[]{path});
-        try {
-            if (c.moveToFirst()) return c.getLong(0);
-            return -1;
-        } finally {
-            c.close();
+        synchronized (WRITE_LOCK) {
+            SQLiteDatabase db = readableDb();
+            Cursor c = db.rawQuery("SELECT _id FROM books WHERE path=?", new String[]{path});
+            try {
+                if (c.moveToFirst()) return c.getLong(0);
+                return -1;
+            } finally {
+                c.close();
+            }
         }
     }
 
     /** Returns all books, optionally filtered by a format id, ordered by title. */
     public List<Book> all(String formatFilter) {
-        List<Book> list = new ArrayList<Book>();
-        SQLiteDatabase db = getReadableDatabase();
-        Cursor c;
-        if (formatFilter == null || formatFilter.length() == 0) {
-            c = db.query("books", null, null, null, null, null, "title COLLATE NOCASE ASC");
-        } else {
-            c = db.query("books", null, "format=?", new String[]{formatFilter},
-                    null, null, "title COLLATE NOCASE ASC");
+        synchronized (WRITE_LOCK) {
+            List<Book> list = new ArrayList<Book>();
+            SQLiteDatabase db = readableDb();
+            Cursor c;
+            if (formatFilter == null || formatFilter.length() == 0) {
+                c = db.query("books", null, null, null, null, null,
+                        "title COLLATE NOCASE ASC");
+            } else {
+                c = db.query("books", null, "format=?", new String[]{formatFilter},
+                        null, null, "title COLLATE NOCASE ASC");
+            }
+            try {
+                while (c.moveToNext()) list.add(fromCursor(c));
+            } finally {
+                c.close();
+            }
+            return list;
         }
-        try {
-            while (c.moveToNext()) list.add(fromCursor(c));
-        } finally {
-            c.close();
-        }
-        return list;
     }
 
     /** Returns the most recently read books (the "Recently read" tab). */
     public List<Book> recent(int limit) {
-        if (limit <= 0) limit = 200;
-        List<Book> list = new ArrayList<Book>();
-        SQLiteDatabase db = getReadableDatabase();
-        Cursor c = db.query("books", null, "last_read IS NOT NULL", null, null, null,
-                "last_read DESC", String.valueOf(limit));
-        try {
-            while (c.moveToNext()) list.add(fromCursor(c));
-        } finally {
-            c.close();
+        synchronized (WRITE_LOCK) {
+            if (limit <= 0) limit = 200;
+            List<Book> list = new ArrayList<Book>();
+            SQLiteDatabase db = readableDb();
+            Cursor c = db.query("books", null, "last_read IS NOT NULL", null, null, null,
+                    "last_read DESC", String.valueOf(limit));
+            try {
+                while (c.moveToNext()) list.add(fromCursor(c));
+            } finally {
+                c.close();
+            }
+            return list;
         }
-        return list;
     }
 
     public Book getById(long id) {
-        SQLiteDatabase db = getReadableDatabase();
-        Cursor c = db.query("books", null, "_id=?", new String[]{String.valueOf(id)},
-                null, null, null);
-        try {
-            if (c.moveToFirst()) return fromCursor(c);
-            return null;
-        } finally {
-            c.close();
+        synchronized (WRITE_LOCK) {
+            SQLiteDatabase db = readableDb();
+            Cursor c = db.query("books", null, "_id=?", new String[]{String.valueOf(id)},
+                    null, null, null);
+            try {
+                if (c.moveToFirst()) return fromCursor(c);
+                return null;
+            } finally {
+                c.close();
+            }
         }
     }
 

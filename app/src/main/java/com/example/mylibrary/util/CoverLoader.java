@@ -18,6 +18,11 @@ import com.example.mylibrary.meta.CoverExtractor;
 import com.example.mylibrary.model.Book;
 
 import java.io.File;
+import java.lang.ref.WeakReference;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
 
 /**
  * Loads a book's cover bitmap off the UI thread, caching results in memory.
@@ -25,6 +30,18 @@ import java.io.File;
  * <p>To avoid stale images when a row is recycled, each {@link ImageView} is tagged
  * with its book path; the cover is only applied if the tag still matches when loading
  * finishes.</p>
+ *
+ * <p>Loads are deduplicated per key: while a cover is decoding, every tile that gets
+ * bound to the same book joins the in-flight task instead of spawning a second decode
+ * (see {@link #load}), and the result is applied to all of them when the decode lands.
+ * CIRCLE bitmaps (the small list-mode badge) are deliberately NOT put into the memory
+ * cache — the other shapes are.</p>
+ *
+ * <p>The in-flight tasks hold their views by WEAK reference only (and the application
+ * context, never the Activity's): the user may leave the screen while a cover is still
+ * loading, and the pool task must not keep the dead screen's view hierarchy (and with
+ * it the Activity) alive — the task simply drops its drawing work, and the decoded
+ * bitmap still lands in the static cache, so the next bind for that book is instant.</p>
  */
 public class CoverLoader {
 
@@ -42,6 +59,11 @@ public class CoverLoader {
     private static final int GRID_COVER_H = 387;
     private static final int GRID_COVER_RADIUS = 8;
 
+    /** The round badge slot in list mode (item_book.xml): 48dp, converted to pixels
+     *  with the screen's density; CIRCLE bitmaps are pre-cropped to exactly this, so
+     *  a 3000x4000 source costs a 48x48 (or 96x96 on xxhdpi) bitmap, not 512x512. */
+    private static final int LIST_BADGE_DP = 48;
+
     /** How a cover bitmap should be shaped before it is shown. */
     public enum Shape {
         /** As extracted (center-cropped by the ImageView). */
@@ -52,10 +74,38 @@ public class CoverLoader {
         ROUNDED_RECT
     }
 
-    /** Applies the cached cover to {@code imageView} or kicks off an async load.
-     *  When a cover is successfully shown, {@code badgeToHide} (if any) is hidden. */
+    /** The in-flight registry: one shared decode per {@link #coverKey}. Keyed by the
+     *  FULL key (format|path|shape) — never just format|path — because the decoded
+     *  bitmap depends on the shape (a CIRCLE tile and a grid tile of the same book
+     *  would otherwise share one decode and get the wrong bitmap). Touched from the
+     *  main thread only ({@link #load} and the tasks' {@code onPostExecute} both run
+     *  there), so it needs no locking. */
+    private static final Map<String, InFlight> IN_FLIGHT = new HashMap<String, InFlight>();
+
+    /** How many {@link CoverTask}s have been spawned. Package-private so a test can
+     *  verify the in-flight dedup (two loads of the same key must spawn one task). */
+    static int spawnedTasks = 0;
+
+    /** Applies the cached cover to {@code imageView} or joins/kicks off the shared
+     *  async load for the key. When a cover is successfully shown, {@code badgeToHide}
+     *  (if any) is hidden.
+     *
+     *  <p><b>In-flight dedup.</b> When a decode for the key is already running, this
+     *  call does NOT spawn a second task: the tile is simply added to the in-flight
+     *  task's target list, and when the decode finishes the bitmap is applied to every
+     *  tile still bound to the key (each after its own tag check). A fast list scroll
+     *  re-binds the same book to several recycled tiles while the first decode is still
+     *  running — without the registry each rebind would re-decode the same cover.</p>
+     *
+     *  <p><b>No flicker on rebind.</b> {@code setImageBitmap(null)} is skipped when the
+     *  tile was already bound to this key before the call (a re-layout pass, not a
+     *  recycle to another book): such a tile already shows this book's placeholder
+     *  state, and clearing it again would only blink it.</p> */
     public static void load(Book book, ImageView imageView, final View badgeToHide, Shape shape) {
         String key = coverKey(book, shape);
+        // What the tile was bound to before this call: if it was already bound to THIS
+        // key, it is being re-bound (a re-layout), not recycled from another book.
+        Object prevTag = imageView.getTag(R.id.cover_tag);
         imageView.setTag(R.id.cover_tag, key);
 
         Bitmap cached = CACHE.get(key);
@@ -64,8 +114,25 @@ public class CoverLoader {
             if (badgeToHide != null) badgeToHide.setVisibility(View.GONE);
             return;
         }
-        imageView.setImageBitmap(null);
-        new CoverTask(imageView, key, badgeToHide, shape).execute(book);
+
+        InFlight inFlight = IN_FLIGHT.get(key);
+        if (inFlight == null) {
+            inFlight = new InFlight();
+            IN_FLIGHT.put(key, inFlight);
+        }
+        inFlight.targets.add(new Target(imageView, badgeToHide));
+        if (inFlight.task == null) {
+            // The first load for this key spawns the shared task; later loads just join.
+            inFlight.task = new CoverTask(
+                    imageView.getContext().getApplicationContext(), key, shape, inFlight);
+            inFlight.task.execute(book);
+        }
+        if (!key.equals(prevTag)) {
+            // The tile was showing another book's content: clear it so the old cover
+            // does not linger until the shared decode lands. (A tile already bound to
+            // this key is left alone — see the javadoc.)
+            imageView.setImageBitmap(null);
+        }
     }
 
     private static String coverKey(Book b, Shape shape) {
@@ -75,36 +142,67 @@ public class CoverLoader {
         return b.format + "|" + b.path + "|" + shape;
     }
 
-    private static class CoverTask extends AsyncTask<Book, Void, Bitmap> {
-        private final ImageView imageView;
-        private final String key;
-        private final View badgeToHide;
-        private final Shape shape;
+    /** One in-flight decode and the tiles waiting on it. The task runs on the shared
+     *  pool and may outlive the screen that started it, so every target is held ONLY
+     *  WEAKLY (see the class javadoc); a tile recycled for another book (or a dead
+     *  screen) simply drops out at apply time — the decode itself still lands in the
+     *  static cache, so the next bind for that book is instant. */
+    private static final class InFlight {
+        CoverTask task;
+        final List<Target> targets = new ArrayList<Target>(4);
+    }
 
-        CoverTask(ImageView iv, String key, View badgeToHide, Shape shape) {
-            this.imageView = iv;
+    /** One tile (and its letter badge, if it has one) waiting for a shared decode. */
+    private static final class Target {
+        final WeakReference<ImageView> imageView;
+        final WeakReference<View> badge;
+        Target(ImageView iv, View badgeToHide) {
+            this.imageView = new WeakReference<ImageView>(iv);
+            this.badge = (badgeToHide == null) ? null : new WeakReference<View>(badgeToHide);
+        }
+    }
+
+    /** One in-flight cover load. Runs on the shared pool, so it may outlive the screen
+     *  that started it: it holds its targets (in {@link InFlight}) ONLY WEAKLY (see
+     *  the class javadoc) and the application context — never the view's (Activity's)
+     *  context. One task serves EVERY tile bound to its key (the in-flight registry in
+     *  {@link #load} deduplicates the loads). */
+    private static class CoverTask extends AsyncTask<Book, Void, Bitmap> {
+        private final android.content.Context context;
+        private final String key;
+        private final Shape shape;
+        private final InFlight inFlight;
+
+        CoverTask(android.content.Context context, String key, Shape shape, InFlight inFlight) {
+            this.context = context;
             this.key = key;
-            this.badgeToHide = badgeToHide;
             this.shape = shape;
+            this.inFlight = inFlight;
+            spawnedTasks++;
         }
 
         @Override protected Bitmap doInBackground(Book... params) {
             Book b = params[0];
             try {
                 // Prefer the durable file cache (warmed by the background enricher);
-                // fall back to extracting from the book and cache the result.
-                android.content.Context ctx = imageView.getContext();
-                byte[] bytes = CoverCache.load(ctx, b.path);
+                // fall back to extracting from the book and cache the result. The
+                // app context is all CoverCache needs (it only resolves the external
+                // files dir).
+                byte[] bytes = CoverCache.load(context, b.path);
                 if (bytes == null) {
                     bytes = CoverExtractor.extract(new File(b.path));
-                    if (bytes != null && bytes.length > 0) CoverCache.save(ctx, b.path, bytes);
+                    if (bytes != null && bytes.length > 0) CoverCache.save(context, b.path, bytes);
                 }
                 if (bytes == null || bytes.length == 0) return null;
-                Bitmap bmp = BitmapFactory.decodeByteArray(bytes, 0, bytes.length);
+                Bitmap bmp = decodeForCache(bytes);
                 if (bmp == null) return null;
                 bmp = ensureReasonableSize(bmp);
                 if (shape == Shape.CIRCLE) {
-                    Bitmap cropped = circleCrop(bmp);
+                    // The badge slot is 48dp: crop to it directly so the cached bitmap
+                    // is as small as the slot, not as large as the source image.
+                    int target = Math.max(1, (int) (LIST_BADGE_DP
+                            * context.getResources().getDisplayMetrics().density));
+                    Bitmap cropped = circleCrop(bmp, target);
                     bmp.recycle();
                     return cropped;
                 }
@@ -120,19 +218,67 @@ public class CoverLoader {
         }
 
         @Override protected void onPostExecute(Bitmap result) {
-            Object tag = imageView.getTag(R.id.cover_tag);
-            if (!key.equals(tag)) return; // tile was recycled for another book meanwhile
-            if (result == null) {
-                // No extractable cover: restore the letter badge so the tile never
-                // shows neither a cover nor its placeholder (bindGrid hid it in
-                // advance while the load was in flight).
-                if (badgeToHide != null) badgeToHide.setVisibility(View.VISIBLE);
-                return;
+            // The decode is done: take the key out of the in-flight registry (a later
+            // load for the same key spawns a fresh task) and apply the result to every
+            // tile that is STILL bound to this key — each after its own tag check,
+            // because a tile may have been recycled for another book meanwhile (or the
+            // screen may have gone away).
+            IN_FLIGHT.remove(key);
+            // CIRCLE bitmaps are NOT cached (option (v) of the optimization plan):
+            // the 48dp badge is tiny and — thanks to the in-flight dedup — a list
+            // scroll re-decodes it at most once per book, while caching it would push
+            // the expensive ROUNDED_RECT/SQUARE bitmaps out of the LruCache.
+            if (result != null && shape != Shape.CIRCLE) CACHE.put(key, result);
+            for (Target t : inFlight.targets) {
+                ImageView iv = t.imageView.get();
+                if (iv == null) continue; // the screen went away while the load was in flight
+                if (!key.equals(iv.getTag(R.id.cover_tag))) continue; // recycled for another book
+                if (result == null) {
+                    // No extractable cover: restore the letter badge so the tile never
+                    // shows neither a cover nor its placeholder (the bind hid it in
+                    // advance while the load was in flight).
+                    View badge = (t.badge == null) ? null : t.badge.get();
+                    if (badge != null) badge.setVisibility(View.VISIBLE);
+                    continue;
+                }
+                iv.setImageBitmap(result);
+                View badge = (t.badge == null) ? null : t.badge.get();
+                if (badge != null) badge.setVisibility(View.GONE);
             }
-            CACHE.put(key, result);
-            imageView.setImageBitmap(result);
-            if (badgeToHide != null) badgeToHide.setVisibility(View.GONE);
         }
+    }
+
+    /**
+     * Decodes the image bytes sized for the in-memory cache: first a
+     * bounds-only pass ({@code inJustDecodeBounds}) reads the image's dimensions
+     * without allocating a pixel buffer, then the real decode runs with the
+     * smallest power-of-two {@code inSampleSize} whose result keeps the max edge at
+     * or under 512 px (the largest shape the cache stores: the 242x387 grid tile
+     * fits comfortably under it). A 10 MB book cover that is 6000x9000 px is
+     * decoded once, at 1/8, into ~2.2 MB of pixels — instead of the ~216 MB the
+     * full-size decode would allocate on the device's 64 MB heap.
+     *
+     * <p>When the bounds pass yields no dimensions (undecodable header) the plain
+     * decode is attempted as-is and simply returns {@code null} for bad data.</p>
+     */
+    private static Bitmap decodeForCache(byte[] bytes) {
+        final int MAX_EDGE = 512;
+        BitmapFactory.Options bounds = new BitmapFactory.Options();
+        bounds.inJustDecodeBounds = true;
+        BitmapFactory.decodeByteArray(bytes, 0, bytes.length, bounds);
+        int w = bounds.outWidth;
+        int h = bounds.outHeight;
+        if (w <= 0 || h <= 0) {
+            return BitmapFactory.decodeByteArray(bytes, 0, bytes.length);
+        }
+        int sample = 1;
+        while (Math.max(w, h) / sample > MAX_EDGE) sample *= 2;
+        if (sample == 1) {
+            return BitmapFactory.decodeByteArray(bytes, 0, bytes.length);
+        }
+        BitmapFactory.Options opts = new BitmapFactory.Options();
+        opts.inSampleSize = sample;
+        return BitmapFactory.decodeByteArray(bytes, 0, bytes.length, opts);
     }
 
     /** Downsamples very large covers so the memory cache stays small. */
@@ -148,11 +294,13 @@ public class CoverLoader {
         return scaled;
     }
 
-    /** Center-crops the bitmap to a square and clips it into a circle (transparent
-     *  corners), so it fits the round badge slot in list mode. Always returns a new
-     *  bitmap; the caller is responsible for recycling {@code src}. */
-    private static Bitmap circleCrop(Bitmap src) {
-        int size = Math.min(src.getWidth(), src.getHeight());
+    /** Center-crops the bitmap to a {@code targetPx} square and clips it into a
+     *  circle (transparent corners), so it fits the round badge slot in list mode.
+     *  The target is the SLOT's size (48dp), not the source's shorter edge: the
+     *  cached bitmap is then as small as the slot it will be drawn at. Always
+     *  returns a new bitmap; the caller is responsible for recycling {@code src}. */
+    private static Bitmap circleCrop(Bitmap src, int targetPx) {
+        int size = Math.max(1, targetPx);
         Bitmap out = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888);
         Canvas c = new Canvas(out);
         Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG | Paint.FILTER_BITMAP_FLAG);
