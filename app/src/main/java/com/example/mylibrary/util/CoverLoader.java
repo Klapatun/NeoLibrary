@@ -49,6 +49,11 @@ public class CoverLoader {
     private static final int GRID_COVER_H = 387;
     private static final int GRID_COVER_RADIUS = 8;
 
+    /** The round badge slot in list mode (item_book.xml): 48dp, converted to pixels
+     *  with the screen's density; CIRCLE bitmaps are pre-cropped to exactly this, so
+     *  a 3000x4000 source costs a 48x48 (or 96x96 on xxhdpi) bitmap, not 512x512. */
+    private static final int LIST_BADGE_DP = 48;
+
     /** How a cover bitmap should be shaped before it is shown. */
     public enum Shape {
         /** As extracted (center-cropped by the ImageView). */
@@ -113,11 +118,15 @@ public class CoverLoader {
                     if (bytes != null && bytes.length > 0) CoverCache.save(context, b.path, bytes);
                 }
                 if (bytes == null || bytes.length == 0) return null;
-                Bitmap bmp = BitmapFactory.decodeByteArray(bytes, 0, bytes.length);
+                Bitmap bmp = decodeForCache(bytes);
                 if (bmp == null) return null;
                 bmp = ensureReasonableSize(bmp);
                 if (shape == Shape.CIRCLE) {
-                    Bitmap cropped = circleCrop(bmp);
+                    // The badge slot is 48dp: crop to it directly so the cached bitmap
+                    // is as small as the slot, not as large as the source image.
+                    int target = Math.max(1, (int) (LIST_BADGE_DP
+                            * context.getResources().getDisplayMetrics().density));
+                    Bitmap cropped = circleCrop(bmp, target);
                     bmp.recycle();
                     return cropped;
                 }
@@ -155,6 +164,39 @@ public class CoverLoader {
         }
     }
 
+    /**
+     * Decodes the image bytes sized for the in-memory cache: first a
+     * bounds-only pass ({@code inJustDecodeBounds}) reads the image's dimensions
+     * without allocating a pixel buffer, then the real decode runs with the
+     * smallest power-of-two {@code inSampleSize} whose result keeps the max edge at
+     * or under 512 px (the largest shape the cache stores: the 242x387 grid tile
+     * fits comfortably under it). A 10 MB book cover that is 6000x9000 px is
+     * decoded once, at 1/8, into ~2.2 MB of pixels — instead of the ~216 MB the
+     * full-size decode would allocate on the device's 64 MB heap.
+     *
+     * <p>When the bounds pass yields no dimensions (undecodable header) the plain
+     * decode is attempted as-is and simply returns {@code null} for bad data.</p>
+     */
+    private static Bitmap decodeForCache(byte[] bytes) {
+        final int MAX_EDGE = 512;
+        BitmapFactory.Options bounds = new BitmapFactory.Options();
+        bounds.inJustDecodeBounds = true;
+        BitmapFactory.decodeByteArray(bytes, 0, bytes.length, bounds);
+        int w = bounds.outWidth;
+        int h = bounds.outHeight;
+        if (w <= 0 || h <= 0) {
+            return BitmapFactory.decodeByteArray(bytes, 0, bytes.length);
+        }
+        int sample = 1;
+        while (Math.max(w, h) / sample > MAX_EDGE) sample *= 2;
+        if (sample == 1) {
+            return BitmapFactory.decodeByteArray(bytes, 0, bytes.length);
+        }
+        BitmapFactory.Options opts = new BitmapFactory.Options();
+        opts.inSampleSize = sample;
+        return BitmapFactory.decodeByteArray(bytes, 0, bytes.length, opts);
+    }
+
     /** Downsamples very large covers so the memory cache stays small. */
     private static Bitmap ensureReasonableSize(Bitmap src) {
         final int MAX_EDGE = 512;
@@ -168,11 +210,13 @@ public class CoverLoader {
         return scaled;
     }
 
-    /** Center-crops the bitmap to a square and clips it into a circle (transparent
-     *  corners), so it fits the round badge slot in list mode. Always returns a new
-     *  bitmap; the caller is responsible for recycling {@code src}. */
-    private static Bitmap circleCrop(Bitmap src) {
-        int size = Math.min(src.getWidth(), src.getHeight());
+    /** Center-crops the bitmap to a {@code targetPx} square and clips it into a
+     *  circle (transparent corners), so it fits the round badge slot in list mode.
+     *  The target is the SLOT's size (48dp), not the source's shorter edge: the
+     *  cached bitmap is then as small as the slot it will be drawn at. Always
+     *  returns a new bitmap; the caller is responsible for recycling {@code src}. */
+    private static Bitmap circleCrop(Bitmap src, int targetPx) {
+        int size = Math.max(1, targetPx);
         Bitmap out = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888);
         Canvas c = new Canvas(out);
         Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG | Paint.FILTER_BITMAP_FLAG);
