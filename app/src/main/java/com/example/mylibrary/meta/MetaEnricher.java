@@ -109,6 +109,12 @@ public final class MetaEnricher {
     static final class Parsed {
         MetaData meta;
         byte[] cover;
+        /** Range of image bytes inside {@link #cover}: {@code [coverOff, coverOff + coverLen)}.
+         *  {@code coverLen <= 0} means "the whole array" — the cover is a self-contained
+         *  array (EPUB/FB2 extract, or a test double), so the default 0/-1 is correct
+         *  for every task that does not set it. */
+        int coverOff;
+        int coverLen = -1;
     }
 
     /** The default {@link ParseTask}: the real extractors. */
@@ -116,11 +122,41 @@ public final class MetaEnricher {
         @Override
         public void parse(File file, String format, Parsed out) {
             out.meta = MetaExtractor.extract(file);
-            if (CoverExtractor.canHaveCover(format)) {
+            if (format != null && format.equals("MOBI")) {
+                // In-place: the cover record array is kept as-is and only its image
+                // boundary is reported (the JPEG is trimmed at the EOI inside the
+                // array), so the cache write below stores exactly the image — no copy.
+                parseMobiCoverInPlace(file, out);
+            } else if (CoverExtractor.canHaveCover(format)) {
                 out.cover = CoverExtractor.extract(file);
             }
         }
     };
+
+    /**
+     * The in-place MOBI cover lookup for the default parse task: one parser session,
+     * the cover record's own array is handed out (untrimmed) together with the image
+     * length inside it ({@link CoverExtractor#imageLen}). A malformed file simply
+     * yields no cover (same contract as {@link CoverExtractor#extract}).
+     */
+    private static void parseMobiCoverInPlace(File file, Parsed out) {
+        MobiParser p = new MobiParser();
+        try {
+            if (!p.open(file)) return;
+            if (p.coverRecord < 0) return;
+            byte[] raw = p.readRecord(p.coverRecord);
+            if (raw == null || raw.length == 0) return;
+            int len = CoverExtractor.imageLen(raw);
+            if (len <= 0) return;
+            out.cover = raw;
+            out.coverOff = 0;
+            out.coverLen = len;
+        } catch (Exception ignored) {
+            // Malformed file: no cover (metadata already recorded by the caller).
+        } finally {
+            p.close();
+        }
+    }
 
     private static volatile AsyncTask<Void, Void, Void> worker;
 
@@ -304,13 +340,20 @@ public final class MetaEnricher {
         persistMetadata(db, book.id, parsed.meta, true);
         byte[] cover = parsed.cover;
         if (cover != null && cover.length > 0) {
-            try {
-                CoverCache.save(app, book.path, cover);
-            } catch (Exception e) {
-                // The metadata is already persisted; a failed cover-cache write (e.g.
-                // full disk) must not kill the worker — CoverLoader re-extracts on
-                // demand when the cover is next shown.
-                Log.e(TAG, "Could not cache cover of " + f + " (id=" + book.id + ")", e);
+            // The cover may be a range of a larger array (the MOBI in-place trim):
+            // write exactly the image bytes. coverLen <= 0 means "the whole array"
+            // (the self-contained covers of the other formats and test doubles).
+            int off = parsed.coverOff;
+            int len = (parsed.coverLen > 0) ? parsed.coverLen : cover.length - off;
+            if (off >= 0 && len > 0 && off + len <= cover.length) {
+                try {
+                    CoverCache.save(app, book.path, cover, off, len);
+                } catch (Exception e) {
+                    // The metadata is already persisted; a failed cover-cache write (e.g.
+                    // full disk) must not kill the worker — CoverLoader re-extracts on
+                    // demand when the cover is next shown.
+                    Log.e(TAG, "Could not cache cover of " + f + " (id=" + book.id + ")", e);
+                }
             }
         }
     }

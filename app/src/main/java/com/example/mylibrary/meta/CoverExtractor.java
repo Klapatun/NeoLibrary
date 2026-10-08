@@ -534,30 +534,41 @@ public final class CoverExtractor {
             if (p.coverRecord < 0) return null;
             byte[] raw = p.readRecord(p.coverRecord);
             if (raw == null || raw.length == 0) return null;
-            return trimToImage(raw);
+            int len = imageLen(raw);
+            if (len < 0) return null;
+            if (len == raw.length) return raw; // nothing to trim: no copy
+            byte[] out = new byte[len];
+            System.arraycopy(raw, 0, out, 0, len);
+            return out;
         } finally {
             p.close();
         }
     }
 
     /**
-     * Returns the image bytes out of a raw MOBI cover record, or {@code null} if the bytes
-     * don't look like a decodable image. JPEG payloads are trimmed at their EOI marker so
-     * trailing record padding is not handed to the bitmap decoder.
+     * The length of the decodable image at the start of a raw MOBI cover record: a JPEG
+     * is trimmed at its (last) end-of-image marker, every other recognizable image
+     * passes through whole. Returns {@code -1} when the bytes do not look like a
+     * decodable image.
+     *
+     * <p>The boundary is reported IN PLACE — the image spans {@code raw[0 .. len)} and
+     * nothing is copied: the single-pass enricher hands that range straight to
+     * {@code CoverCache.save(ctx, path, raw, 0, len)} instead of forking the array
+     * (a cover record can be many MB, and the padding past the EOI is small).</p>
+     *
+     * <p>Package-private so the tests (and the single-pass enricher) share the logic.</p>
      */
-    private static byte[] trimToImage(byte[] raw) {
+    static int imageLen(byte[] raw) {
+        if (raw == null || raw.length == 0) return -1;
         int b0 = raw[0] & 0xFF;
         if (raw.length > 2 && b0 == 0xFF && (raw[1] & 0xFF) == 0xD8) {
             // JPEG: keep everything up to and including the end-of-image (FF D9) marker.
             int eoi = lastEoi(raw);
             int end = (eoi >= 0) ? eoi + 2 : raw.length;
-            if (end < 2) return null;
-            byte[] out = new byte[end];
-            System.arraycopy(raw, 0, out, 0, end);
-            return out;
+            return (end >= 2) ? end : -1;
         }
         // PNG / BMP / GIF (and anything else with a recognizable signature): pass through.
-        return looksLikeImage(raw) ? raw : null;
+        return looksLikeImage(raw) ? raw.length : -1;
     }
 
     /** Index of the last JPEG end-of-image marker (FF D9), or -1 if absent. */

@@ -351,6 +351,37 @@ public class CoverExtractorTest {
         assertNull(CoverExtractor.extract(mobi));
     }
 
+    /**
+     * The in-place trim must report the image boundary inside the record array: a JPEG
+     * whose EOI marker (FF D9) sits MID-ARRAY — with padding after it — yields exactly
+     * the jpeg's length, with no copy made; PNGs pass through whole; garbage yields -1.
+     */
+    @Test
+    public void imageLenTrimsJpegAtEndOfImageWithoutCopying() {
+        byte[] jpeg = jpegBytes(); // FFD8 ... FFD9
+        byte[] padding = {0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77};
+        byte[] record = new byte[jpeg.length + padding.length];
+        System.arraycopy(jpeg, 0, record, 0, jpeg.length);
+        System.arraycopy(padding, 0, record, jpeg.length, padding.length);
+
+        int len = CoverExtractor.imageLen(record);
+        assertEquals("the boundary must be at the EOI (mid-array), not the record end",
+                jpeg.length, len);
+        for (int i = 0; i < len; i++) {
+            assertEquals("the prefix must be the untouched jpeg (in place, no copy)",
+                    jpeg[i], record[i]);
+        }
+    }
+
+    @Test
+    public void imageLenPassesNonJpegImagesThroughWholeAndRejectsGarbage() {
+        byte[] png = {(byte) 0x89, 'P', 'N', 'G', 0x0D, 0x0A, 0x1A, 0x0A, 1, 2, 3, 4};
+        assertEquals(png.length, CoverExtractor.imageLen(png));
+        assertEquals(-1, CoverExtractor.imageLen(new byte[]{'x', 'y', 'z', 'w'}));
+        assertEquals(-1, CoverExtractor.imageLen(new byte[]{}));
+        assertEquals(-1, CoverExtractor.imageLen(null));
+    }
+
     // ------------------------------------------------------------------
     // other formats
     // ------------------------------------------------------------------

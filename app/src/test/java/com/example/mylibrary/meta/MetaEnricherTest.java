@@ -159,6 +159,31 @@ public class MetaEnricherTest {
         assertEquals("covers", f.getParentFile().getName());
     }
 
+    /**
+     * The default parse task trims the MOBI cover IN PLACE (the JPEG is cut at its EOI
+     * inside the record's array, nothing is copied) and the enricher stores exactly the
+     * image range — the 4 padding bytes the record carries after the EOI must never
+     * reach the cache file.
+     */
+    @Test
+    public void enrichOneStoresTrimmedMobiCoverWithoutRecordPadding() throws Exception {
+        byte[] jpeg = new byte[36];
+        jpeg[0] = (byte) 0xFF; jpeg[1] = (byte) 0xD8; // SOI
+        for (int i = 2; i < 34; i++) jpeg[i] = (byte) (i * 3 + 1);
+        jpeg[34] = (byte) 0xFF; jpeg[35] = (byte) 0xD9; // EOI
+        File mobi = new File(folder.getRoot(), "mobicover.mobi");
+        TestFixtures.writeMobi(mobi, "Mob Cover", "M. Author", "M Press",
+                "A story.", "en", jpeg, 2, 1);
+        long id = seedStageOne(mobi, "MOBI", "mobicover");
+
+        MetaEnricher.enrichOne(app, db, get(id));
+
+        byte[] cached = CoverCache.load(app, mobi.getAbsolutePath());
+        assertNotNull("the cover must land in CoverCache", cached);
+        assertArrayEquals("the cache holds the trimmed jpeg, not the padded record",
+                jpeg, cached);
+    }
+
     @Test
     public void enrichOneIsIdempotent() throws Exception {
         File fb2 = new File(folder.getRoot(), "once.fb2");

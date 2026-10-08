@@ -36,7 +36,20 @@ public final class CoverCache {
      * cache entry simply means "not pre-fetched yet".
      */
     public static void save(Context context, String bookPath, byte[] bytes) {
-        if (bytes == null || bytes.length == 0) return;
+        save(context, bookPath, bytes, 0, bytes == null ? 0 : bytes.length);
+    }
+
+    /**
+     * Stores the cover bytes for a book from a range of a larger buffer
+     * ({@code bytes[off .. off+len)}) — the single-pass MOBI enricher trims the
+     * cover in place at its JPEG EOI marker and writes exactly the image, so the
+     * record's trailing padding never lands in the cache file and no
+     * whole-array copy is made first. Silently does nothing when the range is
+     * empty/out of bounds or the storage is unavailable — a missing cache entry
+     * simply means "not pre-fetched yet".
+     */
+    public static void save(Context context, String bookPath, byte[] bytes, int off, int len) {
+        if (bytes == null || len <= 0 || off < 0 || off + len > bytes.length) return;
         File dir = coversDir(context);
         if (dir == null || (!dir.exists() && !dir.mkdirs())) return;
         try {
@@ -44,7 +57,7 @@ public final class CoverCache {
             File tmp = new File(dir, target.getName() + ".tmp");
             FileOutputStream out = new FileOutputStream(tmp);
             try {
-                out.write(bytes);
+                out.write(bytes, off, len);
             } finally {
                 out.close();
             }
