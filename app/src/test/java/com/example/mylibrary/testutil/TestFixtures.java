@@ -88,6 +88,26 @@ public final class TestFixtures {
           + "  </manifest>\n"
           + "</package>\n";
 
+    /** A parameterized OPF (full Dublin-Core set, NO cover declaration and a manifest
+     *  without anything named "cover", so the extractor reads metadata only) — for
+     *  scale tests that need their own metadata per book. */
+    public static String buildOpf(String title, String creator, String publisher,
+                                  String description, String language) {
+        return "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+             + "<package xmlns=\"http://www.idpf.org/2009/opf\" version=\"2.0\" xmlns:dc=\"http://purl.org/dc/elements/1.1/\">\n"
+             + "  <metadata>\n"
+             + "    <dc:title>" + title + "</dc:title>\n"
+             + "    <dc:creator>" + creator + "</dc:creator>\n"
+             + "    <dc:publisher>" + publisher + "</dc:publisher>\n"
+             + "    <dc:description>" + description + "</dc:description>\n"
+             + "    <dc:language>" + language + "</dc:language>\n"
+             + "  </metadata>\n"
+             + "  <manifest>\n"
+             + "    <item id=\"ch1\" href=\"ch1.xhtml\" media-type=\"application/xhtml+xml\"/>\n"
+             + "  </manifest>\n"
+             + "</package>\n";
+    }
+
     public static final String CHAPTER_XHTML =
             "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<html><body><p>Hello world</p></body></html>\n";
 
@@ -157,6 +177,39 @@ public final class TestFixtures {
              + "    </coverpage>\n"
              + "  </description>\n"
              + "  <binary id=\"coverimg\" content-type=\"image/jpeg\">" + base64Cover + "</binary>\n"
+             + "</FictionBook>\n";
+    }
+
+    /** A parameterized FB2 document (full description block, no {@code <binary>}
+     *  cover) — for scale tests that need their own metadata per book. The author is
+     *  written as first + last name parts: the parser combines the name parts with a
+     *  space, so {@code (Author, 42)} parses to the author {@code "Author 42"}. */
+    public static String buildFb2(String title, String authorFirstName,
+                                  String authorLastName, String publisher,
+                                  String annotation, String lang) {
+        return "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+             + "<FictionBook xmlns=\"http://www.gribuser.ru/xml/fictionbook/2.0\">\n"
+             + "  <description>\n"
+             + "    <title-info>\n"
+             + "      <genre>prose</genre>\n"
+             + "      <author>\n"
+             + "        <first-name>" + authorFirstName + "</first-name>\n"
+             + "        <last-name>" + authorLastName + "</last-name>\n"
+             + "      </author>\n"
+             + "      <title>" + title + "</title>\n"
+             + "      <lang>" + lang + "</lang>\n"
+             + "    </title-info>\n"
+             + "    <publish-info>\n"
+             + "      <publisher>" + publisher + "</publisher>\n"
+             + "      <published>2020</published>\n"
+             + "    </publish-info>\n"
+             + "    <annotation>" + annotation + "</annotation>\n"
+             + "  </description>\n"
+             + "  <body>\n"
+             + "    <chapter>\n"
+             + "      <p>Hello</p>\n"
+             + "    </chapter>\n"
+             + "  </body>\n"
              + "</FictionBook>\n";
     }
 
