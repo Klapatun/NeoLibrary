@@ -211,6 +211,14 @@ needed, the SDK Platform), then **Run** on a device/emulator running Android 4.4
 
 The debug APK is produced at `app/build/outputs/apk/debug/app-debug.apk`.
 
+> **Robolectric warm-up (fresh machine):** the first unit-test run downloads
+> the android-all jar (~57 MB; API 19 = `4.4_r1-robolectric-r2-i6`) from
+> Maven Central into `~/.m2/repository` — Robolectric's own resolver, not the
+> Gradle cache (`assembleDebug` does not fetch it). After cloning, run
+> `./gradlew testDebugUnitTest` once online (or, lighter,
+> `./gradlew testDebugUnitTest --tests "com.example.mylibrary.model.BookTest"`);
+> afterwards the suite also runs with `--offline`. CI always runs online.
+
 ## CI and branch protection (GitHub)
 
 `github.com/Klapatun/NeoLibrary` runs **GitHub Actions** (`.github/workflows/ci.yml`) on

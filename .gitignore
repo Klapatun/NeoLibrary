@@ -11,3 +11,4 @@
 tmp
 tools/SvgToPng/bin
 tools/SvgToPng/obj
+.agents/plans/
