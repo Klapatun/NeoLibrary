@@ -1,4 +1,4 @@
-%% Neo Library — жизненный цикл строки книги (флаги meta_done / user_edited / last_read)
+%% Neo Library — жизненный цикл строки книги (флаги meta_done / meta_failed / user_edited / last_read)
 stateDiagram-v2
     direction LR
 
@@ -6,10 +6,16 @@ stateDiagram-v2
 
     Found --> Skeleton: этап-1: upsertBasic()\nINSERT скелета (path, format,\ntitle из имени, size)
     Skeleton --> Enriched: этап-2 (фон): updateMetadata()\nmeta_done = 1
+    Skeleton --> Enriched: быстрый путь: книгу открыли\nдо этапа-2 → enrichOne()
+    Skeleton --> Enriched: парсинг бросил исключение (битый файл):\nзаголовок из имени, считается обогащённой
+    Skeleton --> UnEnriched: этап-2: парсинг перелетел\n2-минутный бюджет → markMetaFailed()\nmeta_done при этом остаётся 0
+
+    UnEnriched --> Enriched: повтор (на каждом рескане —\nпоследней в очереди): теперь успел\n→ updateMetadata() снимает meta_failed
+    UnEnriched --> UnEnriched: рескан: снова последняя\n(meta_failed ASC, _id ASC)\nи снова перелёт бюджета
+    UnEnriched --> Skeleton: импорт перезаписал файл:\nmarkMetaPending() — как новый скелет
 
     Enriched --> Enriched: повторный скан → upsertBasic()\nменяет только format + size_bytes
 
-    Skeleton --> Enriched: быстрый путь: книгу открыли\nдо этапа-2 → enrichOne()
     Enriched --> Read: открыли книгу (ACTION_VIEW)\nmarkRead() → last_read = now
     Read --> Read: открывали снова
 

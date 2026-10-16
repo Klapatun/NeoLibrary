@@ -1,10 +1,10 @@
 package com.example.mylibrary;
 
-import android.annotation.SuppressLint;
 import android.app.Activity;
 import android.app.AlertDialog;
 import android.app.LoaderManager;
 import android.app.ProgressDialog;
+import android.content.Context;
 import android.content.DialogInterface;
 import android.content.CursorLoader;
 import android.content.Intent;
@@ -40,6 +40,7 @@ import com.example.mylibrary.util.CoverCache;
 import com.example.mylibrary.util.Openers;
 
 import java.io.File;
+import java.lang.ref.WeakReference;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -141,7 +142,10 @@ public class MainActivity extends Activity
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_main);
 
-        db = new BookDatabase(this);
+        // The app context, not the Activity's: the database is process-wide state,
+        // and in-flight background tasks (scan, import, enrichment) may outlive the
+        // screen — they hold this object, so it must not pin the Activity.
+        db = new BookDatabase(getApplicationContext());
 
         progressBar = (ProgressBar) findViewById(R.id.progress);
         emptyView = (TextView) findViewById(R.id.empty_view);
@@ -711,21 +715,49 @@ public class MainActivity extends Activity
     // Stage 1: fast scan
     // -----------------------------------------------------------------
 
-    @SuppressLint("StaticFieldLeak")
     private void startScan() {
         progressBar.setVisibility(View.VISIBLE);
-        new AsyncTask<Void, Void, List<Book>>() {
-            @Override protected List<Book> doInBackground(Void... v) {
-                // Fast by design: file walk only, no in-file metadata extraction
-                // (that is stage 2's job).
-                return LibraryScanner.scan(MainActivity.this, null);
-            }
-            @Override protected void onPostExecute(List<Book> found) {
-                progressBar.setVisibility(View.GONE);
-                // Do NOT clear the whole table here: upsertBasic() already keeps
-                // metadata, enrichment state and last_read timestamps in sync.
-                if (found != null) {
-                    for (Book b : found) db.upsertBasic(b);
+        new ScanTask(this).execute();
+    }
+
+    /** The stage-1 scan task. A STATIC nested class on purpose: an anonymous inner
+     *  class would carry a synthetic strong reference to the Activity (javac emits
+     *  it for every anonymous class inside an instance method, used or not), and a
+     *  storage walk can run for minutes — the screen must be collectible while it
+     *  is in flight. Holds the app context for the background work (the scanner
+     *  only resolves storage roots) and the Activity weakly for the UI follow-up:
+     *  the catalog upserts complete even if the screen is gone by then. */
+    private static final class ScanTask extends AsyncTask<Void, Void, List<Book>> {
+        private final Context appContext;
+        private final BookDatabase db;
+        private final WeakReference<MainActivity> self;
+
+        ScanTask(MainActivity host) {
+            this.appContext = host.getApplicationContext();
+            this.db = host.db; // safe: it holds the app context
+            this.self = new WeakReference<MainActivity>(host);
+        }
+
+        @Override protected List<Book> doInBackground(Void... v) {
+            // Fast by design: file walk only, no in-file metadata extraction
+            // (that is stage 2's job).
+            return LibraryScanner.scan(appContext, null);
+        }
+
+        @Override protected void onPostExecute(List<Book> found) {
+            MainActivity a = self.get();
+            boolean screenAlive = a != null && !a.isFinishing();
+            if (screenAlive) a.progressBar.setVisibility(View.GONE);
+            // Do NOT clear the whole table here: upsertBasic() already keeps
+            // metadata, enrichment state and last_read timestamps in sync. The
+            // catalog work completes even if the screen is gone — the upserts are
+            // the scan's actual result (the next launch only re-binds the UI).
+            // The rows go in as batch commits (groups of
+            // BookDatabase.BATCH_SIZE rows per transaction), not one autocommit
+            // per book.
+            if (found != null) {
+                db.upsertBasicBatch(found);
+                if (screenAlive) {
                     // The upserts above were committed on this (UI) thread, just now —
                     // so re-query the catalog ourselves and rebind the adapter.
                     // Deterministic: it does not rely on the CursorLoader's
@@ -733,18 +765,20 @@ public class MainActivity extends Activity
                     // loader cancel/restart cycle — without this rebind the list
                     // would stay empty after a rescan that finds new books). The
                     // loader's next delivery simply replaces this cursor.
-                    adapter.changeCursor(currentCatalogCursor());
-                    updateEmptyView();
-                    // Also announce through the normal channel (the "recently read"
-                    // observer and any other listeners).
-                    getContentResolver().notifyChange(BookProvider.CONTENT_URI, null);
+                    a.adapter.changeCursor(a.currentCatalogCursor());
+                    a.updateEmptyView();
                 }
-                Toast.makeText(MainActivity.this,
+                // Also announce through the normal channel (the "recently read"
+                // observer and any other listeners).
+                appContext.getContentResolver().notifyChange(BookProvider.CONTENT_URI, null);
+            }
+            if (screenAlive) {
+                Toast.makeText(a,
                         "Found " + (found == null ? 0 : found.size()) + " book(s)",
                         Toast.LENGTH_SHORT).show();
-                startEnrichment();
+                a.startEnrichment();
             }
-        }.execute();
+        }
     }
 
     // -----------------------------------------------------------------
@@ -811,63 +845,94 @@ public class MainActivity extends Activity
         return null;
     }
 
-    private void importToLibrary(final Uri uri, final String displayName) {
+    private void importToLibrary(Uri uri, String displayName) {
         final File dest = new File(getExternalFilesDir("books"), displayName);
         final ProgressDialog pd = ProgressDialog.show(this, null, "Importing…", true, false);
-        new AsyncTask<Void, Void, Boolean>() {
-            @Override protected Boolean doInBackground(Void... v) {
-                try {
-                    if (!dest.getParentFile().exists()) dest.getParentFile().mkdirs();
-                    java.io.InputStream in = getContentResolver().openInputStream(uri);
-                    java.io.OutputStream out = new java.io.FileOutputStream(dest);
-                    byte[] buf = new byte[8192];
-                    int n;
-                    while ((n = in.read(buf)) > 0) out.write(buf, 0, n);
-                    in.close();
-                    out.close();
-                    Book b = LibraryScanner.scanSingle(dest);
-                    if (b != null) {
-                        long existing = db.getIdForPath(dest.getAbsolutePath());
-                        db.upsertBasic(b);
-                        if (existing >= 0) {
-                            // The import overwrote an existing file: the row still carries
-                            // the OLD in-file metadata and the cache the OLD cover (a new
-                            // file without a cover would keep the stale one forever).
-                            // Drop both — the re-extraction below refreshes them, and the
-                            // pending flag is the safety net for a later bulk pass.
-                            db.markMetaPending(existing);
-                            CoverCache.delete(MainActivity.this, dest.getAbsolutePath());
-                        }
-                        // Stage 2 for this single book — already off the UI thread.
-                        MetaEnricher.enrichOne(MainActivity.this, db, b);
-                        getContentResolver().notifyChange(BookProvider.CONTENT_URI, null);
+        new ImportTask(this, uri, displayName, dest, pd).execute();
+    }
+
+    /** Copies a picked document into the library and re-enriches the book. A STATIC
+     *  nested class for the same reason as {@link ScanTask}: an anonymous inner
+     *  class would carry a synthetic strong reference to the Activity, and copying
+     *  a big file can outlive the screen. Uses the app context for the background
+     *  work (the SAF read grant is process-wide — any ContentResolver in the
+     *  process can open the picked document) and holds the Activity and the
+     *  progress dialog weakly for the UI follow-up. */
+    private static final class ImportTask extends AsyncTask<Void, Void, Boolean> {
+        private final Uri uri;
+        private final String displayName;
+        private final File dest;
+        private final Context appContext;
+        private final BookDatabase db;
+        private final WeakReference<ProgressDialog> dialog;
+        private final WeakReference<MainActivity> self;
+
+        ImportTask(MainActivity host, Uri uri, String displayName, File dest, ProgressDialog pd) {
+            this.uri = uri;
+            this.displayName = displayName;
+            this.dest = dest;
+            this.appContext = host.getApplicationContext();
+            this.db = host.db; // safe: it holds the app context
+            this.dialog = new WeakReference<ProgressDialog>(pd);
+            this.self = new WeakReference<MainActivity>(host);
+        }
+
+        @Override protected Boolean doInBackground(Void... v) {
+            try {
+                if (!dest.getParentFile().exists()) dest.getParentFile().mkdirs();
+                java.io.InputStream in = appContext.getContentResolver().openInputStream(uri);
+                java.io.OutputStream out = new java.io.FileOutputStream(dest);
+                byte[] buf = new byte[8192];
+                int n;
+                while ((n = in.read(buf)) > 0) out.write(buf, 0, n);
+                in.close();
+                out.close();
+                Book b = LibraryScanner.scanSingle(dest);
+                if (b != null) {
+                    long existing = db.getIdForPath(dest.getAbsolutePath());
+                    db.upsertBasic(b);
+                    if (existing >= 0) {
+                        // The import overwrote an existing file: the row still carries
+                        // the OLD in-file metadata and the cache the OLD cover (a new
+                        // file without a cover would keep the stale one forever).
+                        // Drop both — the re-extraction below refreshes them, and the
+                        // pending flag is the safety net for a later bulk pass.
+                        db.markMetaPending(existing);
+                        CoverCache.delete(appContext, dest.getAbsolutePath());
                     }
-                    return b != null;
-                } catch (Exception e) {
-                    return false;
+                    // Stage 2 for this single book — already off the UI thread.
+                    MetaEnricher.enrichOne(appContext, db, b);
+                    appContext.getContentResolver().notifyChange(BookProvider.CONTENT_URI, null);
                 }
+                return b != null;
+            } catch (Exception e) {
+                return false;
             }
-            @Override protected void onPostExecute(Boolean ok) {
-                pd.dismiss();
-                if (ok) {
-                    Toast.makeText(MainActivity.this, "Imported " + displayName, Toast.LENGTH_SHORT).show();
-                    // The upsert above was committed on the background thread, just
-                    // before this callback — so re-query the catalog ourselves and
-                    // rebind the adapter. Deterministic: it does not rely on the
-                    // CursorLoader's ContentObserver being alive (on API 19 it can be
-                    // lost after a loader cancel/restart cycle — without this rebind
-                    // the list could stay empty after an import, same class of bug as
-                    // the rescan fix in startScan). The loader's next delivery simply
-                    // replaces this cursor.
-                    adapter.changeCursor(currentCatalogCursor());
-                    updateEmptyView();
-                } else {
-                    Toast.makeText(MainActivity.this, "Import failed", Toast.LENGTH_LONG).show();
-                }
-                // The notifyChange in doInBackground still goes out for the other
-                // listeners (e.g. the "recently read" view); this rebind only
-                // guarantees that the list in front of the user catches up.
+        }
+
+        @Override protected void onPostExecute(Boolean ok) {
+            ProgressDialog d = dialog.get();
+            if (d != null) d.dismiss();
+            MainActivity a = self.get();
+            if (a == null || a.isFinishing()) return;
+            if (ok) {
+                Toast.makeText(a, "Imported " + displayName, Toast.LENGTH_SHORT).show();
+                // The upsert above was committed on the background thread, just
+                // before this callback — so re-query the catalog ourselves and
+                // rebind the adapter. Deterministic: it does not rely on the
+                // CursorLoader's ContentObserver being alive (on API 19 it can be
+                // lost after a loader cancel/restart cycle — without this rebind
+                // the list could stay empty after an import, same class of bug as
+                // the rescan fix in startScan). The loader's next delivery simply
+                // replaces this cursor.
+                a.adapter.changeCursor(a.currentCatalogCursor());
+                a.updateEmptyView();
+            } else {
+                Toast.makeText(a, "Import failed", Toast.LENGTH_LONG).show();
             }
-        }.execute();
+            // The notifyChange in doInBackground still goes out for the other
+            // listeners (e.g. the "recently read" view); this rebind only
+            // guarantees that the list in front of the user catches up.
+        }
     }
 }

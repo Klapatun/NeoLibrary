@@ -268,6 +268,16 @@ final class ZipUtil {
   К ним добавились hardcoded-строки в `MainActivity`/`DetailActivity`/`EditMetaActivity`
   («Found N book(s)», «File not found», «No books read yet.» и т.п.) и `#FFF3CD`
   в `activity_main.xml`.
+- **`UnknownIssueId`-шум из `app/lint.xml`** (2 шт. на каждый вариант, см. также
+  раздел 14) [ ] (низкий, найдено 2026-10-08): `ObsoleteApi` (строка 21,
+  `severity="error"`) и `GoogleAppIndexing` (строка 28, `ignore`) — оба id
+  **не существуют** в Lint, которым билдится проект (31.5.2, AGP 8.5.2;
+  проверено по `lint-checks-31.5.2.jar` из Gradle-кэша: таких детекторов нет,
+  валидный аналог `ObsoleteSdkInt` на строке 22 работает и не шипит).
+  `ObsoleteSdkInt` (строка 22) — валидный. Последствие: строка 21 — мёртвая
+  (инвариант minSdk 19 при этом не ослаблен: `NewApi` и `ObsoleteSdkInt`
+  оба резолвятся), строка 28 — no-op ignore. Фикс: удалить строки 21 и 28
+  (вместе с ревизией Phase-1-бейслайна, см. комментарий в `build.gradle`).
 - **Robolectric-обходные пути в тестах** [~] (обслуживание): фейк-курсор (обход
   `UnsupportedOperationException` в `BaseCursor` — `register*Observer`/`getInt`/`getLong`)
   и миграционный тест через `PRAGMA user_version` — при апгрейде Robolectric (сейчас
@@ -761,3 +771,52 @@ main-looper'а МЕЖДУ ними (имитация кадров реально
   timeout-жертве при почти свободной машине — чаще, чем «нагруженная машина»
   из 8.4. Следующее падение (с дампом тредов) покажет, что держит пул;
   тогда и чинить корень.
+
+---
+
+## [FEATURE] 2026-10-08: обогащение stage 2 — сначала простые форматы (EPUB/FB2 → FB2ZIP → MOBI → остальное)
+
+**Создано:** 2026-10-08. **Статус:** сделано (изменения в рабочем дереве,
+не закоммичены; сьют 196/196 зелёный — было 194, +2 новых теста; lint —
+ни одного нового предупреждения).
+
+### 14.1 Задача
+После сканирования stage-2 очередь (книги с `meta_done = 0`) делить по типам
+форматов и обогащать, начиная с самых дешёвых (EPUB, FB2), а более дорогие
+(MOBI) — позже. До этой фичи порядок был чисто по `_id` (порядок строк из
+скана) — лёгкие EPUB/FB2 могли ждать в хвосте очереди за тяжёлыми MOBI.
+
+### 14.2 Реализация
+- **`scan/Formats`** — новый `enrichmentPriority(String formatId)`: единственный
+  источник знания о стоимости обогащения (в духе уже объявленного single source
+  of truth): 0 = EPUB/FB2 (простой XML), 1 = FB2ZIP (FB2 плюс распакетовка
+  архива), 2 = MOBI (самый тяжёлый парсинг: бинарный PalmDB + MOBI header + EXTH),
+  3 = всё остальное (CHM, DOC, DOCX, DjVu, FB3, HTML, PDB, PDF, PRC, RTF, TXT,
+  неизвестные). `null`/неизвестный id деградирует в последнюю группу.
+- **`meta/MetaEnricher`** — `start()` после `db.needMeta()` вызывает
+  package-private `orderQueueByCost(queue)` (тестируемый шов того же стиля, что
+  хук `parseTask`). Компаратор: `metaFailed` — последний из всех (правило
+  «таймаут-книга ретраится последней» сохранено: один патологический файл всё
+  равно не может зациклить очередь) → группа по стоимости (возрастание) →
+  `_id` строки (стабильность внутри группы).
+- SQL `needMeta()` не тронут (очередь = набор stage 2 с `meta_failed`
+  последними); порядок по стоимости — политика самого прохода enricher'а,
+  где и происходит работа. `enrichOne` (import / fast path) не изменён:
+  одна книга, порядок ей не нужен.
+
+### 14.3 Тесты
+- `scan/FormatsTest#enrichmentPriorityOrdersTheCheapFormatsFirstAndTheHeavyLast`
+  (группа каждого формата + null/unknown → последняя группа).
+- `meta/MetaEnricherTest#startWorksTheQueueFromTheCheapestFormatsUp`: 6 книг
+  посеяны в ОБРАТНОМ порядке стоимости (PDF, MOBI, FB2ZIP, FB2, EPUB и
+  «поздний» EPUB с `markMetaFailed` — чтобы правило про таймаут-книгу проверялось
+  внутри новой логики); фейковый `ParseTask` записывает фактический порядок
+  парсинга; ожидаемый: `story.fb2` → `novel.epub` → `zipped.fb2.zip` →
+  `heavy.mobi` → `plain.pdf` → `late.epub` (флагированная EPUB-книга — последняя
+  из всех, хотя её формат самый дешёвый).
+- Полный сьют: 196/196.
+
+### 14.4 Документация
+- `CONTEXT.md`: class map (строка `meta/MetaEnricher`) и пункт «Main
+  workflows → Enrich (stage 2, background)» — порядок по группам стоимости
+  задокументирован рядом с уже описанным правилом про таймаут-книги.

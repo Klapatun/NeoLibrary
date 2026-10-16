@@ -11,10 +11,11 @@ import java.io.ByteArrayInputStream;
 import java.io.BufferedInputStream;
 import java.io.File;
 import java.io.FileInputStream;
+import java.io.IOException;
 import java.io.InputStream;
-import java.util.Locale;
+import java.util.Enumeration;
 import java.util.zip.ZipEntry;
-import java.util.zip.ZipInputStream;
+import java.util.zip.ZipFile;
 
 /**
  * Reads embedded metadata (title, author, publisher, description...) out of the
@@ -72,20 +73,19 @@ public final class MetaExtractor {
     /**
      * EPUB is a ZIP whose root file (the OPF package document) is located via
      * {@code META-INF/container.xml}. The OPF is a Dublin-Core flavoured XML file.
+     * One {@link ZipFile} session: the container entry is read, then the OPF entry.
      */
     private static MetaData extractEpub(File file) throws Exception {
         MetaData md = new MetaData();
-        String opfPath = findOpfPath(file);
-        if (opfPath == null) return notFound(file);
-
-        ZipInputStream zip = new ZipInputStream(new BufferedInputStream(new FileInputStream(file)));
+        ZipFile zip = new ZipFile(file);
         try {
-            ZipEntry e;
-            while ((e = zip.getNextEntry()) != null) {
-                if (e.getName().equals(opfPath)) {
-                    parseOpf(zip, md);
-                    break;
-                }
+            String opfPath = opfPathFromContainer(zip);
+            if (opfPath == null) return notFound(file);
+            InputStream in = zip.getInputStream(zip.getEntry(opfPath));
+            try {
+                parseOpf(in, md);
+            } finally {
+                in.close();
             }
         } finally {
             zip.close();
@@ -94,32 +94,47 @@ public final class MetaExtractor {
         return md;
     }
 
-    private static String findOpfPath(File file) throws Exception {
-        ZipInputStream zip = new ZipInputStream(new BufferedInputStream(new FileInputStream(file)));
-        try {
-            ZipEntry e;
-            while ((e = zip.getNextEntry()) != null) {
-                if (e.getName().equalsIgnoreCase("META-INF/container.xml")) {
-                    StringBuilder sb = new StringBuilder();
-                    byte[] buf = new byte[4096];
-                    int n;
-                    while ((n = zip.read(buf)) > 0) sb.append(new String(buf, 0, n, "UTF-8"));
-                    String xml = sb.toString();
-                    // rootfile full-path attribute is namespace-agnostic in practice
-                    int idx = xml.indexOf("full-path");
-                    if (idx < 0) return null;
-                    int s = xml.indexOf('\"', idx);
-                    int en = xml.indexOf('\"', s + 1);
-                    return xml.substring(s + 1, en);
-                }
+    /**
+     * The OPF package document's path from {@code META-INF/container.xml} on an
+     * already-open archive — one entry read, no sequential scan (the rootfile
+     * full-path attribute is namespace-agnostic in practice).
+     *
+     * <p>Package-private so the single-pass enricher parse shares it with the public
+     * {@link #extract} path (the duplicated container lookup of the two extractors
+     * lives here, once).</p>
+     */
+    static String opfPathFromContainer(ZipFile zip) throws IOException {
+        Enumeration<? extends ZipEntry> it = zip.entries();
+        while (it.hasMoreElements()) {
+            ZipEntry e = it.nextElement();
+            if (!e.getName().equalsIgnoreCase("META-INF/container.xml")) continue;
+            InputStream in = zip.getInputStream(e);
+            try {
+                StringBuilder sb = new StringBuilder();
+                byte[] buf = new byte[4096];
+                int n;
+                while ((n = in.read(buf)) > 0) sb.append(new String(buf, 0, n, "UTF-8"));
+                String xml = sb.toString();
+                int idx = xml.indexOf("full-path");
+                if (idx < 0) return null;
+                int s = xml.indexOf('\"', idx);
+                if (s < 0) return null;
+                int en = xml.indexOf('\"', s + 1);
+                if (en <= s + 1) return null;
+                return xml.substring(s + 1, en);
+            } finally {
+                in.close();
             }
-        } finally {
-            zip.close();
         }
         return null;
     }
 
-    private static void parseOpf(InputStream in, MetaData md) throws Exception {
+    /**
+     * Parses an OPF stream into a {@link MetaData} (DC title/creator/publisher/
+     * description/language). Package-private so the single-pass enricher parse
+     * shares it with the public {@link #extract} path.
+     */
+    static void parseOpf(InputStream in, MetaData md) throws Exception {
         XmlPullParser p = Xml.newPullParser();
         p.setInput(in, "UTF-8");
         int event;
@@ -180,20 +195,30 @@ public final class MetaExtractor {
      * FB2ZIP (".fb2.zip") is a ZIP container whose payload is a plain FB2 document
      * (often alongside a loose cover image). The metadata lives in the inner FB2's
      * &lt;description&gt; block, so we pull the first {@code .fb2} entry out of the
-     * archive and parse it exactly like a standalone FB2 file.
+     * archive and parse it exactly like a standalone FB2 file. One ZipFile session
+     * (the central directory is scanned; only the .fb2 entry is decompressed).
      */
     private static MetaData extractFb2Zip(File file) throws Exception {
-        byte[] xml = readFb2Entry(file);
-        if (xml == null) return notFound(file);
-        return parseFb2Xml(new ByteArrayInputStream(xml));
+        ZipFile zip = new ZipFile(file);
+        try {
+            byte[] xml = CoverExtractor.readFb2EntryBytes(zip);
+            if (xml == null) return notFound(file);
+            return parseFb2Xml(new ByteArrayInputStream(xml));
+        } finally {
+            zip.close();
+        }
     }
 
     /**
      * Parses a FB2 XML stream into a {@link MetaData}: title, author name parts
      * (first/middle/last/nickname, combined afterwards), publisher, annotation,
-     * language and genre.
+     * language and genre. Stops at the closing {@code description} tag (the body —
+     * the bulk of a real file — is never parsed).
+     *
+     * <p>Package-private so the single-pass enricher parse (which feeds it the
+     * batch-1 header region) shares it with the public {@link #extract} path.</p>
      */
-    private static MetaData parseFb2Xml(InputStream in) throws Exception {
+    static MetaData parseFb2Xml(InputStream in) throws Exception {
         MetaData md = new MetaData();
         XmlPullParser p = Xml.newPullParser();
         p.setInput(in, "UTF-8");
@@ -226,6 +251,11 @@ public final class MetaExtractor {
                 else if (pending.equals("lang") && md.language == null) md.language = text;
                 else if (pending.equals("genre") && md.genre == null) md.genre = text;
             } else if (event == XmlPullParser.END_TAG) {
+                // Every metadata element (and the cover's binary id) lives inside
+                // <description>, which the FB2 XSD places before <body>: stop here —
+                // the body (the bulk of a real file) is never parsed. A non-conformant
+                // file without the closing tag simply parses to the end, as before.
+                if (localName(p.getName()).equals("description")) break;
                 pending = null;
             }
         }
@@ -237,35 +267,6 @@ public final class MetaExtractor {
         md.author = author.toString().trim();
         md.found = md.title != null && md.title.length() > 0;
         return md;
-    }
-
-    /**
-     * Returns the bytes of the first {@code .fb2} file entry in the given ZIP archive
-     * (entry names matched case-insensitively, so a book tucked into a subfolder is
-     * found too), or {@code null} if the archive contains no FB2 document.
-     */
-    private static byte[] readFb2Entry(File file) throws Exception {
-        ZipInputStream zip = new ZipInputStream(new BufferedInputStream(new FileInputStream(file)));
-        try {
-            ZipEntry e;
-            while ((e = zip.getNextEntry()) != null) {
-                if (!e.isDirectory() && e.getName().toLowerCase(Locale.US).endsWith(".fb2")) {
-                    return readEntryBytes(zip);
-                }
-            }
-        } finally {
-            zip.close();
-        }
-        return null;
-    }
-
-    /** Reads the current (already-opened) zip entry into a byte array. */
-    private static byte[] readEntryBytes(ZipInputStream zip) throws Exception {
-        java.io.ByteArrayOutputStream baos = new java.io.ByteArrayOutputStream();
-        byte[] buf = new byte[8192];
-        int n;
-        while ((n = zip.read(buf)) > 0) baos.write(buf, 0, n);
-        return baos.toByteArray();
     }
 
     // -------------------------------------------------------------------

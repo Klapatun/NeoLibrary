@@ -2,21 +2,21 @@
 flowchart LR
     subgraph FILE ["В файл (in-file) — только EPUB / FB2"]
         direction TB
-        EPUB["EPUB: content.opf\n(OPT-документ)"]
+        EPUB["EPUB: content.opf\n(OPF-документ)"]
         FB2["FB2: XML-блок\n&lt;description&gt;"]
     end
 
     subgraph CATALOG ["В каталог (in-catalog) — ВСЕ 15 форматов"]
         direction TB
-        DB[("SQLite: library.db\nтаблица books\n(1 строка = 1 файл)")]
+        DB[("SQLite: library.db, v5\nтаблица books\n(1 строка = 1 файл)\nфлаги: meta_done / meta_failed /\nuser_edited / last_read")]
         CACHE["CoverCache\ngetExternalFilesDir('covers')/&lt;hash&gt;.img\n(байты обложки на диске)"]
     end
 
     EPUB -- "MetaWriter: перезапись in-place\n(.tmp → swap → .bak)" --> EPUB
     FB2 -- "MetaWriter: перезапись in-place\n(.tmp → swap → .bak)" --> FB2
 
-    FILE -- "MetaExtractor читает из файла" --> DB
-    EPUB & FB2 -- "покрывает остальные\nформаты (CHM, PDF, MOBI...)" --> DB
+    FILE -- "этап 2 (MetaEnricher): single-pass парсинг\nметаданные + обложка, бюджет 2 мин/файл" --> DB
+    EPUB & FB2 -- "остальные форматы (CHM, PDF, MOBI...)\nin-file слоя не имеют (title — из имени файла)" --> DB
 
-    DB -- "CursorLoader / BookProvider\n(read-only)" --> UI["UI: MainActivity\n(CursorAdapter: список / плитка)"]
+    DB -- "CursorLoader / BookProvider\n(read-only)" --> UI["UI: MainActivity\n(CursorAdapter: список / плитки,\nclient-side пагинация, свайп страницы)"]
     CACHE -- "CoverLoader: сначала кэш,\nпотом in-file, LruCache" --> UI

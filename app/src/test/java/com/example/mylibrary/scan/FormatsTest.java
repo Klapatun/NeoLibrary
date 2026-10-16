@@ -106,6 +106,29 @@ public class FormatsTest {
     }
 
     /**
+     * The stage-2 enricher works its queue from the cheapest formats up: EPUB and
+     * FB2 (plain XML) first, then FB2ZIP (FB2 wrapped in an archive), then the heavy
+     * MOBI binary parse, and every remaining format last.
+     */
+    @Test
+    public void enrichmentPriorityOrdersTheCheapFormatsFirstAndTheHeavyLast() {
+        assertEquals(0, Formats.enrichmentPriority("EPUB"));
+        assertEquals(0, Formats.enrichmentPriority("FB2"));
+        assertEquals(1, Formats.enrichmentPriority("FB2ZIP"));
+        assertEquals(2, Formats.enrichmentPriority("MOBI"));
+        // The formats without a fast in-file metadata path all land in the last tier.
+        assertEquals(3, Formats.enrichmentPriority("CHM"));
+        assertEquals(3, Formats.enrichmentPriority("FB3"));
+        assertEquals(3, Formats.enrichmentPriority("HTML"));
+        assertEquals(3, Formats.enrichmentPriority("PDF"));
+        assertEquals(3, Formats.enrichmentPriority("PDB"));
+        assertEquals(3, Formats.enrichmentPriority("TXT"));
+        // Unknown / missing ids degrade to the last tier (never crash the ordering).
+        assertEquals(3, Formats.enrichmentPriority("UNKNOWN"));
+        assertEquals(3, Formats.enrichmentPriority(null));
+    }
+
+    /**
      * Invariant: {@code Formats.ALL} is the single source of truth. Every canonical
      * id must be reachable via at least one extension, and no extension may map to an
      * id that is not in {@code ALL} (that would create an orphan filter/badge value).
