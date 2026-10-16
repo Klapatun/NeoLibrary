@@ -1,4 +1,4 @@
-%% Neo Library — ER-диаграмма каталога (SQLite, library.db)
+%% Neo Library — ER-диаграмма каталога (SQLite, library.db, v5)
 %% Одна таблица, одна строка = одна книга на диске.
 erDiagram
 
@@ -14,6 +14,7 @@ erDiagram
         INTEGER   size_bytes   "размер файла, байты"
         INTEGER   exported     "0/1: метаданные файла редактировались на диске (EPUB/FB2)"
         INTEGER   meta_done    "0/1: этап-2 извлёк метаданные из файла (очередь enrich: meta_done=0)"
+        INTEGER   meta_failed  "0/1: последний парсинг перелетел 2-мин бюджет («не обогащена»: остаётся в очереди, берётся последней)"
         INTEGER   user_edited  "0/1: пользователь правил поля — фон их не затирает"
         INTEGER   last_read    "epoch millis последнего чтения; NULL = не читали"
     }
@@ -30,25 +31,32 @@ erDiagram
         long    sizeBytes
         boolean exported
         boolean metaDone
+        boolean metaFailed
         boolean userEdited
     }
 
     book_database {
-        SQLiteOpenHelper db "library.db, DB_VERSION=2"
-        long    upsert(b)        "INSERT/UPDATE по path; last_read не трогается"
-        long    upsertBasic(b)   "этап-1 скан; у существующей строки — только format+size"
-        void    updateMetadata(md) "этап-2 (по id); заполняет только пустые при user_edited=1"
-        void    markRead(id)     "last_read = now"
-        List    needMeta()       "SELECT * WHERE meta_done=0"
-        List    all(filter)      "ORDER BY title COLLATE NOCASE"
-        List    recent(limit)    "last_read IS NOT NULL DESC LIMIT n"
+        SQLiteOpenHelper db "library.db, DB_VERSION=5 (v4: +meta_failed, v5: +индекс по title)"
+        long    upsert               "upsert(Book b): INSERT/UPDATE по path; защищённые столбцы (meta_*, user_edited, last_read) не пишет"
+        long    upsertBasic          "upsertBasic(Book b): этап-1 скан; у существующей строки — только format+size"
+        void    upsertBasicBatch     "upsertBasicBatch(List): скан; группы по BATCH_SIZE=5 в одной транзакции"
+        void    updateMetadata       "updateMetadata(id, md, fileReadable): этап-2; при user_edited=1 — только пустые; при успехе: meta_done=1, meta_failed=0"
+        void    updateMetadataBatch  "updateMetadataBatch(List): этап-2; группы по BATCH_SIZE=5 в одной транзакции"
+        void    markRead             "markRead(id): last_read = now"
+        void    markMetaPending      "markMetaPending(id): импорт; сбрасывает meta_done и meta_failed (файл новый)"
+        void    markMetaFailed       "markMetaFailed(id): парсинг перелетел 2-минутный бюджет"
+        void    markUserEdited       "markUserEdited(id): user_edited = 1 (монотонный флаг)"
+        void    clear                "clear(): удаляет все строки (вызывающий ещё и CoverCache.clear())"
+        List    needMeta             "needMeta(): WHERE meta_done=0 ORDER BY meta_failed ASC, _id ASC"
+        List    all                  "all(filter): ORDER BY title COLLATE NOCASE (индекс добавлен в v5)"
+        List    recent               "recent(limit): last_read IS NOT NULL ORDER BY last_read DESC LIMIT n"
     }
 
     book_provider {
         ContentProvider provider "read-only"
         Uri CONTENT_URI  "content://com.example.mylibrary.books/books"
         Uri RECENT_URI   "content://com.example.mylibrary.books/books/recent"
-        Cursor query(uri) "возвращает live-cursor из BookDatabase"
+        Cursor query     "query(uri): возвращает live-cursor из BookDatabase"
     }
 
     book_model ||--|| books : "fromCursor / upsert (1 к 1)"

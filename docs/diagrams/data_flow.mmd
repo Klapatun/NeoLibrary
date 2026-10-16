@@ -4,33 +4,41 @@ sequenceDiagram
     participant UI as MainActivity (UI thread)
     participant L as CursorLoader (LoaderManager)
     participant P as BookProvider (ContentResolver)
-    participant DB as BookDatabase (SQLite, write-лок)
-    participant BG as MetaEnricher (worker thread)
+    participant DB as BookDatabase (SQLite, статический WRITE_LOCK)
+    participant BG as ScanTask / MetaEnricher (фоновые потоки)
 
-    Note over UI,BG: ЭТАП 1 — быстрый скан (AsyncTask)
-    UI->>BG: startScan()
-    BG->>DB: upsertBasic() по каждой книге (INSERT скелетов)
+    Note over UI,BG: ЭТАП 1 — быстрый скан (статический ScanTask, Activity — WeakReference)
+    UI->>BG: startScan() (cold start)
+    BG->>BG: LibraryScanner.scan() — скелеты книг
+    BG->>DB: upsertBasicBatch() — группы по 5 в одной транзакции
+    BG->>UI: adapter.changeCursor(currentCatalogCursor()) — детерминированный rebind
     BG->>P: getContentResolver().notifyChange(CONTENT_URI)
     P-->>L: ContentObserver сработал
     L->>P: query(CONTENT_URI)
-    P->>DB: cursorAll(filter)
+    P->>DB: cursorAll(filter) — ORDER BY title COLLATE NOCASE
     DB-->>L: live Cursor
     L-->>UI: CursorAdapter обновляет строки — список на экране
 
-    Note over UI,BG: ЭТАП 2 — фоновое обогащение
-    BG->>DB: needMeta() (WHERE meta_done=0)
-    loop для каждой книги
-        BG->>BG: MetaExtractor + CoverExtractor
-        BG->>DB: updateMetadata() — meta_done=1, user_edited: только пустые, last_read не трогается
+    Note over UI,BG: ЭТАП 2 — фоновое обогащение (один воркер)
+    BG->>DB: needMeta() (WHERE meta_done=0, meta_failed — последние)
+    BG->>BG: orderQueueByCost: EPUB/FB2 → FB2ZIP → MOBI → остальные
+    loop для каждой группы (BATCH_SIZE = 5)
+        loop для каждой книги
+            BG->>BG: single-pass парсинг (метаданные + обложка,\nодин сеанс файла, бюджет 2 минуты)
+        end
+        Note over BG: перелёт бюджета → markMetaFailed(): «не обогащена», остаётся в очереди, повтор — последним
+        BG->>DB: updateMetadataBatch() — одна транзакция на группу
+        BG->>P: notifyChange() (троттлинг: не чаще 1 раза в 300 мс)
     end
-    BG->>P: notifyChange() каждой партией
     P-->>L: ContentObserver
     L->>P: query()
     P->>DB: cursorAll()
     DB-->>L: Cursor
     L-->>UI: строки обновляются на месте
+    Note over BG: нормальное завершение: финальный notifyChange + onFinished(). После cancel (onDestroy / «Очистить библиотеку») — ни notify, ни onFinished
 
-    Note over UI,BG: Открытие книги (DetailActivity)
+    Note over UI,BG: Открытие книги (tap → «Открыть эту книгу?»)
+    UI->>UI: Openers.openFile(file, activity, OpenOutcome)\n→ ACTION_VIEW + file:// URI (Neo Reader)
     UI->>DB: markRead(id) → last_read = now
     UI->>P: notifyChange(RECENT_URI)
     L->>P: query(RECENT_URI)
@@ -40,6 +48,13 @@ sequenceDiagram
 
     Note over UI,BG: Редактирование метаданных (EditMetaActivity)
     UI->>UI: MetaWriter.write() — только EPUB/FB2 (в файл)
-    UI->>DB: upsert() с userEdited = true
+    UI->>DB: upsert() с userEdited = true + markUserEdited(id)
     UI->>P: notifyChange(CONTENT_URI)
     L-->>UI: список отобразил правку
+
+    Note over UI,BG: «Очистить библиотеку» (файлы на диске не трогаются)
+    UI->>BG: MetaEnricher.cancel()
+    UI->>DB: clear() + CoverCache.clear()
+    UI->>UI: adapter.changeCursor() — детерминированный rebind
+    UI->>P: notifyChangeAll()
+    L-->>UI: каталог пуст, полоса страниц спрятана
