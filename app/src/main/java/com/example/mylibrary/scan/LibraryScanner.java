@@ -7,7 +7,9 @@ import com.example.mylibrary.model.Book;
 
 import java.io.File;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 
 /**
  * Stage 1 of library loading: recursively walks the readable storage roots looking
@@ -33,14 +35,46 @@ public class LibraryScanner {
      * @param onProgress optional progress callback (path currently scanned).
      */
     public static List<Book> scan(List<File> roots, Progress onProgress) {
-        if (roots == null || roots.isEmpty()) {
-            roots = defaultRoots(null);
-        }
+        return scanDetailed(roots, onProgress).books;
+    }
+
+    public static ScanResult scanDetailed(List<File> roots, Progress onProgress) {
+        if (roots == null || roots.isEmpty()) roots = defaultRoots(null);
+        List<RootScanResult> rootResults = new ArrayList<RootScanResult>();
         List<Book> books = new ArrayList<Book>();
+        List<String> normalizedRoots = new ArrayList<String>();
         for (File root : roots) {
-            walk(root, books, onProgress);
+            if (root == null) continue;
+            String rootPath = root.getAbsolutePath();
+            if (containsRoot(normalizedRoots, rootPath)) continue;
+            normalizedRoots.add(rootPath);
+            RootScanResult result = scanRoot(root, onProgress);
+            rootResults.add(result);
+            addUniqueBooks(books, result.books);
         }
-        return books;
+        return new ScanResult(rootResults, books);
+    }
+
+    private static RootScanResult scanRoot(File root, Progress onProgress) {
+        List<Book> found = new ArrayList<Book>();
+        boolean complete = walk(root, found, onProgress);
+        return new RootScanResult(root.getAbsolutePath(), found, complete);
+    }
+
+    private static boolean containsRoot(List<String> roots, String candidate) {
+        for (String root : roots) {
+            if (candidate.equals(root) || candidate.startsWith(root + File.separator)
+                    || root.startsWith(candidate + File.separator)) return true;
+        }
+        return false;
+    }
+
+    private static void addUniqueBooks(List<Book> target, List<Book> source) {
+        Set<String> paths = new HashSet<String>();
+        for (Book book : target) paths.add(book.path);
+        for (Book book : source) {
+            if (paths.add(book.path)) target.add(book);
+        }
     }
 
     /** Convenience overload when a Context is available (external storage roots). */
@@ -48,18 +82,47 @@ public class LibraryScanner {
         return scan(defaultRoots(context), onProgress);
     }
 
-    private static void walk(File dir, List<Book> out, Progress onProgress) {
-        if (dir == null || !dir.exists() || !dir.isDirectory()) return;
-        File[] children = dir.listFiles();
-        if (children == null) return;
+    private static boolean walk(File dir, List<Book> out, Progress onProgress) {
+        if (dir == null || !dir.exists() || !dir.isDirectory()) return false;
+        File[] children;
+        try {
+            children = dir.listFiles();
+        } catch (Exception e) {
+            return false;
+        }
+        if (children == null) return false;
+        boolean complete = true;
         for (File f : children) {
             if (f.isDirectory()) {
-                walk(f, out, onProgress);
+                if (!walk(f, out, onProgress)) complete = false;
             } else if (f.isFile() && Formats.isSupported(f.getName())) {
                 if (onProgress != null) onProgress.onScan(f.getAbsolutePath());
                 Book b = buildBook(f);
                 if (b != null) out.add(b);
             }
+        }
+        return complete;
+    }
+
+    public static final class ScanResult {
+        public final List<RootScanResult> roots;
+        public final List<Book> books;
+
+        ScanResult(List<RootScanResult> roots, List<Book> books) {
+            this.roots = roots;
+            this.books = books;
+        }
+    }
+
+    public static final class RootScanResult {
+        public final String rootPath;
+        public final List<Book> books;
+        public final boolean complete;
+
+        RootScanResult(String rootPath, List<Book> books, boolean complete) {
+            this.rootPath = rootPath;
+            this.books = books;
+            this.complete = complete;
         }
     }
 

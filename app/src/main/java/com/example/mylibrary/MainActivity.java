@@ -42,7 +42,9 @@ import com.example.mylibrary.util.Openers;
 import java.io.File;
 import java.lang.ref.WeakReference;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 
 /**
  * Home screen: loads the library in three stages and lets the user browse the catalog
@@ -727,7 +729,7 @@ public class MainActivity extends Activity
      *  is in flight. Holds the app context for the background work (the scanner
      *  only resolves storage roots) and the Activity weakly for the UI follow-up:
      *  the catalog upserts complete even if the screen is gone by then. */
-    private static final class ScanTask extends AsyncTask<Void, Void, List<Book>> {
+    private static final class ScanTask extends AsyncTask<Void, Void, LibraryScanner.ScanResult> {
         private final Context appContext;
         private final BookDatabase db;
         private final WeakReference<MainActivity> self;
@@ -738,13 +740,14 @@ public class MainActivity extends Activity
             this.self = new WeakReference<MainActivity>(host);
         }
 
-        @Override protected List<Book> doInBackground(Void... v) {
+        @Override protected LibraryScanner.ScanResult doInBackground(Void... v) {
             // Fast by design: file walk only, no in-file metadata extraction
             // (that is stage 2's job).
-            return LibraryScanner.scan(appContext, null);
+            return LibraryScanner.scanDetailed(null, null);
         }
 
-        @Override protected void onPostExecute(List<Book> found) {
+        @Override protected void onPostExecute(LibraryScanner.ScanResult result) {
+            List<Book> found = result == null ? null : result.books;
             MainActivity a = self.get();
             boolean screenAlive = a != null && !a.isFinishing();
             if (screenAlive) a.progressBar.setVisibility(View.GONE);
@@ -757,6 +760,15 @@ public class MainActivity extends Activity
             // per book.
             if (found != null) {
                 db.upsertBasicBatch(found);
+                if (result != null) {
+                    for (LibraryScanner.RootScanResult root : result.roots) {
+                        if (root.complete) {
+                            Set<String> paths = new HashSet<String>();
+                            for (Book book : root.books) paths.add(book.path);
+                            db.removeMissingUnderRoot(root.rootPath, paths);
+                        }
+                    }
+                }
                 if (screenAlive) {
                     // The upserts above were committed on this (UI) thread, just now —
                     // so re-query the catalog ourselves and rebind the adapter.

@@ -21,8 +21,12 @@ import org.robolectric.RobolectricTestRunner;
 import org.robolectric.RuntimeEnvironment;
 import org.robolectric.annotation.Config;
 
+import java.io.File;
 import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 
 /**
  * Robolectric tests for {@link BookDatabase} (real SQLite in-process).
@@ -146,6 +150,95 @@ public class BookDatabaseTest {
             assertTrue("last_read must survive upserts", lastRead > 0);
         } finally {
             c.close();
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // Missing-file cleanup
+    // ------------------------------------------------------------------
+
+    @Test
+    public void removeMissingUnderRootDeletesOrphanAndItsCover() throws Exception {
+        File root = new File(context.getCacheDir(), "cleanup-root");
+        assertTrue(root.mkdirs());
+        File orphan = new File(root, "orphan.pdf");
+        writeBytes(orphan, new byte[]{1, 2, 3});
+        long id = db.upsert(book(orphan.getAbsolutePath(), "PDF", "Orphan", null));
+        CoverCache.save(context, orphan.getAbsolutePath(), new byte[]{9, 8, 7});
+        assertTrue(CoverCache.fileFor(context, orphan.getAbsolutePath()).exists());
+
+        assertTrue(orphan.delete());
+        db.removeMissingUnderRoot(root.getAbsolutePath(), new HashSet<String>());
+
+        assertNull(db.getById(id));
+        assertFalse(CoverCache.fileFor(context, orphan.getAbsolutePath()).exists());
+    }
+
+    @Test
+    public void removeMissingUnderRootKeepsExistingAndOutsideRootBooks() throws Exception {
+        File root = new File(context.getCacheDir(), "cleanup-root");
+        File outside = new File(context.getCacheDir(), "other-root");
+        assertTrue(root.mkdirs());
+        assertTrue(outside.mkdirs());
+        File existing = new File(root, "existing.pdf");
+        File outsideFile = new File(outside, "outside.pdf");
+        writeBytes(existing, new byte[]{1});
+        writeBytes(outsideFile, new byte[]{2});
+        long existingId = db.upsert(book(existing.getAbsolutePath(), "PDF", "Existing", null));
+        long outsideId = db.upsert(book(outsideFile.getAbsolutePath(), "PDF", "Outside", null));
+
+        db.removeMissingUnderRoot(root.getAbsolutePath(),
+                new HashSet<String>(Arrays.asList(existing.getAbsolutePath())));
+
+        assertNotNull(db.getById(existingId));
+        assertNotNull(db.getById(outsideId));
+    }
+
+    @Test
+    public void removeMissingUnderRootDoesNotTreatSiblingPrefixAsChild() {
+        String root = new File(context.getCacheDir(), "root").getAbsolutePath();
+        File sibling = new File(context.getCacheDir(), "root-old/book.pdf");
+        long id = db.upsert(book(sibling.getAbsolutePath(), "PDF", "Sibling", null));
+
+        db.removeMissingUnderRoot(root, new HashSet<String>());
+
+        assertNotNull(db.getById(id));
+    }
+
+    @Test
+    public void removeMissingUnderRootKeepsFileThatAppearedAfterScan() throws Exception {
+        File root = new File(context.getCacheDir(), "cleanup-root");
+        assertTrue(root.mkdirs());
+        File appeared = new File(root, "appeared.pdf");
+        long id = db.upsert(book(appeared.getAbsolutePath(), "PDF", "Appeared", null));
+        writeBytes(appeared, new byte[]{1, 2, 3});
+
+        db.removeMissingUnderRoot(root.getAbsolutePath(), new HashSet<String>());
+
+        assertNotNull(db.getById(id));
+    }
+
+    @Test
+    public void removeMissingUnderRootIsSafeToRepeat() throws Exception {
+        File root = new File(context.getCacheDir(), "cleanup-root");
+        assertTrue(root.mkdirs());
+        File orphan = new File(root, "orphan.pdf");
+        writeBytes(orphan, new byte[]{1});
+        long id = db.upsert(book(orphan.getAbsolutePath(), "PDF", "Orphan", null));
+        assertTrue(orphan.delete());
+
+        db.removeMissingUnderRoot(root.getAbsolutePath(), new HashSet<String>());
+        db.removeMissingUnderRoot(root.getAbsolutePath(), new HashSet<String>());
+
+        assertNull(db.getById(id));
+    }
+
+    private static void writeBytes(File file, byte[] bytes) throws Exception {
+        java.io.FileOutputStream out = new java.io.FileOutputStream(file);
+        try {
+            out.write(bytes);
+        } finally {
+            out.close();
         }
     }
 

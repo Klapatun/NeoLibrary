@@ -11,8 +11,11 @@ import com.example.mylibrary.meta.MetaData;
 import com.example.mylibrary.model.Book;
 import com.example.mylibrary.util.CoverCache;
 
+import java.io.File;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 
 /**
  * SQLite-backed catalog of books. Stores the display/catalog metadata for every book
@@ -522,6 +525,37 @@ public class BookDatabase extends SQLiteOpenHelper {
         // Drop the book's cached cover too, so removal never leaves an orphan
         // "covers/<hash>.img" file on disk.
         CoverCache.delete(context, path);
+    }
+
+    /** Removes missing books below one successfully scanned root. */
+    public void removeMissingUnderRoot(String root, Set<String> foundPaths) {
+        String normalizedRoot = new File(root).getAbsolutePath();
+        Set<String> found = new HashSet<String>();
+        for (String path : foundPaths) found.add(new File(path).getAbsolutePath());
+        List<String> missing = new ArrayList<String>();
+        synchronized (WRITE_LOCK) {
+            Cursor c = getReadableDatabase().query("books", new String[]{"path"},
+                    null, null, null, null, null);
+            try {
+                while (c.moveToNext()) {
+                    String path = c.getString(0);
+                    if (isUnderRoot(path, normalizedRoot) && !found.contains(path)) {
+                        File file = new File(path);
+                        if (!file.exists() || !file.isFile()) missing.add(path);
+                    }
+                }
+            } finally {
+                c.close();
+            }
+            for (String path : missing) deleteByPath(path);
+        }
+    }
+
+    static boolean isUnderRoot(String path, String root) {
+        String normalizedPath = new File(path).getAbsolutePath();
+        String normalizedRoot = new File(root).getAbsolutePath();
+        return normalizedPath.equals(normalizedRoot)
+                || normalizedPath.startsWith(normalizedRoot + File.separator);
     }
 
     public void clear() {

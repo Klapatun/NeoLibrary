@@ -153,6 +153,75 @@ public class LibraryScannerTest {
     }
 
     @Test
+    public void scanDetailedMarksExistingEmptyRootComplete() {
+        File empty = new File(folder.getRoot(), "empty");
+        assertTrue(empty.mkdirs());
+
+        LibraryScanner.ScanResult result = LibraryScanner.scanDetailed(
+                Arrays.asList(empty), null);
+
+        assertEquals(1, result.roots.size());
+        LibraryScanner.RootScanResult rootResult = result.roots.get(0);
+        assertEquals(empty.getAbsolutePath(), rootResult.rootPath);
+        assertTrue(rootResult.complete);
+        assertTrue(rootResult.books.isEmpty());
+        assertTrue(result.books.isEmpty());
+    }
+
+    @Test
+    public void scanDetailedMarksMissingRootIncompleteWithoutTreatingItAsEmptySuccess() {
+        File missing = new File(folder.getRoot(), "missing");
+
+        LibraryScanner.ScanResult result = LibraryScanner.scanDetailed(
+                Arrays.asList(missing), null);
+
+        assertEquals(1, result.roots.size());
+        LibraryScanner.RootScanResult rootResult = result.roots.get(0);
+        assertEquals(missing.getAbsolutePath(), rootResult.rootPath);
+        assertFalse(rootResult.complete);
+        assertTrue(result.books.isEmpty());
+    }
+
+    @Test
+    public void scanDetailedKeepsSuccessfulAndIncompleteRootsIndependent() {
+        File good = new File(folder.getRoot(), "good");
+        File missing = new File(folder.getRoot(), "missing");
+        assertTrue(good.mkdirs());
+        try {
+            write(new File(good, "present.txt"), "present");
+        } catch (Exception e) {
+            throw new AssertionError(e);
+        }
+
+        LibraryScanner.ScanResult result = LibraryScanner.scanDetailed(
+                Arrays.asList(good, missing), null);
+
+        assertEquals(2, result.roots.size());
+        assertTrue(result.roots.get(0).complete);
+        assertFalse(result.roots.get(1).complete);
+        assertEquals(1, result.roots.get(0).books.size());
+        assertEquals(1, result.books.size());
+    }
+
+    @Test
+    public void scanDetailedDeduplicatesNestedRootsAndFoundPaths() {
+        File parent = new File(folder.getRoot(), "parent");
+        File child = new File(parent, "child");
+        assertTrue(child.mkdirs());
+        try {
+            write(new File(child, "book.txt"), "book");
+        } catch (Exception e) {
+            throw new AssertionError(e);
+        }
+
+        LibraryScanner.ScanResult result = LibraryScanner.scanDetailed(
+                Arrays.asList(parent, child), null);
+
+        assertEquals(1, result.roots.size());
+        assertEquals(1, result.books.size());
+    }
+
+    @Test
     public void scanSingleAcceptsValidBookFile() {
         File txt = new File(root, "scan_me.txt");
         try {
