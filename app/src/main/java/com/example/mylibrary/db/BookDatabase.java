@@ -474,6 +474,7 @@ public class BookDatabase extends SQLiteOpenHelper {
             ContentValues cv = new ContentValues();
             cv.put("meta_done", 0);
             cv.put("meta_failed", 0);
+            cv.put("user_edited", 0);
             db.update("books", cv, "_id=?", new String[]{String.valueOf(id)});
         }
     }
