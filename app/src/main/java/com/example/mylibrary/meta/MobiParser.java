@@ -46,7 +46,7 @@ final class MobiParser {
     /** Sanity cap on how much of record 0 we buffer (it is always small in practice). */
     private static final int MAX_RECORD0 = 4 * 1024 * 1024;
     /** Sanity cap on a single record we are willing to copy out (the cover image). */
-    private static final int MAX_RECORD = 64 * 1024 * 1024;
+    private static final int MAX_RECORD = CoverExtractor.MAX_COVER_BYTES;
 
     private RandomAccessFile raf;
     private long fileLength;

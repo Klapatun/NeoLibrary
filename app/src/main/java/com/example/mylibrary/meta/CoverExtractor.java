@@ -49,6 +49,15 @@ public final class CoverExtractor {
 
     private static final String TAG = "CoverExtractor";
 
+    /** Hard upper bound for every raw cover and cover-region buffer. */
+    public static final int MAX_COVER_BYTES = 16 * 1024 * 1024;
+
+    /** Process-sensitive limit used by every cover byte path. */
+    public static int effectiveCoverLimit() {
+        long quarter = Runtime.getRuntime().maxMemory() / 4L;
+        return (int) Math.min((long) MAX_COVER_BYTES, Math.max(1L, quarter));
+    }
+
     private CoverExtractor() {}
 
     /**
@@ -222,7 +231,7 @@ public final class CoverExtractor {
     private static final byte[] FB2_BODY_START = ascii("<body");
     /** Hard cap on the header region buffered for the cover: beyond it the cover is
      *  abandoned (logged) rather than risking an OOM on a pathological document. */
-    static final int FB2_HEADER_CAP = 32 * 1024 * 1024;
+    static final int FB2_HEADER_CAP = MAX_COVER_BYTES;
     /** Streaming read size for the FB2 header region. */
     private static final int FB2_READ_CHUNK = 8192;
 
@@ -296,8 +305,16 @@ public final class CoverExtractor {
     static byte[] readFb2Header(File file) throws Exception {
         InputStream in = new BufferedInputStream(new FileInputStream(file));
         try {
+            return readFb2Header(in);
+        } finally {
+            in.close();
+        }
+    }
+
+    private static byte[] readFb2Header(InputStream in) throws IOException {
             byte[] chunk = new byte[FB2_READ_CHUNK];
-            byte[] data = new byte[16 * 1024]; // grown as needed; the region is small in practice
+            int cap = effectiveCoverLimit();
+            byte[] data = new byte[Math.min(16 * 1024, cap)];
             int size = 0;
             // One streaming pass with a two-phase marker search: first the end of the
             // description block, then the start of the body. Each chunk is scanned only
@@ -308,8 +325,13 @@ public final class CoverExtractor {
             boolean descClosed = false;
             int n;
             while ((n = in.read(chunk)) > 0) {
+                if (size + n > cap) {
+                    Log.w(TAG, "FB2 header exceeds cover limit; giving up");
+                    return null;
+                }
                 if (size + n > data.length) {
-                    data = Arrays.copyOf(data, Math.max(data.length * 2, size + n));
+                    int next = Math.min(cap, Math.max(data.length * 2, size + n));
+                    data = Arrays.copyOf(data, next);
                 }
                 int before = size;
                 System.arraycopy(chunk, 0, data, size, n);
@@ -325,21 +347,15 @@ public final class CoverExtractor {
                         descClosed = true;
                         marker = FB2_BODY_START;
                         searchFrom = at + FB2_DESC_END.length;
-                        if (indexOf(data, searchFrom, size, FB2_BODY_START) >= 0) break;
+                                if (searchFrom < size
+                                && indexOf(data, searchFrom, size, FB2_BODY_START) >= 0) break;
                     } else {
                         break; // the body has started: the header region is complete
                     }
                 }
-                if (size > FB2_HEADER_CAP) {
-                    Log.w(TAG, "FB2 header of " + file + " exceeds " + (FB2_HEADER_CAP >> 20)
-                            + " MB; giving up on the cover");
-                    break;
-                }
+
             }
             return Arrays.copyOf(data, size);
-        } finally {
-            in.close();
-        }
     }
 
     /**
@@ -382,7 +398,7 @@ public final class CoverExtractor {
 
         // 4) The base64 payload, decoded directly from the XML bytes (no String).
         byte[] decoded = decodeBase64(xml, gt + 1, endTag - gt - 1);
-        return decoded.length > 0 ? decoded : null;
+        return decoded == null || decoded.length == 0 ? null : decoded;
     }
 
     /**
@@ -419,28 +435,36 @@ public final class CoverExtractor {
      * intermediate String (char[]) ever exists.
      */
     private static byte[] decodeBase64(byte[] src, int off, int len) {
-        int[] q = new int[4];
-        int qi = 0;
-        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        int valid = 0;
         int end = off + len;
         for (int i = off; i < end; i++) {
+            if (B64[src[i] & 0xFF] >= 0) valid++;
+        }
+        long decodedLength = (valid / 4L) * 3L;
+        if (valid % 4 == 2) decodedLength++;
+        else if (valid % 4 == 3) decodedLength += 2;
+        if (decodedLength <= 0 || decodedLength > effectiveCoverLimit()) return null;
+        byte[] out = new byte[(int) decodedLength];
+        int[] q = new int[4];
+        int qi = 0;
+        int at = 0;
+        for (int i = off; i < end; i++) {
             int v = B64[src[i] & 0xFF];
-            if (v < 0) continue; // whitespace, '=' padding, anything non-base64
-            q[qi] = v;
-            if (++qi == 4) {
-                out.write((q[0] << 2) | (q[1] >> 4));
-                out.write(((q[1] & 0xF) << 4) | (q[2] >> 2));
-                out.write(((q[2] & 0x3) << 6) | q[3]);
+            if (v < 0) continue;
+            q[qi++] = v;
+            if (qi == 4) {
+                out[at++] = (byte) ((q[0] << 2) | (q[1] >> 4));
+                out[at++] = (byte) (((q[1] & 0xF) << 4) | (q[2] >> 2));
+                out[at++] = (byte) (((q[2] & 0x3) << 6) | q[3]);
                 qi = 0;
             }
         }
-        if (qi == 2) {
-            out.write((q[0] << 2) | (q[1] >> 4));
-        } else if (qi == 3) {
-            out.write((q[0] << 2) | (q[1] >> 4));
-            out.write(((q[1] & 0xF) << 4) | (q[2] >> 2));
+        if (qi == 2) out[at++] = (byte) ((q[0] << 2) | (q[1] >> 4));
+        else if (qi == 3) {
+            out[at++] = (byte) ((q[0] << 2) | (q[1] >> 4));
+            out[at] = (byte) (((q[1] & 0xF) << 4) | (q[2] >> 2));
         }
-        return out.toByteArray();
+        return out;
     }
 
     // -------------------------------------------------------------------
@@ -474,8 +498,8 @@ public final class CoverExtractor {
 
     /** Finds {@code marker} in {@code buf[off, off+len)} with a plain byte scan; -1 if absent. */
     private static int indexOf(byte[] buf, int off, int len, byte[] marker) {
-        if (len < marker.length) return -1;
-        int last = off + len - marker.length;
+        if (off < 0 || off > len || len < marker.length) return -1;
+        int last = len - marker.length;
         for (int i = off; i <= last; i++) {
             int j;
             for (j = 0; j < marker.length; j++) {
@@ -507,7 +531,12 @@ public final class CoverExtractor {
         while (it.hasMoreElements()) {
             ZipEntry e = it.nextElement();
             if (!e.isDirectory() && e.getName().toLowerCase(Locale.US).endsWith(".fb2")) {
-                return readEntryBytes(zip, e);
+                InputStream in = zip.getInputStream(e);
+                try {
+                    return readFb2Header(in);
+                } finally {
+                    in.close();
+                }
             }
         }
         return null;
@@ -627,9 +656,12 @@ public final class CoverExtractor {
      *  or {@code null} for a {@code null} entry. */
     static byte[] readEntryBytes(ZipFile zip, ZipEntry entry) throws IOException {
         if (entry == null) return null;
+        int cap = effectiveCoverLimit();
+        long declared = entry.getSize();
+        if (declared > cap) return null;
         InputStream in = zip.getInputStream(entry);
         try {
-            return readToEndBytes(in);
+            return readToEndBytes(in, cap);
         } finally {
             in.close();
         }
@@ -641,11 +673,19 @@ public final class CoverExtractor {
         return data == null ? null : new String(data, "UTF-8");
     }
 
-    private static byte[] readToEndBytes(InputStream in) throws IOException {
-        ByteArrayOutputStream baos = new ByteArrayOutputStream();
+    private static byte[] readToEndBytes(InputStream in, int cap) throws IOException {
+        byte[] out = new byte[Math.min(8192, cap)];
+        int size = 0;
         byte[] buf = new byte[8192];
         int n;
-        while ((n = in.read(buf)) > 0) baos.write(buf, 0, n);
-        return baos.toByteArray();
+        while ((n = in.read(buf)) > 0) {
+            if (size + n > cap) return null;
+            if (size + n > out.length) {
+                out = Arrays.copyOf(out, Math.min(cap, Math.max(out.length * 2, size + n)));
+            }
+            System.arraycopy(buf, 0, out, size, n);
+            size += n;
+        }
+        return Arrays.copyOf(out, size);
     }
 }

@@ -1,5 +1,6 @@
 package com.example.mylibrary.meta;
 
+import static org.junit.Assert.assertArrayEquals;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
@@ -66,6 +67,62 @@ public class CoverExtractorTest {
         assertFalse(CoverExtractor.canHaveCover("CHM"));
         assertFalse(CoverExtractor.canHaveCover(null));
         assertFalse(CoverExtractor.canHaveCover(""));
+    }
+
+    @Test
+    public void readEntryBytesRejectsKnownEntryLargerThanEffectiveLimit() throws Exception {
+        File z = folder.newFile("large-entry.zip");
+        java.util.Map<String, byte[]> entries = new java.util.LinkedHashMap<String, byte[]>();
+        entries.put("cover.jpg", new byte[]{1, 2, 3});
+        TestFixtures.writeZip(z, entries);
+
+        java.util.zip.ZipFile zip = new java.util.zip.ZipFile(z);
+        try {
+            java.util.zip.ZipEntry original = zip.getEntry("cover.jpg");
+            java.util.zip.ZipEntry tooLarge = new java.util.zip.ZipEntry(original.getName());
+            tooLarge.setSize(16 * 1024 * 1024 + 1L);
+            assertNull(CoverExtractor.readEntryBytes(zip, tooLarge));
+        } finally {
+            zip.close();
+        }
+    }
+
+    @Test
+    public void epubOversizedCoverLeavesMetadataAvailable() throws Exception {
+        String opf = TestFixtures.OPF_WITH_COVER.replace("images/cover.jpg", "images/large.jpg");
+        File largeEpub = folder.newFile("large-cover.epub");
+        java.util.Map<String, byte[]> entries = new java.util.LinkedHashMap<String, byte[]>();
+        entries.put("META-INF/container.xml", TestFixtures.CONTAINER_XML.getBytes("UTF-8"));
+        entries.put("OEBPS/content.opf", opf.getBytes("UTF-8"));
+        entries.put("OEBPS/ch1.xhtml", TestFixtures.CHAPTER_XHTML.getBytes("UTF-8"));
+        entries.put("OEBPS/images/large.jpg", new byte[CoverExtractor.effectiveCoverLimit() + 1]);
+        TestFixtures.writeZip(largeEpub, entries);
+
+        MetaData metadata = MetaExtractor.extract(largeEpub);
+        assertTrue(metadata.found);
+        assertEquals("Covered Book", metadata.title);
+        assertNull(CoverExtractor.extract(largeEpub));
+    }
+
+    @Test
+    public void fb2ZipLargeBodyStillReturnsHeaderCover() throws Exception {
+        File z = folder.newFile("large-body.fb2.zip");
+        byte[] cover = TestFixtures.coverBytes();
+        StringBuilder inner = new StringBuilder(TestFixtures.buildFb2WithCover(
+                Base64.getEncoder().encodeToString(cover)));
+        int at = inner.indexOf("</FictionBook>");
+        inner.insert(at, "<body><p>" + repeat('x', 100000) + "</p></body>");
+        java.util.Map<String, byte[]> entries = new java.util.LinkedHashMap<String, byte[]>();
+        entries.put("inner.fb2", inner.toString().getBytes("UTF-8"));
+        TestFixtures.writeZip(z, entries);
+
+        assertArrayEquals(cover, CoverExtractor.extract(z));
+    }
+
+    private static String repeat(char c, int count) {
+        StringBuilder result = new StringBuilder(count);
+        for (int i = 0; i < count; i++) result.append(c);
+        return result.toString();
     }
 
     // ------------------------------------------------------------------
@@ -141,6 +198,19 @@ public class CoverExtractorTest {
      * path (separate pass, same {@code </description>} stop) must work on the same file.
      */
     @Test
+    public void fb2HeaderOverCapDoesNotReturnAnUnboundedBuffer() throws Exception {
+        StringBuilder xml = new StringBuilder();
+        xml.append("<FictionBook><description><title-info><title>Safe</title></title-info>");
+        xml.append("<annotation>");
+        for (int i = 0; i < CoverExtractor.effectiveCoverLimit() + 1; i++) xml.append('x');
+        xml.append("</annotation></description><body></body></FictionBook>");
+        TestFixtures.writeText(fb2, xml.toString());
+
+        byte[] header = CoverExtractor.readFb2Header(fb2);
+        assertNull("an oversized FB2 header must be rejected safely", header);
+    }
+
+    @Test
     public void fb2WithLargeBodyAfterDescriptionStillYieldsCoverAndMeta() throws Exception {
         byte[] cover = TestFixtures.coverBytes();
         String base64 = Base64.getEncoder().encodeToString(cover);
@@ -178,6 +248,28 @@ public class CoverExtractorTest {
     /** base64 with newlines and tabs (wrapped lines are common in real FB2 files) must
      *  decode to exactly the original bytes. */
     @Test
+    public void fb2EmptyBase64PayloadReturnsNull() throws Exception {
+        TestFixtures.writeText(fb2, TestFixtures.buildFb2WithCover(""));
+        assertNull(CoverExtractor.extract(fb2));
+    }
+
+    @Test
+    public void fb2Base64AtDecodedLimitIsAccepted() throws Exception {
+        byte[] cover = new byte[16 * 1024 * 1024];
+        String raw = Base64.getEncoder().encodeToString(cover);
+        byte[] xml = TestFixtures.buildFb2WithCover(raw).getBytes("UTF-8");
+        assertNotNull(CoverExtractor.coverFromFb2Bytes(xml));
+    }
+
+    @Test
+    public void fb2Base64AboveDecodedLimitReturnsNull() throws Exception {
+        byte[] cover = new byte[16 * 1024 * 1024 + 1];
+        String raw = Base64.getEncoder().encodeToString(cover);
+        byte[] xml = TestFixtures.buildFb2WithCover(raw).getBytes("UTF-8");
+        assertNull(CoverExtractor.coverFromFb2Bytes(xml));
+    }
+
+    @Test
     public void fb2CoverBase64WithLineBreaksAndTabsIsDecoded() throws Exception {
         byte[] cover = TestFixtures.coverBytes();
         String raw = Base64.getEncoder().encodeToString(cover);
@@ -202,6 +294,26 @@ public class CoverExtractorTest {
      * the binary block proves the reader actually stopped at {@code <body} (a reader
      * that missed the split tag would buffer the whole file).
      */
+    @Test
+    public void fb2ZipClosingDescriptionSplitAcrossReadChunksIsStillFound() throws Exception {
+        byte[] cover = TestFixtures.coverBytes();
+        String base64 = Base64.getEncoder().encodeToString(cover);
+        String prefix = "<?xml version=\"1.0\"?><FictionBook xmlns:l=\"http://www.w3.org/1999/xlink\"><description>"
+                + "<title-info><title>Split Zip</title></title-info><coverpage>"
+                + "<image l:href=\"#coverimg\"/></coverpage><annotation>";
+        int pad = (int) ((8189 - (prefix.length() % 8192) + 8192) % 8192);
+        StringBuilder xml = new StringBuilder(prefix);
+        for (int i = 0; i < pad; i++) xml.append('x');
+        xml.append("</description><binary id=\"coverimg\">").append(base64)
+                .append("</binary><body><p>large body</p></body></FictionBook>");
+        File z = folder.newFile("split-marker.fb2.zip");
+        java.util.Map<String, byte[]> entries = new java.util.LinkedHashMap<String, byte[]>();
+        entries.put("inner.fb2", xml.toString().getBytes("UTF-8"));
+        TestFixtures.writeZip(z, entries);
+
+        assertArrayEquals(cover, CoverExtractor.extract(z));
+    }
+
     @Test
     public void closingDescriptionSplitAcrossReadChunksIsStillFound() throws Exception {
         byte[] cover = TestFixtures.coverBytes();

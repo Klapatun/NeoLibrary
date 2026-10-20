@@ -22,6 +22,7 @@ import java.util.Comparator;
 import java.util.List;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 
 /**
  * Stage 2 of library loading: the background process that fills in what stage 1
@@ -110,6 +111,9 @@ public final class MetaEnricher {
     /** The enforced deadline in milliseconds. Package-private so tests can shrink
      *  it (and restore it) without waiting real minutes. */
     static volatile long extractTimeoutMs = DEFAULT_EXTRACT_TIMEOUT_MS;
+
+    static volatile int maxLiveParseThreads = 2;
+    private static final AtomicInteger liveParseThreads = new AtomicInteger(0);
 
     /** The timed unit of work for one book: fills {@link Parsed} with the in-file
      *  metadata and (when the format can carry a cover) the cover bytes. Runs on a
@@ -479,6 +483,15 @@ public final class MetaEnricher {
         // it is abandoned and the book is marked "un-enriched" so the pass moves on
         // to the next file instead of stalling on it.
         final Parsed parsed = new Parsed();
+        int live;
+        do {
+            live = liveParseThreads.get();
+            if (live >= Math.max(1, maxLiveParseThreads)) {
+                Log.w(TAG, "skipped_due_to_live_thread_cap for " + f);
+                markFailed(db, book.id);
+                return null;
+            }
+        } while (!liveParseThreads.compareAndSet(live, live + 1));
         // Set by the parse thread when the parse throws; inspected after the wait so
         // the worker (not the parse thread) decides the book's fate.
         final Exception[] parseError = new Exception[1];
@@ -493,6 +506,7 @@ public final class MetaEnricher {
                     // a failed parse into the book's final state (see below).
                     parseError[0] = e;
                 } finally {
+                    liveParseThreads.decrementAndGet();
                     parseDone.countDown();
                 }
             }

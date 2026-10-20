@@ -53,10 +53,10 @@ public class CoverLoader {
                 }
             };
 
-    /** The grid tile's cover frame (item_book_grid.xml): 242x387px (5:8) with
+    /** The grid tile's cover frame (item_book_grid.xml): 242x328px with
      *  8px rounded corners; ROUNDED_RECT bitmaps are pre-cropped to exactly this. */
     private static final int GRID_COVER_W = 242;
-    private static final int GRID_COVER_H = 387;
+    private static final int GRID_COVER_H = 328;
     private static final int GRID_COVER_RADIUS = 8;
 
     /** The round badge slot in list mode (item_book.xml): 48dp, converted to pixels
@@ -253,7 +253,7 @@ public class CoverLoader {
      * bounds-only pass ({@code inJustDecodeBounds}) reads the image's dimensions
      * without allocating a pixel buffer, then the real decode runs with the
      * smallest power-of-two {@code inSampleSize} whose result keeps the max edge at
-     * or under 512 px (the largest shape the cache stores: the 242x387 grid tile
+     * or under 512 px (the largest shape the cache stores: the 242x328 grid tile
      * fits comfortably under it). A 10 MB book cover that is 6000x9000 px is
      * decoded once, at 1/8, into ~2.2 MB of pixels — instead of the ~216 MB the
      * full-size decode would allocate on the device's 64 MB heap.
@@ -269,7 +269,7 @@ public class CoverLoader {
         int w = bounds.outWidth;
         int h = bounds.outHeight;
         if (w <= 0 || h <= 0) {
-            return BitmapFactory.decodeByteArray(bytes, 0, bytes.length);
+            return null;
         }
         int sample = 1;
         while (Math.max(w, h) / sample > MAX_EDGE) sample *= 2;
@@ -318,7 +318,7 @@ public class CoverLoader {
         return out;
     }
 
-    /** Center-crops the bitmap to the grid tile's cover frame (242x387px, 5:8) and
+    /** Center-crops the bitmap to the grid tile's cover frame (242x328px) and
      *  clips it into a rounded rectangle (8px corners, transparent outside), so it
      *  matches the rounded cover frame in grid mode. The pre-cropped bitmap is exactly
      *  the size of the ImageView, so the ImageView's centerCrop scales it 1:1.
@@ -341,5 +341,10 @@ public class CoverLoader {
         paint.setShader(shader);
         c.drawRoundRect(new RectF(0, 0, w, h), GRID_COVER_RADIUS, GRID_COVER_RADIUS, paint);
         return out;
+    }
+
+    /** Package-private seam for deterministic pixel-level tests of grid cropping. */
+    static Bitmap roundedRectCropForTest(Bitmap src) {
+        return roundedRectCrop(src);
     }
 }
