@@ -1,6 +1,7 @@
 package com.example.mylibrary.util;
 
 import static org.junit.Assert.assertArrayEquals;
+import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNull;
@@ -43,6 +44,64 @@ public class CoverCacheTest {
         byte[] loaded = CoverCache.load(app, "/x/a.epub");
         assertNotNull(loaded);
         assertArrayEquals(COVER, loaded);
+    }
+
+    @Test
+    public void loadReturnsNullForCoverLargerThanEffectiveLimit() throws Exception {
+        File file = CoverCache.fileFor(app, "/x/too-large.epub");
+        if (!file.getParentFile().exists()) assertTrue(file.getParentFile().mkdirs());
+        writeBytes(file, com.example.mylibrary.meta.CoverExtractor.effectiveCoverLimit() + 1);
+
+        assertNull(CoverCache.load(app, "/x/too-large.epub"));
+    }
+
+    @Test
+    public void loadReturnsBytesBelowTheEffectiveLimit() throws Exception {
+        File file = CoverCache.fileFor(app, "/x/below-limit.epub");
+        if (!file.getParentFile().exists()) assertTrue(file.getParentFile().mkdirs());
+        int length = com.example.mylibrary.meta.CoverExtractor.effectiveCoverLimit() - 1;
+        writeBytes(file, length);
+
+        byte[] loaded = CoverCache.load(app, "/x/below-limit.epub");
+        assertNotNull(loaded);
+        assertEquals(length, loaded.length);
+    }
+
+    @Test
+    public void loadReturnsBytesAtTheEffectiveLimit() throws Exception {
+        File file = CoverCache.fileFor(app, "/x/at-limit.epub");
+        if (!file.getParentFile().exists()) assertTrue(file.getParentFile().mkdirs());
+        int length = com.example.mylibrary.meta.CoverExtractor.effectiveCoverLimit();
+        writeBytes(file, length);
+
+        byte[] loaded = CoverCache.load(app, "/x/at-limit.epub");
+        assertNotNull(loaded);
+        assertEquals(length, loaded.length);
+    }
+
+    @Test
+    public void loadReturnsNullForAnEmptyCacheFile() throws Exception {
+        File file = CoverCache.fileFor(app, "/x/empty.epub");
+        if (!file.getParentFile().exists()) assertTrue(file.getParentFile().mkdirs());
+        assertTrue(file.createNewFile());
+
+        assertNull(CoverCache.load(app, "/x/empty.epub"));
+    }
+
+
+    private static void writeBytes(File file, int length) throws Exception {
+        java.io.FileOutputStream out = new java.io.FileOutputStream(file);
+        try {
+            byte[] chunk = new byte[8192];
+            int remaining = length;
+            while (remaining > 0) {
+                int n = Math.min(remaining, chunk.length);
+                out.write(chunk, 0, n);
+                remaining -= n;
+            }
+        } finally {
+            out.close();
+        }
     }
 
     @Test

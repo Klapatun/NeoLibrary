@@ -96,6 +96,16 @@ public class CoverLoaderTest {
     }
 
     @Test
+    public void malformedImageReturnsPlaceholderInsteadOfFullSizeDecode() throws Exception {
+        java.lang.reflect.Method method = CoverLoader.class.getDeclaredMethod(
+                "decodeForCache", byte[].class);
+        method.setAccessible(true);
+        Bitmap bitmap = (Bitmap) method.invoke(null, new byte[0]);
+        assertTrue("unknown bounds must not trigger an oversized fallback decode",
+                bitmap == null || Math.max(bitmap.getWidth(), bitmap.getHeight()) <= 512);
+    }
+
+    @Test
     public void twoLoadsWithTheSameKeySpawnOnlyOneInFlightTask() {
         Context app = RuntimeEnvironment.getApplication();
         Book b = book("/x/same.epub", "EPUB");

@@ -382,6 +382,75 @@ public class MetaEnricherTest {
     }
 
     // ------------------------------------------------------------------
+    // live parse-thread cap
+    // ------------------------------------------------------------------
+
+    @Test
+    public void liveParseThreadCapSkipsFollowingBooksWithoutStartingAnotherParse()
+            throws Exception {
+        File first = new File(folder.getRoot(), "first.fb2");
+        File second = new File(folder.getRoot(), "second.fb2");
+        TestFixtures.writeText(first, TestFixtures.FB2_FULL);
+        TestFixtures.writeText(second, TestFixtures.FB2_FULL);
+        seedStageOne(first, "FB2", "first");
+        seedStageOne(second, "FB2", "second");
+
+        final java.util.concurrent.CountDownLatch entered =
+                new java.util.concurrent.CountDownLatch(1);
+        final java.util.concurrent.CountDownLatch release =
+                new java.util.concurrent.CountDownLatch(1);
+        final java.util.concurrent.atomic.AtomicInteger parses =
+                new java.util.concurrent.atomic.AtomicInteger(0);
+        final java.util.concurrent.atomic.AtomicBoolean workerDone =
+                new java.util.concurrent.atomic.AtomicBoolean(false);
+        final int savedCap = MetaEnricher.maxLiveParseThreads;
+        final long savedTimeout = MetaEnricher.extractTimeoutMs;
+        final MetaEnricher.ParseTask savedTask = MetaEnricher.parseTask;
+        try {
+            MetaEnricher.maxLiveParseThreads = 1;
+            MetaEnricher.extractTimeoutMs = 150;
+            MetaEnricher.parseTask = new MetaEnricher.ParseTask() {
+                @Override
+                public void parse(File file, String format, MetaEnricher.Parsed out) {
+                    parses.incrementAndGet();
+                    entered.countDown();
+                    try {
+                        release.await();
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                    }
+                    out.meta = new MetaData();
+                }
+            };
+
+            MetaEnricher.start(app, db, new MetaEnricher.OnProgress() {
+                @Override public void onProgress(int done, int total) { }
+                @Override public void onFinished() { workerDone.set(true); }
+            });
+            assertTrue("the first parse must start", entered.await(5, java.util.concurrent.TimeUnit.SECONDS));
+
+            ShadowLooper looper = shadowOf(Looper.getMainLooper());
+            long deadline = System.currentTimeMillis() + WAIT_MS;
+            while (System.currentTimeMillis() < deadline && !workerDone.get()) {
+                looper.idle();
+                Thread.sleep(10);
+            }
+            release.countDown();
+            looper.idle();
+            MetaEnricher.cancel();
+
+            assertTrue("the worker must finish without waiting for a second parse", workerDone.get());
+            assertEquals("the live-thread cap permits only one parse", 1, parses.get());
+        } finally {
+            release.countDown();
+            MetaEnricher.cancel();
+            MetaEnricher.maxLiveParseThreads = savedCap;
+            MetaEnricher.extractTimeoutMs = savedTimeout;
+            MetaEnricher.parseTask = savedTask;
+        }
+    }
+
+    // ------------------------------------------------------------------
     // ordering: the simplest formats are enriched before the heavy ones
     // ------------------------------------------------------------------
 
