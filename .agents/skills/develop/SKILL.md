@@ -115,7 +115,7 @@ gradlew.bat :app:assembleDebug       # APK, если задевал сборку
   (`stretchMode=none`, `columnWidth=242px`), зазоры 8px между колонками и
   строками, `numColumns="auto_fit"`: портрет 758px → 3 колонки
   (3×242 + 2×8 = 742px), ландшафт 1024px → 4; контейнер книг — 16px padding
-  сверху, 8px по бокам; обложка 242x334px, красный круг 155px
+  сверху, 8px по бокам; обложка 242x328px, красный круг 155px
   (`bg_circle_red`) с инициалом для книг без обложки; скроллбар `insideOverlay`.
 
 ### Пагинация (кебаб «Add/Remove pagination»)

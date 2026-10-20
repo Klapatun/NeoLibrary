@@ -61,7 +61,7 @@ Every book's metadata is stored in **two places**:
 The full layout/gesture detail moved to the `develop` skill §6
 (`.agents/skills/develop/SKILL.md`): the list/tile toggle (`setViewMode`, `library_prefs`
 key `view_mode`, tiles as the default view), the grid px sizing for the ONYX Boox
-Volta 3 (242px tiles, `auto_fit`, paddings, 242×334 cover, 155px `bg_circle_red`
+Volta 3 (242px tiles, `auto_fit`, paddings, 242×328 cover, 155px `bg_circle_red`
 initial placeholder), pagination (kebab `main_menu_pagination`, `pagination_bar`,
 client-side window over the whole cursor, 6-tile grid pages / `computeListPageSize()`
 list pages, the `OnLayoutChangeListener` posted recompute, `pagination_enabled`

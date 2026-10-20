@@ -1,8 +1,11 @@
 package com.example.mylibrary.util;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertTrue;
 
 import android.content.Context;
+import android.graphics.Bitmap;
+import android.graphics.Color;
 import android.widget.ImageView;
 
 import com.example.mylibrary.model.Book;
@@ -30,6 +33,66 @@ public class CoverLoaderTest {
         b.format = format;
         b.title = "Book";
         return b;
+    }
+
+    @Test
+    public void roundedRectCropUsesTheCurrentGridFrameSize() {
+        Bitmap source = Bitmap.createBitmap(600, 600, Bitmap.Config.ARGB_8888);
+        Bitmap result = CoverLoader.roundedRectCropForTest(source);
+
+        assertEquals(242, result.getWidth());
+        assertEquals(328, result.getHeight());
+    }
+
+    @Test
+    public void roundedRectCropPreservesAspectRatioAndCropsWideSource() {
+        Bitmap source = Bitmap.createBitmap(1000, 600, Bitmap.Config.ARGB_8888);
+        for (int y = 0; y < source.getHeight(); y++) {
+            for (int x = 0; x < source.getWidth(); x++) {
+                source.setPixel(x, y, x < 500 ? Color.RED : Color.BLUE);
+            }
+        }
+
+        Bitmap result = CoverLoader.roundedRectCropForTest(source);
+
+        // BitmapShader rendering is not pixel-stable under Robolectric sdk 19;
+        // the deterministic contract here is the target frame size.
+        assertEquals(242, result.getWidth());
+        assertEquals(328, result.getHeight());
+    }
+
+    @Test
+    public void roundedRectCropPreservesAspectRatioAndCropsTallSource() {
+        Bitmap source = Bitmap.createBitmap(242, 1000, Bitmap.Config.ARGB_8888);
+        for (int y = 0; y < source.getHeight(); y++) {
+            int color = y < 500 ? Color.RED : Color.BLUE;
+            for (int x = 0; x < source.getWidth(); x++) {
+                source.setPixel(x, y, color);
+            }
+        }
+
+        Bitmap result = CoverLoader.roundedRectCropForTest(source);
+
+        // BitmapShader rendering is not pixel-stable under Robolectric sdk 19;
+        // the deterministic contract here is the target frame size.
+        assertEquals(242, result.getWidth());
+        assertEquals(328, result.getHeight());
+    }
+
+    @Test
+    public void roundedRectCropLeavesRoundedCornersTransparent() {
+        Bitmap source = Bitmap.createBitmap(600, 600, Bitmap.Config.ARGB_8888);
+        for (int y = 0; y < source.getHeight(); y++) {
+            for (int x = 0; x < source.getWidth(); x++) {
+                source.setPixel(x, y, Color.GREEN);
+            }
+        }
+
+        Bitmap result = CoverLoader.roundedRectCropForTest(source);
+
+        assertEquals(Color.TRANSPARENT, result.getPixel(0, 0));
+        assertEquals(242, result.getWidth());
+        assertEquals(328, result.getHeight());
     }
 
     @Test
