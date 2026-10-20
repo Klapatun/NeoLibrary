@@ -327,7 +327,7 @@ public final class CoverExtractor {
             while ((n = in.read(chunk)) > 0) {
                 if (size + n > cap) {
                     Log.w(TAG, "FB2 header exceeds cover limit; giving up");
-                    break;
+                    return null;
                 }
                 if (size + n > data.length) {
                     int next = Math.min(cap, Math.max(data.length * 2, size + n));
