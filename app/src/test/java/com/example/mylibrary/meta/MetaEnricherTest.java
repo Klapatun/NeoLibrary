@@ -275,15 +275,21 @@ public class MetaEnricherTest {
 
         final long savedTimeout = MetaEnricher.extractTimeoutMs;
         final MetaEnricher.ParseTask savedTask = MetaEnricher.parseTask;
+        final java.util.concurrent.CountDownLatch releaseSlow =
+                new java.util.concurrent.CountDownLatch(1);
+        final java.util.concurrent.CountDownLatch slowFinished =
+                new java.util.concurrent.CountDownLatch(1);
         try {
             MetaEnricher.extractTimeoutMs = 200;
             MetaEnricher.parseTask = new MetaEnricher.ParseTask() {
                 @Override
                 public void parse(File file, String format, MetaEnricher.Parsed out) {
                     try {
-                        Thread.sleep(10000); // much longer than the 200ms budget
+                        releaseSlow.await(10, java.util.concurrent.TimeUnit.SECONDS);
                     } catch (InterruptedException e) {
                         Thread.currentThread().interrupt();
+                    } finally {
+                        slowFinished.countDown();
                     }
                 }
             };
@@ -302,6 +308,13 @@ public class MetaEnricherTest {
             assertEquals("the flagged book must still be in the stage-2 queue",
                     1, db.needMeta().size());
         } finally {
+            releaseSlow.countDown();
+            try {
+                assertTrue("the abandoned parser must eventually finish",
+                        slowFinished.await(WAIT_MS, java.util.concurrent.TimeUnit.MILLISECONDS));
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
             MetaEnricher.extractTimeoutMs = savedTimeout;
             MetaEnricher.parseTask = savedTask;
         }
@@ -321,6 +334,10 @@ public class MetaEnricherTest {
 
         final long savedTimeout = MetaEnricher.extractTimeoutMs;
         final MetaEnricher.ParseTask savedTask = MetaEnricher.parseTask;
+        final java.util.concurrent.CountDownLatch releaseSlow =
+                new java.util.concurrent.CountDownLatch(1);
+        final java.util.concurrent.CountDownLatch slowFinished =
+                new java.util.concurrent.CountDownLatch(1);
         try {
             MetaEnricher.extractTimeoutMs = 200;
             MetaEnricher.parseTask = new MetaEnricher.ParseTask() {
@@ -328,8 +345,11 @@ public class MetaEnricherTest {
                 public void parse(File file, String format, MetaEnricher.Parsed out) {
                     if (file.getName().equals("slow.fb2")) {
                         try {
-                            Thread.sleep(5000); // much longer than the 200ms budget
-                        } catch (InterruptedException ignored) {
+                            releaseSlow.await(5, java.util.concurrent.TimeUnit.SECONDS);
+                        } catch (InterruptedException e) {
+                            Thread.currentThread().interrupt();
+                        } finally {
+                            slowFinished.countDown();
                         }
                     } else {
                         out.meta = MetaExtractor.extract(file); // the fast file: real parse
@@ -367,6 +387,11 @@ public class MetaEnricherTest {
                 assertTrue("the other books must be enriched", b.metaDone);
             }
 
+            // Release the abandoned parser before retrying or allowing another test to run.
+            releaseSlow.countDown();
+            assertTrue("the abandoned slow parser must eventually finish",
+                    slowFinished.await(WAIT_MS, java.util.concurrent.TimeUnit.MILLISECONDS));
+
             // Rescan: the flagged book is retried (parse is fast now) and the flag clears.
             MetaEnricher.parseTask = savedTask; // fast parse
             MetaEnricher.enrichOne(app, db, get(slowId));
@@ -375,6 +400,12 @@ public class MetaEnricherTest {
             assertFalse("a successful retry clears the un-enriched flag", after.metaFailed);
             assertTrue("the queue is finally empty", db.needMeta().isEmpty());
         } finally {
+            releaseSlow.countDown();
+            try {
+                slowFinished.await(WAIT_MS, java.util.concurrent.TimeUnit.MILLISECONDS);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
             MetaEnricher.cancel();
             MetaEnricher.extractTimeoutMs = savedTimeout;
             MetaEnricher.parseTask = savedTask;
@@ -392,8 +423,8 @@ public class MetaEnricherTest {
         File second = new File(folder.getRoot(), "second.fb2");
         TestFixtures.writeText(first, TestFixtures.FB2_FULL);
         TestFixtures.writeText(second, TestFixtures.FB2_FULL);
-        seedStageOne(first, "FB2", "first");
-        seedStageOne(second, "FB2", "second");
+        long firstId = seedStageOne(first, "FB2", "first");
+        long secondId = seedStageOne(second, "FB2", "second");
 
         final java.util.concurrent.CountDownLatch entered =
                 new java.util.concurrent.CountDownLatch(1);
@@ -436,11 +467,24 @@ public class MetaEnricherTest {
                 Thread.sleep(10);
             }
             release.countDown();
+            long finishDeadline = System.currentTimeMillis() + WAIT_MS;
+            while (System.currentTimeMillis() < finishDeadline && !workerDone.get()) {
+                looper.idle();
+                Thread.sleep(10);
+            }
             looper.idle();
             MetaEnricher.cancel();
 
             assertTrue("the worker must finish without waiting for a second parse", workerDone.get());
             assertEquals("the live-thread cap permits only one parse", 1, parses.get());
+            Book firstBook = get(firstId);
+            Book secondBook = get(secondId);
+            assertTrue("the first timed-out book must be marked as failed",
+                    firstBook.metaFailed);
+            assertFalse("the first timed-out book must remain unfinished", firstBook.metaDone);
+            assertTrue("the skipped book must be marked as failed", secondBook.metaFailed);
+            assertFalse("the skipped book must remain unfinished", secondBook.metaDone);
+            assertEquals("both unfinished books remain in the retry queue", 2, db.needMeta().size());
         } finally {
             release.countDown();
             MetaEnricher.cancel();
