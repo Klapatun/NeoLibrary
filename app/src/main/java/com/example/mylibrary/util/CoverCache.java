@@ -2,6 +2,8 @@ package com.example.mylibrary.util;
 
 import android.content.Context;
 
+import com.example.mylibrary.meta.CoverExtractor;
+
 import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.FileInputStream;
@@ -109,13 +111,20 @@ public final class CoverCache {
         try {
             File f = fileFor(context, bookPath);
             if (!f.exists()) return null;
+            long length = f.length();
+            int cap = CoverExtractor.effectiveCoverLimit();
+            if (length <= 0 || length > cap || length > Integer.MAX_VALUE) return null;
+            byte[] bytes = new byte[(int) length];
             InputStream in = new FileInputStream(f);
             try {
-                ByteArrayOutputStream baos = new ByteArrayOutputStream();
-                byte[] buf = new byte[8192];
-                int n;
-                while ((n = in.read(buf)) > 0) baos.write(buf, 0, n);
-                return baos.toByteArray();
+                int off = 0;
+                while (off < bytes.length) {
+                    int n = in.read(bytes, off, bytes.length - off);
+                    if (n < 0) return null;
+                    if (n == 0) continue;
+                    off += n;
+                }
+                return bytes;
             } finally {
                 in.close();
             }

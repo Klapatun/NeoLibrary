@@ -269,7 +269,7 @@ public class CoverLoader {
         int w = bounds.outWidth;
         int h = bounds.outHeight;
         if (w <= 0 || h <= 0) {
-            return BitmapFactory.decodeByteArray(bytes, 0, bytes.length);
+            return null;
         }
         int sample = 1;
         while (Math.max(w, h) / sample > MAX_EDGE) sample *= 2;
