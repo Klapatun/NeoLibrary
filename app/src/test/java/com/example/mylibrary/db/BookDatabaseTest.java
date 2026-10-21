@@ -129,6 +129,41 @@ public class BookDatabaseTest {
         assertTrue(got.metaDone);
     }
 
+    /** Re-importing a file under the same path must not touch the row's
+     *  last_read: the ImportTask flow is upsertBasic (skeleton — only
+     *  format/size) -> markMetaPending (resets the enrichment flags) ->
+     *  updateMetadata (the new file's metadata). None of these steps may
+     *  write last_read, or the book's place in the "Recently read" view would
+     *  jump when a user merely re-imports a file. The sibling test above pins
+     *  the metadata half; this one pins the timestamp half. */
+    @Test
+    public void reimportPreservesLastReadTimestamp() {
+        Book oldBook = book("/x/reimport-lastread.epub", "EPUB", "Filename", "Old Author");
+        long id = db.upsertBasic(oldBook);
+        db.markRead(id);
+        long lastReadBefore = lastReadOf(id);
+        assertTrue("the book must be read before the reimport", lastReadBefore > 0);
+
+        // Simulate the reimport path (MainActivity.ImportTask.doInBackground):
+        // skeleton upsert for the same path, reset of the enrichment state
+        // (the import overwrote the file), then stage 2 applies the new
+        // file's extracted metadata.
+        db.upsertBasic(book("/x/reimport-lastread.epub", "EPUB", "Filename", null));
+        db.markMetaPending(id);
+        MetaData newFile = new MetaData();
+        newFile.found = true;
+        newFile.title = "In-File Title";
+        newFile.author = "In-File Author";
+        db.updateMetadata(id, newFile, true);
+
+        assertEquals("last_read must survive the whole reimport flow",
+                lastReadBefore, lastReadOf(id));
+        Book got = db.getById(id);
+        assertEquals("In-File Title", got.title);
+        assertEquals("In-File Author", got.author);
+        assertTrue(got.metaDone);
+    }
+
     @Test
     public void upsertPreservesLastReadAcrossRescans() {
         Book b = book("/storage/emulated/0/b.fb2", "FB2", "Title", "Author");
@@ -330,6 +365,20 @@ public class BookDatabaseTest {
         try {
             assertTrue(c.moveToFirst());
             assertTrue("last_read must be set", !c.isNull(0) && c.getLong(0) > 0);
+        } finally {
+            c.close();
+        }
+    }
+
+    /** The row's current last_read value (0 when never read) — used to assert
+     *  that a whole flow (reimport, rescan) did not touch the timestamp. */
+    private long lastReadOf(long id) {
+        SQLiteDatabase raw = db.getReadableDatabase();
+        Cursor c = raw.rawQuery("SELECT last_read FROM books WHERE _id=?",
+                new String[]{String.valueOf(id)});
+        try {
+            assertTrue(c.moveToFirst());
+            return c.isNull(0) ? 0L : c.getLong(0);
         } finally {
             c.close();
         }
