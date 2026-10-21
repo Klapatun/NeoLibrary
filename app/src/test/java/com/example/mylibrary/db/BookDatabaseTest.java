@@ -308,6 +308,104 @@ public class BookDatabaseTest {
         assertEquals(0, db.all("DOCX").size());
     }
 
+    /** The format-SET overload of the catalog cursor (the modal filter's
+     *  query, the plan's step 2): a non-empty array becomes
+     *  {@code format IN (…)}; null / an empty array mean no selection (all
+     *  books). The row order stays the same — title COLLATE NOCASE — and the
+     *  old single-value {@code cursorAll(String)} keeps working. */
+    @Test
+    public void cursorAllWithASingleFormatArrayReturnsOnlyThatFormat() {
+        db.upsert(book("/x/a.txt", "TXT", "Alpha", null));
+        db.upsert(book("/x/b.txt", "TXT", "Beta", null));
+        db.upsert(book("/x/c.pdf", "PDF", "Gamma", null));
+
+        Cursor c = db.cursorAll(new String[]{"TXT"});
+        try {
+            assertEquals(2, c.getCount());
+            assertEquals("Alpha", titleOf(c, 0));
+            assertEquals("Beta", titleOf(c, 1));
+        } finally {
+            c.close();
+        }
+    }
+
+    @Test
+    public void cursorAllWithAnEmptyOrNullArrayReturnsAllBooks() {
+        db.upsert(book("/x/a.txt", "TXT", "Alpha", null));
+        db.upsert(book("/x/b.pdf", "PDF", "Beta", null));
+        db.upsert(book("/x/c.epub", "EPUB", "Gamma", null));
+
+        assertEquals("an empty array must mean 'all books'",
+                3, count(db.cursorAll(new String[0])));
+        assertEquals("a null array must mean 'all books'",
+                3, count(db.cursorAll((String[]) null)));
+    }
+
+    @Test
+    public void cursorAllWithSeveralFormatsReturnsTheUnionInTitleOrder() {
+        // The order is the case-insensitive title order over the whole union —
+        // not the order of the formats in the array.
+        db.upsert(book("/x/a.txt", "TXT", "Delta", null));
+        db.upsert(book("/x/b.pdf", "PDF", "beta", null));
+        db.upsert(book("/x/c.epub", "EPUB", "Alpha", null));
+        db.upsert(book("/x/d.pdf", "PDF", "Epsilon", null));
+        db.upsert(book("/x/e.txt", "TXT", "gamma", null));
+
+        Cursor c = db.cursorAll(new String[]{"EPUB", "PDF", "TXT"});
+        try {
+            assertEquals("the union of the three formats", 5, c.getCount());
+            assertEquals("Alpha", titleOf(c, 0));
+            assertEquals("beta", titleOf(c, 1));
+            assertEquals("Delta", titleOf(c, 2));
+            assertEquals("Epsilon", titleOf(c, 3));
+            assertEquals("gamma", titleOf(c, 4));
+        } finally {
+            c.close();
+        }
+
+        // The same overload with a subset: only the union of the two formats.
+        Cursor c2 = db.cursorAll(new String[]{"EPUB", "PDF"});
+        try {
+            assertEquals(3, c2.getCount());
+            assertEquals("Alpha", titleOf(c2, 0));
+            assertEquals("beta", titleOf(c2, 1));
+            assertEquals("Epsilon", titleOf(c2, 2));
+        } finally {
+            c2.close();
+        }
+    }
+
+    @Test
+    public void cursorAllWithTheSingleFormatStringBehavesAsBefore() {
+        db.upsert(book("/x/a.txt", "TXT", "Alpha", null));
+        db.upsert(book("/x/b.txt", "TXT", "Beta", null));
+        db.upsert(book("/x/c.pdf", "PDF", "Gamma", null));
+
+        Cursor c = db.cursorAll("TXT");
+        try {
+            assertEquals("the old single-value signature must keep working",
+                    2, c.getCount());
+        } finally {
+            c.close();
+        }
+    }
+
+    /** The title of the cursor's row at {@code row} (in row order). */
+    private static String titleOf(Cursor c, int row) {
+        assertTrue("the cursor must have at least " + (row + 1) + " row(s)",
+                c.moveToPosition(row));
+        return c.getString(c.getColumnIndexOrThrow("title"));
+    }
+
+    /** The row count of a cursor (closed after the read). */
+    private static int count(Cursor c) {
+        try {
+            return c.getCount();
+        } finally {
+            c.close();
+        }
+    }
+
     @Test
     public void recentReturnsNewestFirstAndHonoursLimit() {
         Book a = book("/x/a.txt", "TXT", "A", null);
