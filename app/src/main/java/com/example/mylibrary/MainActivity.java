@@ -74,6 +74,10 @@ public class MainActivity extends Activity
     private static final int GRID_PAGE_SIZE = 6;
     /** SharedPreferences key: the pagination on/off choice (persists like view_mode). */
     private static final String PREF_KEY_PAGINATION = "pagination_enabled";
+    /** Bundle key: the active filter value ("", "__recent__", or a format id).
+     *  Transient UI state — survives rotation (the instance state), not the
+     *  app being closed (that would be a preference, like view_mode). */
+    private static final String KEY_FILTER = "current_filter";
 
     private BookDatabase db;
     private BookAdapter adapter;
@@ -266,6 +270,16 @@ public class MainActivity extends Activity
         swipeSlop = ViewConfiguration.get(this).getScaledTouchSlop();
         list.enablePageSwipe(swipeSlop, pageSwipe);
         grid.enablePageSwipe(swipeSlop, pageSwipe);
+
+        if (savedInstanceState != null) {
+            // Recreation (rotation / configuration change): the active filter is
+            // transient UI state (unlike view_mode/pagination, which persist in
+            // SharedPreferences) — restore it before the spinner and the loader come
+            // up, so the first load is already filtered and the user never sees a
+            // flash of "All formats" data.
+            currentFilter = savedInstanceState.getString(KEY_FILTER, "");
+        }
+
         setupFilterSpinner();
         // The framework Activity (unlike AndroidX's FragmentActivity) has no loader
         // shortcuts of its own — go through the LoaderManager explicitly.
@@ -283,6 +297,16 @@ public class MainActivity extends Activity
             // 2, resume it over the remaining queue (needMeta()).
             startEnrichment();
         }
+    }
+
+    /** Rotation / configuration change: remember the active filter. The view
+     *  mode and the pagination toggle already survive via SharedPreferences;
+     *  the filter is session-only, so it goes to the instance state, not
+     *  there. */
+    @Override
+    protected void onSaveInstanceState(Bundle outState) {
+        super.onSaveInstanceState(outState);
+        outState.putString(KEY_FILTER, currentFilter);
     }
 
     @Override
@@ -528,7 +552,16 @@ public class MainActivity extends Activity
         sa.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
         filterSpinner = (Spinner) findViewById(R.id.filter_spinner);
         filterSpinner.setAdapter(sa);
-        filterSpinner.setSelection(0);
+        // On recreation currentFilter was restored in onCreate — the spinner must
+        // show the restored filter's position, not always "All formats". An unknown
+        // value (defensive: the filter list can only change across app versions)
+        // falls back to the default position.
+        int restoredPos = filterValues.indexOf(currentFilter);
+        if (restoredPos < 0) {
+            restoredPos = 0;
+            currentFilter = filterValues.get(0);
+        }
+        filterSpinner.setSelection(restoredPos);
         filterSpinner.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() {
             @Override public void onItemSelected(AdapterView<?> p, View v, int pos, long id) {
                 applyFilter(pos);

@@ -158,17 +158,6 @@
             android:textColor="#808080"
             android:textSize="15sp"
             android:visibility="gone" />
-
-        <TextView
-            android:id="@+id/empty_view_grid"
-            android:layout_width="match_parent"
-            android:layout_height="match_parent"
-            android:gravity="center"
-            android:padding="24dp"
-            android:text="@string/no_books_message"
-            android:textColor="#808080"
-            android:textSize="15sp"
-            android:visibility="gone" />
     </FrameLayout>
 
     <!-- Pagination strip: visible only while pagination is on (the header kebab's
