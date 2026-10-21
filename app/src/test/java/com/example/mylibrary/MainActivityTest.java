@@ -670,6 +670,88 @@ public class MainActivityTest {
         assertEquals("No books read yet.", empty.getText().toString());
     }
 
+    @Test
+    public void theFilterChoiceSurvivesARotation() throws Exception {
+        TestFixtures.writeText(new File(storage, "story_a.txt"), "alpha\n");
+        TestFixtures.writeText(new File(storage, "story_b.txt"), "beta\n");
+        TestFixtures.writeBytes(new File(storage, "manual.pdf"), new byte[]{0x25, 0x25});
+
+        ActivityController<MainActivity> c = Robolectric.buildActivity(MainActivity.class);
+        MainActivity a = c.setup().get();
+        awaitCatalogSize(3);
+
+        GridView grid = a.findViewById(R.id.book_grid);
+        awaitAdapterCount(grid, 3);
+        Spinner spinner = a.findViewById(R.id.filter_spinner);
+        final int txtPos = 2 + Arrays.asList(Formats.ALL).indexOf("TXT");
+        spinner.setSelection(txtPos);
+        awaitCondition("TXT filter to apply", new Cond() {
+            public boolean holds() {
+                return adapterHasCount((GridView) a.findViewById(R.id.book_grid), 2);
+            }
+        });
+
+        Bundle saved = new Bundle();
+        c.saveInstanceState(saved);
+        c.destroy();
+
+        final MainActivity a2 = Robolectric.buildActivity(MainActivity.class).setup(saved).get();
+        final GridView grid2 = a2.findViewById(R.id.book_grid);
+        awaitCondition("TXT filter to survive rotation", new Cond() {
+            public boolean holds() {
+                return adapterHasCount(grid2, 2);
+            }
+        });
+        assertEquals(2, grid2.getAdapter().getCount());
+        awaitCondition("the spinner to restore the TXT filter", new Cond() {
+            public boolean holds() {
+                return ((Spinner) a2.findViewById(R.id.filter_spinner)).getSelectedItemPosition()
+                        == txtPos;
+            }
+        });
+        assertEquals(txtPos,
+                ((Spinner) a2.findViewById(R.id.filter_spinner)).getSelectedItemPosition());
+    }
+
+    @Test
+    public void theRecentFilterKeepsItsEmptyHintAcrossARotation() throws Exception {
+        TestFixtures.writeText(new File(storage, "story_a.txt"), "alpha\n");
+        TestFixtures.writeText(new File(storage, "story_b.txt"), "beta\n");
+        TestFixtures.writeBytes(new File(storage, "manual.pdf"), new byte[]{0x25, 0x25});
+
+        ActivityController<MainActivity> c = Robolectric.buildActivity(MainActivity.class);
+        MainActivity a = c.setup().get();
+        awaitCatalogSize(3);
+
+        GridView grid = a.findViewById(R.id.book_grid);
+        awaitAdapterCount(grid, 3);
+        ((Spinner) a.findViewById(R.id.filter_spinner)).setSelection(1);
+        awaitCondition("recent filter and empty hint to apply", new Cond() {
+            public boolean holds() {
+                return adapterHasCount((GridView) a.findViewById(R.id.book_grid), 0)
+                        && "No books read yet.".equals(((TextView) a.findViewById(
+                        R.id.empty_view)).getText().toString());
+            }
+        });
+
+        Bundle saved = new Bundle();
+        c.saveInstanceState(saved);
+        c.destroy();
+
+        final MainActivity a2 = Robolectric.buildActivity(MainActivity.class).setup(saved).get();
+        final GridView grid2 = a2.findViewById(R.id.book_grid);
+        awaitCondition("recent filter and empty hint to survive rotation", new Cond() {
+            public boolean holds() {
+                return adapterHasCount(grid2, 0)
+                        && "No books read yet.".equals(((TextView) a2.findViewById(
+                        R.id.empty_view)).getText().toString());
+            }
+        });
+        assertEquals(0, grid2.getAdapter().getCount());
+        assertEquals("No books read yet.",
+                ((TextView) a2.findViewById(R.id.empty_view)).getText().toString());
+    }
+
     // ------------------------------------------------------------------
     // tap -> open confirmation (Open / Cancel)
     // ------------------------------------------------------------------
