@@ -167,9 +167,13 @@ gradlew.bat :app:assembleDebug       # APK, если задевал сборку
 
 ## 7. Иконки (SVG → PNG)
 
-- Пять иконок хедера (`ic_import`, `ic_refresh`, `ic_grid`, `ic_list`,
-  `ic_overflow`) создаются как SVG в `app/icons/` (48×48, белые,
-  прозрачные). Кebab (`ic_overflow`) — правый угол хедера, вытеснил кнопки
+- Шесть иконок хедера (`ic_import`, `ic_refresh`, `ic_grid`, `ic_list`,
+  `ic_overflow`, `ic_filter`/`ic_filter_active` — воронка фильтра;
+  `ic_filter_active` — та же воронка + акцентная точка в правом верхнем углу
+  (12px из 48, #E74C3C), состояние «фильтр настроен») создаются как SVG в
+  `app/icons/` (48×48, белые, прозрачные — точка единственное цветное пятно;
+  состояния — отдельными PNG, на API 19 без рантайм-оверлеев). Кebab
+  (`ic_overflow`) — правый угол хедера, вытеснил кнопки
   Import/Rescan из строки хедера; его popup (`res/menu/main_menu.xml`):
   **Import**, **Rescan**, checkable **Add/Remove pagination** (title +
   checkmark отражают состояние, выставляются в `showHeaderMenu`), **Clear

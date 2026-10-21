@@ -113,9 +113,12 @@ pagination is on, a horizontal swipe also turns pages.
 
 ## Header icons (SVG sources → committed PNGs)
 
-The five `MainActivity` header icons (`ic_import`, `ic_refresh`, `ic_grid`,
-`ic_list`, `ic_overflow` — the kebab at the header's right corner) are authored as
-SVG in `app/icons/` (48×48, white, transparent). The runtime PNGs in
+The six `MainActivity` header icons (`ic_import`, `ic_refresh`, `ic_grid`,
+`ic_list`, `ic_overflow` — the kebab at the header's right corner — and the filter
+funnel pair `ic_filter` / `ic_filter_active`: the funnel, and the same funnel with
+an accent dot in the top-right corner while a format filter is configured) are
+authored as SVG in `app/icons/` (48×48, white, transparent — the dot is the only
+accent-coloured element, `#E74C3C`). The runtime PNGs in
 `app/src/main/res/drawable/` (32×32, the 32dp header button size) are generated from
 them via `tools\generate-icons.ps1` and **committed**, so the Android build stays
 100% offline — the tool runs only when an icon is redesigned. Toolchain detail
