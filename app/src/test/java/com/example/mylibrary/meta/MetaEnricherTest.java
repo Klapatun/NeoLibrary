@@ -362,10 +362,14 @@ public class MetaEnricherTest {
             // flags the slow book once it has actually timed its parse out.
             final java.util.concurrent.atomic.AtomicBoolean workerDone =
                     new java.util.concurrent.atomic.AtomicBoolean(false);
-            MetaEnricher.start(app, db, new MetaEnricher.OnProgress() {
+            // The listener is kept in a STRONG local for the whole test: the enricher
+            // holds it only weakly, so an unheld one could be collected before the
+            // worker's tail check and the onFinished post would be skipped (8.4).
+            final MetaEnricher.OnProgress listener = new MetaEnricher.OnProgress() {
                 @Override public void onProgress(int done, int total) { /* below */ }
                 @Override public void onFinished() { workerDone.set(true); }
-            });
+            };
+            MetaEnricher.start(app, db, listener);
 
             ShadowLooper looper = shadowOf(Looper.getMainLooper());
             long deadline = System.currentTimeMillis() + WAIT_MS;
@@ -454,10 +458,14 @@ public class MetaEnricherTest {
                 }
             };
 
-            MetaEnricher.start(app, db, new MetaEnricher.OnProgress() {
+            // The listener is kept in a STRONG local for the whole test: the enricher
+            // holds it only weakly, so an unheld one could be collected before the
+            // worker's tail check and the onFinished post would be skipped (8.4).
+            final MetaEnricher.OnProgress listener = new MetaEnricher.OnProgress() {
                 @Override public void onProgress(int done, int total) { }
                 @Override public void onFinished() { workerDone.set(true); }
-            });
+            };
+            MetaEnricher.start(app, db, listener);
             assertTrue("the first parse must start", entered.await(5, java.util.concurrent.TimeUnit.SECONDS));
 
             ShadowLooper looper = shadowOf(Looper.getMainLooper());
@@ -544,10 +552,14 @@ public class MetaEnricherTest {
 
             final java.util.concurrent.atomic.AtomicBoolean workerDone =
                     new java.util.concurrent.atomic.AtomicBoolean(false);
-            MetaEnricher.start(app, db, new MetaEnricher.OnProgress() {
+            // The listener is kept in a STRONG local for the whole test: the enricher
+            // holds it only weakly, so an unheld one could be collected before the
+            // worker's tail check and the onFinished post would be skipped (8.4).
+            final MetaEnricher.OnProgress listener = new MetaEnricher.OnProgress() {
                 @Override public void onProgress(int done, int total) { /* below */ }
                 @Override public void onFinished() { workerDone.set(true); }
-            });
+            };
+            MetaEnricher.start(app, db, listener);
 
             ShadowLooper looper = shadowOf(Looper.getMainLooper());
             long deadline = System.currentTimeMillis() + WAIT_MS;
@@ -754,10 +766,14 @@ public class MetaEnricherTest {
 
             final java.util.concurrent.atomic.AtomicBoolean workerDone =
                     new java.util.concurrent.atomic.AtomicBoolean(false);
-            MetaEnricher.start(app, db, new MetaEnricher.OnProgress() {
+            // The listener is kept in a STRONG local for the whole test: the enricher
+            // holds it only weakly, so an unheld one could be collected before the
+            // worker's tail check and the onFinished post would be skipped (8.4).
+            final MetaEnricher.OnProgress listener = new MetaEnricher.OnProgress() {
                 @Override public void onProgress(int done, int total) { /* below */ }
                 @Override public void onFinished() { workerDone.set(true); }
-            });
+            };
+            MetaEnricher.start(app, db, listener);
 
             ShadowLooper looper = shadowOf(Looper.getMainLooper());
             long deadline = System.currentTimeMillis() + WAIT_MS;

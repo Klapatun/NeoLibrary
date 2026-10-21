@@ -233,8 +233,11 @@ lint 0 errors.
   `dialog.getWindow().getDecorView().findViewById(android.R.id.message)`.
 - Загруженная машина (Android Studio + Chrome + Steam) может ронять случайный
   тест по 15-30-с таймауту из-за голода фоновых тредов (жертва менялась:
-  `filterSpinner...`, `kebabDetails...`, `backgroundEnricher...`); изолированный
-  прогон — секунды. Сначала перепроверять изолированно, потом чинить.
+  `filterSpinner...`, `kebabDetails...`, `backgroundEnricher...`; 2026-10-21 —
+  `startThrottles...` ×2 и `filterSpinnerRestricts...`: структурный фактор
+  (GC слабого listener'а в 4 тестах `MetaEnricherTest`) устранён коммитом
+  `1d4ab2a`, план `fix_flaky_worker_listener`, класс 8.4 принят как есть);
+  изолированный прогон — секунды. Сначала перепроверять изолированно, потом чинить.
 
 ---
 
