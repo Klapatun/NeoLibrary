@@ -189,7 +189,7 @@ public class MainActivity extends Activity
         // the mode the screen is about to apply, before any row gets inflated.
         int initialMode = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
                 .getInt(PREF_KEY_VIEW_MODE, BookAdapter.MODE_GRID);
-        adapter = new BookAdapter(this, db.cursorAll(null), this);
+        adapter = new BookAdapter(this, db.cursorAll((String) null), this);
         adapter.setMode(initialMode);
         grid.setAdapter(adapter);
         // Any external data change (an enrichment batch, a remove, a filter, a
