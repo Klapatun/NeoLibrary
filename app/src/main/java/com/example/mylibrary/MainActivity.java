@@ -697,31 +697,32 @@ public class MainActivity extends Activity
             }
         });
 
-        // Select All / Deselect All checkbox
-        selectAllCheckBox.setOnCheckedChangeListener(
-                new CompoundButton.OnCheckedChangeListener() {
-                    @Override public void onCheckedChanged(CompoundButton buttonView, boolean isChecked) {
-                        if (isChecked) {
-                            // Select All: check all formats (all 15), reset search.
-                            for (int i = 0; i < Formats.ALL.length; i++) {
-                                checkedMap.put(i, true);
-                            }
-                            // Reset search to show all formats.
-                            searchEditText.setText("");
-                        } else {
-                            // Deselect All: uncheck all formats.
-                            for (int i = 0; i < Formats.ALL.length; i++) {
-                                checkedMap.put(i, false);
-                            }
-                        }
-                        // Update the visible list's checked state.
-                        for (int i = 0; i < visibleFormats.size(); i++) {
-                            int originalIndex = visibleToOriginalIndex[i];
-                            listView.setItemChecked(i, checkedMap.get(originalIndex));
-                        }
-                        updateSelectAllState.run();
+        // Select All / Deselect All checkbox - use setOnClickListener to avoid
+        // re-entrancy issues with updateSelectAllState calling setChecked().
+        selectAllCheckBox.setOnClickListener(new View.OnClickListener() {
+            @Override public void onClick(View v) {
+                boolean isChecked = selectAllCheckBox.isChecked();
+                if (isChecked) {
+                    // Select All: check all formats (all 15), reset search.
+                    for (int i = 0; i < Formats.ALL.length; i++) {
+                        checkedMap.put(i, true);
                     }
-                });
+                    // Reset search to show all formats.
+                    searchEditText.setText("");
+                } else {
+                    // Deselect All: uncheck all formats.
+                    for (int i = 0; i < Formats.ALL.length; i++) {
+                        checkedMap.put(i, false);
+                    }
+                }
+                // Update the visible list's checked state.
+                for (int i = 0; i < visibleFormats.size(); i++) {
+                    int originalIndex = visibleToOriginalIndex[i];
+                    listView.setItemChecked(i, checkedMap.get(originalIndex));
+                }
+                updateSelectAllState.run();
+            }
+        });
 
         // List item click toggles the checked state for that format.
         listView.setOnItemClickListener(new AdapterView.OnItemClickListener() {
@@ -888,7 +889,7 @@ public class MainActivity extends Activity
     }
 
     /** Launches the book in Neo Reader. The shared "file there? viewer there?" logic
-     *  lives in {@link Openers#openFile(File, Activity, OpenOutcome)}; the catalog
+     *  lives in {@link Openers #openFile(File, Activity, OpenOutcome)}; the catalog
      *  side effects (markRead, notify) stay here. */
     private void openBook(final Book book) {
         Openers.openFile(new File(book.path), this, new Openers.OpenOutcome() {
