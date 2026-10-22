@@ -14,14 +14,23 @@ import android.database.DataSetObserver;
 import android.net.Uri;
 import android.os.AsyncTask;
 import android.os.Bundle;
+import android.text.Editable;
+import android.text.TextWatcher;
 import android.view.LayoutInflater;
 import android.view.MenuInflater;
 import android.view.MenuItem;
 import android.view.View;
 import android.view.ViewConfiguration;
+import android.view.ViewGroup;
+import android.widget.AdapterView;
+import android.widget.ArrayAdapter;
+import android.widget.CheckBox;
+import android.widget.CompoundButton;
+import android.widget.EditText;
 import android.widget.FrameLayout;
 import android.widget.ImageButton;
 import android.widget.LinearLayout;
+import android.widget.ListView;
 import android.widget.PopupMenu;
 import android.widget.ProgressBar;
 import android.widget.TextView;
@@ -38,6 +47,8 @@ import com.example.mylibrary.util.Openers;
 
 import java.io.File;
 import java.lang.ref.WeakReference;
+import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
@@ -564,21 +575,168 @@ public class MainActivity extends Activity
      *  filter state: the real state (and the dot on the funnel) changes only
      *  on OK, and OK also resets the recent view — the views are mutually
      *  exclusive and the filter view wins (the plan's step 4). Cancel throws
-     *  the draft away (nothing changes). */
+     *  the draft away (nothing changes).
+     *
+     *  PLAN2: The dialog now includes a search bar (EditText) to filter the
+     *  visible formats by substring (case-insensitive), and a "Select all /
+     *  Deselect all" CheckBox that toggles all format checkboxes. When the
+     *  search is active and the user clicks "Select all", the search is reset
+     *  and all formats become selected. */
     private void showFilterDialog() {
         final FilterState draft = filters.copy();
-        final boolean[] checked = new boolean[Formats.ALL.length];
+
+        // The dialog works with a SparseBooleanArray mapping the ORIGINAL
+        // index in Formats.ALL -> checked state. This allows search filtering
+        // to work correctly: the visible list is a subset, but the checked
+        // state is maintained for all formats.
+        final android.util.SparseBooleanArray checkedMap =
+                new android.util.SparseBooleanArray();
         for (int i = 0; i < Formats.ALL.length; i++) {
-            checked[i] = draft.selectedFormats.contains(Formats.ALL[i]);
+            if (draft.selectedFormats.contains(Formats.ALL[i])) {
+                checkedMap.put(i, true);
+            }
         }
+
+        // Build the custom dialog view: LinearLayout with search, Select All,
+        // and ListView.
+        final LinearLayout dialogView = new LinearLayout(this);
+        dialogView.setOrientation(LinearLayout.VERTICAL);
+        dialogView.setPadding(16, 16, 16, 16);
+
+        // Search EditText
+        final EditText searchEditText = new EditText(this);
+        searchEditText.setHint(R.string.filter_search_hint);
+        searchEditText.setSingleLine(true);
+        dialogView.addView(searchEditText);
+
+        // Select All / Deselect All CheckBox
+        final CheckBox selectAllCheckBox = new CheckBox(this);
+        selectAllCheckBox.setText(R.string.filter_select_all);
+        selectAllCheckBox.setPadding(0, 16, 0, 8);
+        dialogView.addView(selectAllCheckBox);
+
+        // ListView for formats
+        final ListView listView = new ListView(this);
+        listView.setChoiceMode(ListView.CHOICE_MODE_MULTIPLE);
+        listView.setLayoutParams(new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, 0, 1.0f));
+        dialogView.addView(listView);
+
+        // Adapter for the visible (filtered) formats.
+        // We maintain two parallel structures:
+        // - visibleFormats: ArrayList<String> of format IDs currently shown
+        // - visibleToOriginalIndex: int[] mapping visible position -> original index in Formats.ALL
+        final ArrayList<String> visibleFormats = new ArrayList<String>(Arrays.asList(Formats.ALL));
+        final int[] visibleToOriginalIndex = new int[Formats.ALL.length];
+        for (int i = 0; i < Formats.ALL.length; i++) {
+            visibleToOriginalIndex[i] = i;
+        }
+
+        final ArrayAdapter<String> adapter = new ArrayAdapter<String>(
+                this,
+                android.R.layout.simple_list_item_multiple_choice,
+                visibleFormats);
+        listView.setAdapter(adapter);
+
+        // Initialize the checked state for visible items.
+        for (int i = 0; i < visibleFormats.size(); i++) {
+            int originalIndex = visibleToOriginalIndex[i];
+            if (checkedMap.get(originalIndex)) {
+                listView.setItemChecked(i, true);
+            }
+        }
+
+        // Update Select All checkbox state based on current selection.
+        final Runnable updateSelectAllState = new Runnable() {
+            @Override public void run() {
+                boolean allChecked = true;
+                boolean anyChecked = false;
+                for (int i = 0; i < Formats.ALL.length; i++) {
+                    if (checkedMap.get(i)) {
+                        anyChecked = true;
+                    } else {
+                        allChecked = false;
+                    }
+                }
+                if (allChecked && anyChecked) {
+                    selectAllCheckBox.setChecked(true);
+                    selectAllCheckBox.setText(R.string.filter_deselect_all);
+                } else {
+                    selectAllCheckBox.setChecked(false);
+                    selectAllCheckBox.setText(R.string.filter_select_all);
+                }
+            }
+        };
+
+        // Search filtering
+        searchEditText.addTextChangedListener(new TextWatcher() {
+            @Override public void beforeTextChanged(CharSequence s, int start, int count, int after) {}
+            @Override public void onTextChanged(CharSequence s, int start, int before, int count) {}
+            @Override public void afterTextChanged(Editable s) {
+                String query = s.toString().toLowerCase();
+                visibleFormats.clear();
+                int idx = 0;
+                for (int i = 0; i < Formats.ALL.length; i++) {
+                    if (query.isEmpty() || Formats.ALL[i].toLowerCase().contains(query)) {
+                        visibleFormats.add(Formats.ALL[i]);
+                        if (idx < visibleToOriginalIndex.length) {
+                            visibleToOriginalIndex[idx] = i;
+                        }
+                        idx++;
+                    }
+                }
+                adapter.notifyDataSetChanged();
+
+                // Re-apply checked state to newly visible items.
+                for (int i = 0; i < visibleFormats.size(); i++) {
+                    int originalIndex = visibleToOriginalIndex[i];
+                    listView.setItemChecked(i, checkedMap.get(originalIndex));
+                }
+
+                updateSelectAllState.run();
+            }
+        });
+
+        // Select All / Deselect All checkbox
+        selectAllCheckBox.setOnCheckedChangeListener(
+                new CompoundButton.OnCheckedChangeListener() {
+                    @Override public void onCheckedChanged(CompoundButton buttonView, boolean isChecked) {
+                        if (isChecked) {
+                            // Select All: check all formats (all 15), reset search.
+                            for (int i = 0; i < Formats.ALL.length; i++) {
+                                checkedMap.put(i, true);
+                            }
+                            // Reset search to show all formats.
+                            searchEditText.setText("");
+                        } else {
+                            // Deselect All: uncheck all formats.
+                            for (int i = 0; i < Formats.ALL.length; i++) {
+                                checkedMap.put(i, false);
+                            }
+                        }
+                        // Update the visible list's checked state.
+                        for (int i = 0; i < visibleFormats.size(); i++) {
+                            int originalIndex = visibleToOriginalIndex[i];
+                            listView.setItemChecked(i, checkedMap.get(originalIndex));
+                        }
+                        updateSelectAllState.run();
+                    }
+                });
+
+        // List item click toggles the checked state for that format.
+        listView.setOnItemClickListener(new AdapterView.OnItemClickListener() {
+            @Override public void onItemClick(AdapterView<?> parent, View view, int position, long id) {
+                int originalIndex = visibleToOriginalIndex[position];
+                boolean newChecked = !checkedMap.get(originalIndex);
+                checkedMap.put(originalIndex, newChecked);
+                listView.setItemChecked(position, newChecked);
+                updateSelectAllState.run();
+            }
+        });
+
         new AlertDialog.Builder(this)
                 .setTitle(R.string.filter_dialog_title)
-                .setMultiChoiceItems(Formats.ALL, checked,
-                        new DialogInterface.OnMultiChoiceClickListener() {
-                            @Override public void onClick(DialogInterface d, int which, boolean isChecked) {
-                                checked[which] = isChecked;
-                            }
-                        })
+                .setView(dialogView)
                 .setNegativeButton(R.string.cancel, null)
                 .setPositiveButton(R.string.filter_ok, new DialogInterface.OnClickListener() {
                     @Override public void onClick(DialogInterface d, int w) {
@@ -587,7 +745,9 @@ public class MainActivity extends Activity
                         // wins over the "Recently read" view).
                         FilterState next = new FilterState();
                         for (int i = 0; i < Formats.ALL.length; i++) {
-                            if (checked[i]) next.selectedFormats.add(Formats.ALL[i]);
+                            if (checkedMap.get(i)) {
+                                next.selectedFormats.add(Formats.ALL[i]);
+                            }
                         }
                         next.recentView = false;
                         filters = next;

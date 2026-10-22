@@ -25,6 +25,8 @@ import android.view.MotionEvent;
 import android.view.View;
 import android.view.ViewGroup;
 import android.widget.AbsListView;
+import android.widget.CheckBox;
+import android.widget.EditText;
 import android.widget.GridView;
 import android.widget.ImageButton;
 import android.widget.ListView;
@@ -647,6 +649,29 @@ public class MainActivityTest {
         return null;
     }
 
+    /** Finds the search EditText in the filter dialog's custom view. */
+    private static EditText findDialogSearchEditText(android.app.Dialog dialog) {
+        return findViewByType(dialog.getWindow().getDecorView(), EditText.class);
+    }
+
+    /** Finds the "Select all" CheckBox in the filter dialog's custom view. */
+    private static CheckBox findDialogSelectAllCheckBox(android.app.Dialog dialog) {
+        return findViewByType(dialog.getWindow().getDecorView(), CheckBox.class);
+    }
+
+    /** Finds the first view of type {@code T} under {@code root}. */
+    private static <T extends View> T findViewByType(View root, Class<T> type) {
+        if (type.isInstance(root)) return type.cast(root);
+        if (root instanceof ViewGroup) {
+            ViewGroup g = (ViewGroup) root;
+            for (int i = 0; i < g.getChildCount(); i++) {
+                T found = findViewByType(g.getChildAt(i), type);
+                if (found != null) return found;
+            }
+        }
+        return null;
+    }
+
     /** Clicks the row at adapter position {@code pos} of the dialog list the
      *  way the list's own touch path does: in a choice-mode list the row itself
      *  is not clickable — the click is dispatched by the list
@@ -1139,6 +1164,309 @@ public class MainActivityTest {
         a.findViewById(R.id.btn_menu).performClick();
         assertFalse("the recent item must be unchecked",
                 a.getLastHeaderMenu().getMenu().findItem(R.id.main_menu_recent).isChecked());
+    }
+
+    // ------------------------------------------------------------------
+    // PLAN2: Search bar in the filter dialog
+    // ------------------------------------------------------------------
+
+    /** The filter dialog's search bar filters the visible formats by substring
+     *  (case-insensitive). Typing "pdf" shows only PDF; clearing the search
+     *  restores all formats. Selecting a filtered format and confirming applies
+     *  the filter to the catalog. */
+    @Test
+    public void theFilterDialogSearchBarFiltersTheFormatList() throws Exception {
+        TestFixtures.writeText(new File(storage, "story_a.txt"), "alpha\n");
+        TestFixtures.writeText(new File(storage, "story_b.txt"), "beta\n");
+        TestFixtures.writeBytes(new File(storage, "manual.pdf"), new byte[]{0x25, 0x25});
+
+        MainActivity a = launchMain();
+        awaitCatalogSize(3);
+
+        GridView grid = a.findViewById(R.id.book_grid);
+        awaitAdapterCount(grid, 3);
+
+        // Open the filter dialog.
+        a.findViewById(R.id.btn_filter).performClick();
+        android.app.Dialog d = ShadowDialog.getLatestDialog();
+        assertNotNull("the funnel click must open the filter dialog", d);
+
+        // Find the search EditText in the dialog's custom view.
+        EditText search = findDialogSearchEditText(d);
+        assertNotNull("the dialog must have a search EditText", search);
+
+        // Type "pdf" (lowercase) — should match "PDF" case-insensitively.
+        search.setText("pdf");
+        shadowOf(Looper.getMainLooper()).idle();
+
+        AbsListView list = findDialogList(d);
+        // Only PDF should be visible now.
+        assertEquals("search 'pdf' must show only PDF", 1, list.getAdapter().getCount());
+        assertEquals("the visible item must be PDF", "PDF", list.getAdapter().getItem(0).toString());
+
+        // Select PDF and confirm.
+        clickDialogItem(list, 0);
+        shadowOf(d).clickOn(android.R.id.button1);
+        shadowOf(Looper.getMainLooper()).idle();
+
+        awaitCondition("the PDF filter to apply", new Cond() {
+            public boolean holds() {
+                return adapterHasCount(grid, 1);
+            }
+        });
+        BookAdapter adapter = (BookAdapter) grid.getAdapter();
+        assertEquals("the visible row must be PDF", "PDF", adapter.getItem(0).format);
+
+        // Open dialog again, clear search — all formats must be visible.
+        a.findViewById(R.id.btn_filter).performClick();
+        android.app.Dialog d2 = ShadowDialog.getLatestDialog();
+        assertNotNull(d2);
+        EditText search2 = findDialogSearchEditText(d2);
+        assertNotNull(search2);
+        search2.setText("");
+        shadowOf(Looper.getMainLooper()).idle();
+
+        AbsListView list2 = findDialogList(d2);
+        assertEquals("clearing search must restore all formats",
+                Formats.ALL.length, list2.getAdapter().getCount());
+        // Cancel to leave state unchanged.
+        shadowOf(d2).clickOn(android.R.id.button2);
+        shadowOf(Looper.getMainLooper()).idle();
+        assertEquals(1, grid.getAdapter().getCount());
+    }
+
+    // ------------------------------------------------------------------
+    // PLAN2: Select All / Deselect All checkbox in the filter dialog
+    // ------------------------------------------------------------------
+
+    /** The filter dialog's "Select all" checkbox toggles all format checkboxes.
+     *  On empty state it shows "Select all" (unchecked). Checking it selects all
+     *  formats and changes its label to "Deselect all". Unchecking deselects all
+     *  and reverts the label. Partial selection (some but not all) shows
+     *  "Select all" unchecked. */
+    @Test
+    public void theFilterDialogSelectAllCheckboxTogglesAllFormats() throws Exception {
+        TestFixtures.writeText(new File(storage, "story_a.txt"), "alpha\n");
+        TestFixtures.writeText(new File(storage, "story_b.txt"), "beta\n");
+        TestFixtures.writeBytes(new File(storage, "manual.pdf"), new byte[]{0x25, 0x25});
+
+        MainActivity a = launchMain();
+        awaitCatalogSize(3);
+
+        GridView grid = a.findViewById(R.id.book_grid);
+        awaitAdapterCount(grid, 3);
+
+        // Open the filter dialog.
+        a.findViewById(R.id.btn_filter).performClick();
+        android.app.Dialog d = ShadowDialog.getLatestDialog();
+        assertNotNull(d);
+
+        AbsListView list = findDialogList(d);
+        CheckBox selectAll = findDialogSelectAllCheckBox(d);
+        assertNotNull("the dialog must have a Select All CheckBox", selectAll);
+
+        // Initial state: "Select all" unchecked, no formats selected.
+        assertFalse("Select All must start unchecked", selectAll.isChecked());
+        assertEquals("Select All text must be 'Select all'",
+                a.getString(R.string.filter_select_all), selectAll.getText().toString());
+        for (int i = 0; i < Formats.ALL.length; i++) {
+            assertFalse("format " + i + " must start unchecked", list.isItemChecked(i));
+        }
+
+        // Click "Select all" — all formats become checked, label changes.
+        selectAll.performClick();
+        shadowOf(Looper.getMainLooper()).idle();
+        assertTrue("Select All must become checked", selectAll.isChecked());
+        assertEquals("Select All text must become 'Deselect all'",
+                a.getString(R.string.filter_deselect_all), selectAll.getText().toString());
+        for (int i = 0; i < Formats.ALL.length; i++) {
+            assertTrue("format " + i + " must be checked after Select All",
+                    list.isItemChecked(i));
+        }
+
+        // Click "Deselect all" — all formats become unchecked, label reverts.
+        selectAll.performClick();
+        shadowOf(Looper.getMainLooper()).idle();
+        assertFalse("Select All must become unchecked", selectAll.isChecked());
+        assertEquals("Select All text must revert to 'Select all'",
+                a.getString(R.string.filter_select_all), selectAll.getText().toString());
+        for (int i = 0; i < Formats.ALL.length; i++) {
+            assertFalse("format " + i + " must be unchecked after Deselect All",
+                    list.isItemChecked(i));
+        }
+
+        // Partial selection: check one format manually -> Select All shows unchecked
+        // with "Select all" label (no tri-state on API 19).
+        clickDialogItem(list, formatPos("TXT"));
+        shadowOf(Looper.getMainLooper()).idle();
+        assertFalse("Select All must be unchecked for partial selection",
+                selectAll.isChecked());
+        assertEquals("Select All text must be 'Select all' for partial",
+                a.getString(R.string.filter_select_all), selectAll.getText().toString());
+
+        // Confirm with partial selection (TXT only).
+        shadowOf(d).clickOn(android.R.id.button1);
+        shadowOf(Looper.getMainLooper()).idle();
+
+        awaitCondition("the TXT filter to apply", new Cond() {
+            public boolean holds() {
+                return adapterHasCount(grid, 2);
+            }
+        });
+        BookAdapter adapter = (BookAdapter) grid.getAdapter();
+        for (int i = 0; i < adapter.getCount(); i++) {
+            assertEquals("visible rows must be TXT", "TXT", adapter.getItem(i).format);
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // PLAN2: Search + Select All interaction
+    // ------------------------------------------------------------------
+
+    /** When a search is active and the user clicks "Select all", the search is
+     *  reset (cleared), all 15 formats become selected, and confirming shows all
+     *  books (because selecting all formats = empty selection = all books). */
+    @Test
+    public void selectAllWithActiveSearchResetsSearchAndSelectsAllFormats() throws Exception {
+        TestFixtures.writeText(new File(storage, "story_a.txt"), "alpha\n");
+        TestFixtures.writeText(new File(storage, "story_b.txt"), "beta\n");
+        TestFixtures.writeBytes(new File(storage, "manual.pdf"), new byte[]{0x25, 0x25});
+
+        MainActivity a = launchMain();
+        awaitCatalogSize(3);
+
+        GridView grid = a.findViewById(R.id.book_grid);
+        awaitAdapterCount(grid, 3);
+
+        a.findViewById(R.id.btn_filter).performClick();
+        android.app.Dialog d = ShadowDialog.getLatestDialog();
+        assertNotNull(d);
+
+        EditText search = findDialogSearchEditText(d);
+        CheckBox selectAll = findDialogSelectAllCheckBox(d);
+        AbsListView list = findDialogList(d);
+        assertNotNull(search);
+        assertNotNull(selectAll);
+        assertNotNull(list);
+
+        // Search for "EPUB" — only EPUB visible.
+        search.setText("EPUB");
+        shadowOf(Looper.getMainLooper()).idle();
+        assertEquals("search 'EPUB' must show only EPUB", 1, list.getAdapter().getCount());
+        assertEquals("EPUB", list.getAdapter().getItem(0).toString());
+
+        // Click "Select all" — search clears, all formats become selected.
+        selectAll.performClick();
+        shadowOf(Looper.getMainLooper()).idle();
+
+        // Search should be cleared (or at least all formats now visible).
+        assertEquals("Select All must show all formats", Formats.ALL.length,
+                list.getAdapter().getCount());
+        // All items must be checked.
+        for (int i = 0; i < Formats.ALL.length; i++) {
+            assertTrue("format " + i + " must be checked after Select All",
+                    list.isItemChecked(i));
+        }
+
+        // Confirm — selecting all formats = empty selection = all books.
+        shadowOf(d).clickOn(android.R.id.button1);
+        shadowOf(Looper.getMainLooper()).idle();
+
+        awaitCondition("all books to be visible (all formats selected = no filter)",
+                new Cond() {
+                    public boolean holds() {
+                        return adapterHasCount(grid, 3);
+                    }
+                });
+        assertEquals(3, grid.getAdapter().getCount());
+    }
+
+    // ------------------------------------------------------------------
+    // PLAN2: Rotation preserves dialog state (dialog is recreated, search empty)
+    // ------------------------------------------------------------------
+
+    /** After a rotation, the filter state survives via instance state, but the
+     *  dialog itself is recreated by the framework — its search text and
+     *  Select All checkbox state are NOT preserved (standard AlertDialog
+     *  behavior on API 19). This test verifies that the filter STATE survives
+     *  and the new dialog opens with empty search and correct checkboxes. */
+    @Test
+    public void theFilterStateSurvivesRotationButDialogStateIsReset() throws Exception {
+        TestFixtures.writeText(new File(storage, "story_a.txt"), "alpha\n");
+        TestFixtures.writeText(new File(storage, "story_b.txt"), "beta\n");
+        TestFixtures.writeBytes(new File(storage, "manual.pdf"), new byte[]{0x25, 0x25});
+
+        ActivityController<MainActivity> c = Robolectric.buildActivity(MainActivity.class);
+        MainActivity a = c.setup().get();
+        awaitCatalogSize(3);
+
+        GridView grid = a.findViewById(R.id.book_grid);
+        awaitAdapterCount(grid, 3);
+
+        // Select TXT in the dialog.
+        a.findViewById(R.id.btn_filter).performClick();
+        android.app.Dialog d = ShadowDialog.getLatestDialog();
+        AbsListView list = findDialogList(d);
+        clickDialogItem(list, formatPos("TXT"));
+        shadowOf(d).clickOn(android.R.id.button1);
+        shadowOf(Looper.getMainLooper()).idle();
+
+        final AbsListView gridRef = grid;
+        awaitCondition("the TXT filter to apply", new Cond() {
+            public boolean holds() {
+                return adapterHasCount(gridRef, 2);
+            }
+        });
+
+        // Rotate (save instance state, destroy, recreate).
+        Bundle saved = new Bundle();
+        c.saveInstanceState(saved);
+        c.destroy();
+
+        final MainActivity a2 = Robolectric.buildActivity(MainActivity.class).setup(saved).get();
+        final GridView grid2 = a2.findViewById(R.id.book_grid);
+        awaitCondition("the TXT filter to survive rotation", new Cond() {
+            public boolean holds() {
+                return adapterHasCount(grid2, 2);
+            }
+        });
+        assertEquals(2, grid2.getAdapter().getCount());
+
+        // Open the dialog in the recreated activity — search is empty,
+        // TXT is checked (from FilterState), Select All shows partial state.
+        a2.findViewById(R.id.btn_filter).performClick();
+        android.app.Dialog d2 = ShadowDialog.getLatestDialog();
+        assertNotNull("the funnel must open the dialog in the recreated window", d2);
+
+        EditText search2 = findDialogSearchEditText(d2);
+        CheckBox selectAll2 = findDialogSelectAllCheckBox(d2);
+        AbsListView list2 = findDialogList(d2);
+        assertNotNull(search2);
+        assertNotNull(selectAll2);
+        assertNotNull(list2);
+
+        // Search should be empty in the new dialog.
+        assertEquals("search must be empty after rotation", "",
+                search2.getText().toString());
+
+        // TXT must be checked (restored from FilterState).
+        list2.setSelection(formatPos("TXT"));
+        shadowOf(Looper.getMainLooper()).idle();
+        assertTrue("TXT must be pre-checked after rotation",
+                list2.isItemChecked(formatPos("TXT")));
+
+        // Select All must show partial state (unchecked, "Select all" label).
+        assertFalse("Select All must be unchecked for partial selection after rotation",
+                selectAll2.isChecked());
+        assertEquals("Select All text must be 'Select all' for partial after rotation",
+                a2.getString(R.string.filter_select_all), selectAll2.getText().toString());
+
+        // Cancel to leave state intact.
+        shadowOf(d2).clickOn(android.R.id.button2);
+        shadowOf(Looper.getMainLooper()).idle();
+        assertEquals("the filter must be intact after the dialog cancel",
+                2, grid2.getAdapter().getCount());
+        assertTrue(a2.getFilterState().isActive());
     }
 
     // ------------------------------------------------------------------
