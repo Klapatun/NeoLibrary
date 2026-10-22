@@ -10,6 +10,7 @@
          MainActivity.showHeaderMenu); the title below is the XML default. -->
     <string name="menu_pagination_add">Add pagination</string>
     <string name="menu_pagination_remove">Remove pagination</string>
+    <string name="menu_recent">Recently read</string>
 
     <string name="title_scan">Scanning library…</string>
     <string name="title_no_books">No books found</string>

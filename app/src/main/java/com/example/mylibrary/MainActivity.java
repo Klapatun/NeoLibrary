@@ -396,6 +396,13 @@ public class MainActivity extends Activity
                     ? R.string.menu_pagination_remove : R.string.menu_pagination_add);
             pagination.setChecked(paginationEnabled);
         }
+        // The "Recently read" item's checkmark mirrors the current view (the same
+        // pattern as the pagination item): the item is a checkable VIEW toggle,
+        // not a format, so it lives in the kebab, not the filter dialog.
+        MenuItem recent = menu.getMenu().findItem(R.id.main_menu_recent);
+        if (recent != null) {
+            recent.setChecked(filters.recentView);
+        }
         menu.setOnMenuItemClickListener(new PopupMenu.OnMenuItemClickListener() {
             @Override public boolean onMenuItemClick(MenuItem item) {
                 int id = item.getItemId();
@@ -407,6 +414,13 @@ public class MainActivity extends Activity
                     confirmClear();
                 } else if (id == R.id.main_menu_pagination) {
                     setPaginationEnabled(!paginationEnabled);
+                } else if (id == R.id.main_menu_recent) {
+                    // The views are mutually exclusive: toggling "Recently read"
+                    // does NOT clear the format selection (the funnel's dot
+                    // reflects the CONFIGURED filter); confirming the filter
+                    // dialog (OK) resets the recent view and wins.
+                    filters.recentView = !filters.recentView;
+                    applyCurrentView();
                 }
                 menu.dismiss();
                 return true;

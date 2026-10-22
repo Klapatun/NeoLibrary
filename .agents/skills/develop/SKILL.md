@@ -175,10 +175,15 @@ gradlew.bat :app:assembleDebug       # APK, если задевал сборку
   состояния — отдельными PNG, на API 19 без рантайм-оверлеев). Кebab
   (`ic_overflow`) — правый угол хедера, вытеснил кнопки
   Import/Rescan из строки хедера; его popup (`res/menu/main_menu.xml`):
-  **Import**, **Rescan**, checkable **Add/Remove pagination** (title +
-  checkmark отражают состояние, выставляются в `showHeaderMenu`), **Clear
-  library** (диалог подтверждения, `db.clear()` — строки + кэш обложек,
-  файлы на диске не трогаются).
+  **Import**, **Rescan**, **Clear library** (диалог подтверждения,
+  `db.clear()` — строки + кэш обложек, файлы на диске не трогаются),
+  checkable **Recently read** (`main_menu_recent`; checkmark зеркалит
+  `FilterState.recentView`, выставляется в `showHeaderMenu`; «Recently
+  read» и формат-фильтр — взаимоисключающие ВИДЫ, не форматы: клик НЕ
+  очищает выбор форматов (точка на воронке остаётся — она отражает
+  настроенный фильтр, а не текущий вид), OK модалки сбрасывает
+  `recentView` и выигрывает), checkable **Add/Remove pagination** (title +
+  checkmark отражают состояние, выставляются в `showHeaderMenu`).
 - Рантайм-PNG — `app/src/main/res/drawable/` (32×32, размер 32dp кнопки
   хедера) — генерируются из SVG через `tools\generate-icons.ps1` (ведёт
   `tools/SvgToPng` — маленький dependency-free .NET-растеризатор: OS WIC SVG

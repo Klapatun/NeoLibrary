@@ -38,7 +38,7 @@ Every book's metadata is stored in **two places**:
 
 | Class | Role |
 |---|---|
-| `MainActivity` | catalog: 3-stage load (fast scan → display → background enrich), browse, filter, "Recently read", SAF import; list is cursor-driven (framework `LoaderManager` + `CursorLoader`) |
+| `MainActivity` | catalog: 3-stage load (fast scan → display → background enrich), browse, format filter — multi-select modal opened by the funnel header icon (`ic_filter`/`ic_filter_active`, empty selection = All), "Recently read" — checkable item in the kebab menu (popup composition: `develop` skill §7), SAF import; list is cursor-driven (framework `LoaderManager` + `CursorLoader`) |
 | `DetailActivity` | open in Neo Reader / edit meta / remove; fast-path enrichment of a not-yet-enriched book on open |
 | `EditMetaActivity` | metadata form → writes file (EPUB/FB2) + always updates catalog (`userEdited = true`) |
 | `Book` | Parcelable model (`metaDone`, `metaFailed`, `userEdited` flags) |
