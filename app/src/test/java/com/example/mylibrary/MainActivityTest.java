@@ -816,6 +816,12 @@ public class MainActivityTest {
         d = ShadowDialog.getLatestDialog();
         assertNotNull(d);
         list = findDialogList(d);
+        // Same framework timing as in the other dialog tests: the initial
+        // multi-choice state is applied by the adapter's getView only for
+        // materialized rows, and TXT is off-screen in the fresh dialog —
+        // scroll the row into view first (the same idiom as clickDialogItem).
+        list.setSelection(formatPos("TXT"));
+        shadowOf(Looper.getMainLooper()).idle();
         assertTrue("the open dialog must show the current selection (TXT checked)",
                 list.isItemChecked(formatPos("TXT")));
         clickDialogItem(list, formatPos("TXT"));
@@ -932,10 +938,13 @@ public class MainActivityTest {
         android.app.Dialog d2 = ShadowDialog.getLatestDialog();
         assertNotNull("the funnel must open the dialog in the recreated window", d2);
         AbsListView list2 = findDialogList(d2);
-        // The framework applies the INITIAL multi-choice checkbox state lazily,
-        // in the list adapter's getView — i.e. at the dialog's first layout
-        // pass, not in show() (SDK 19 AlertParams$1). Idle the main looper so
-        // the window lays out and the state is applied before asserting it.
+        // The framework applies the INITIAL multi-choice checkbox state in the
+        // list adapter's getView — only for rows it has actually materialized
+        // (SDK 19 AlertParams$1). TXT is the 15th of 15 formats, off-screen in
+        // the fresh dialog, so scroll the row into view (the same idiom as
+        // clickDialogItem below) and let the layout pass materialize it,
+        // before asserting the pre-checked state.
+        list2.setSelection(formatPos("TXT"));
         shadowOf(Looper.getMainLooper()).idle();
         assertTrue("the TXT checkbox must be pre-checked in the restored dialog",
                 list2.isItemChecked(formatPos("TXT")));
@@ -1102,8 +1111,10 @@ public class MainActivityTest {
         android.app.Dialog d2 = ShadowDialog.getLatestDialog();
         AbsListView list2 = findDialogList(d2);
         // Same framework timing as in the rotation test: the initial multi-choice
-        // state is applied by the list adapter's getView at the first layout
-        // pass, so idle the main looper before asserting it.
+        // state is applied by the list adapter's getView only for materialized
+        // rows, and TXT is off-screen in the fresh dialog — scroll the row into
+        // view first (the same idiom as clickDialogItem below).
+        list2.setSelection(formatPos("TXT"));
         shadowOf(Looper.getMainLooper()).idle();
         assertTrue("the open dialog must still show the selection (TXT checked)",
                 list2.isItemChecked(formatPos("TXT")));
