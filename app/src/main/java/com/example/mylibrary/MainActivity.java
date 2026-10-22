@@ -281,20 +281,26 @@ public class MainActivity extends Activity
         }
 
         setupFilterSpinner();
-        // The framework Activity (unlike AndroidX's FragmentActivity) has no loader
-        // shortcuts of its own — go through the LoaderManager explicitly.
-        getLoaderManager().initLoader(LOADER_BOOKS, null, this);
         if (savedInstanceState == null) {
             // Cold start (first launch of this task): walk storage and (re)build the
             // catalog. This is also what picks up files added outside the app
-            // between sessions.
+            // between sessions. The catalog loader does NOT start here: its first
+            // query would race the scan (both tasks share the AsyncTask pool) and,
+            // on a loaded machine, its stale pre-scan (0-row) result can be
+            // DELIVERED after the scan's rebind — blanking the fresh catalog and
+            // leaving the list empty. The loader starts in ScanTask.onPostExecute,
+            // after the rebind, so its first query always sees post-scan data.
             startScan();
         } else {
-            // Recreation (rotation / configuration change): the catalog and the
-            // loaders already have the data — a full rescan would be pure waste
-            // (and would reset the enrichment worker from the top of the queue).
-            // The worker was cancelled in onDestroy; if any books still need stage
-            // 2, resume it over the remaining queue (needMeta()).
+            // Recreation (rotation / configuration change): the catalog already
+            // has the data — a full rescan would be pure waste (and would reset
+            // the enrichment worker from the top of the queue). The loader starts
+            // straight away (its first query sees the existing rows); the worker
+            // was cancelled in onDestroy; if any books still need stage 2, resume
+            // it over the remaining queue (needMeta()). The framework Activity
+            // (unlike AndroidX's FragmentActivity) has no loader shortcuts of its
+            // own — go through the LoaderManager explicitly.
+            getLoaderManager().initLoader(LOADER_BOOKS, null, this);
             startEnrichment();
         }
     }
@@ -812,6 +818,11 @@ public class MainActivity extends Activity
                     // loader's next delivery simply replaces this cursor.
                     a.adapter.changeCursor(a.currentCatalogCursor());
                     a.updateEmptyView();
+                    // Only now start the catalog loader (it is deliberately NOT
+                    // started in onCreate on a cold start — see there): its first
+                    // query must see the post-scan data, never the empty pre-scan
+                    // table whose stale delivery would otherwise race this rebind.
+                    a.getLoaderManager().initLoader(LOADER_BOOKS, null, a);
                 }
                 // Also announce through the normal channel (the "recently read"
                 // observer and any other listeners).
