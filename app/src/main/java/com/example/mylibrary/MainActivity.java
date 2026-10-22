@@ -855,7 +855,23 @@ public class MainActivity extends Activity
                     // started in onCreate on a cold start — see there): its first
                     // query must see the post-scan data, never the empty pre-scan
                     // table whose stale delivery would otherwise race this rebind.
-                    a.getLoaderManager().initLoader(LOADER_BOOKS, null, a);
+                    // On a RE-SCAN the loader usually already runs (and may have
+                    // a PRE-scan query in flight): plain initLoader is then a
+                    // no-op, and that in-flight query would be DELIVERED after
+                    // this fresh rebind — a stale cursor that blanks the view
+                    // (the observer that would trigger a fresh re-query is
+                    // usually already dead after the first restart cycle on
+                    // API 19 — same hazard as the rebind above). restartLoader
+                    // cancels the in-flight query and re-queries the post-scan
+                    // data instead; initLoader creates the loader on a cold
+                    // start, where nothing is in flight yet.
+                    Loader<Cursor> existingLoader =
+                            a.getLoaderManager().getLoader(LOADER_BOOKS);
+                    if (existingLoader == null) {
+                        a.getLoaderManager().initLoader(LOADER_BOOKS, null, a);
+                    } else {
+                        a.getLoaderManager().restartLoader(LOADER_BOOKS, null, a);
+                    }
                 }
                 // Also announce through the normal channel (the "recently read"
                 // observer and any other listeners).
