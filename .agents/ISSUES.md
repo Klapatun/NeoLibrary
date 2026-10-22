@@ -494,3 +494,28 @@ git-историей; полновесного ревью PR #14 ещё не б�
 - **Доработка:** сверить оба файла, оставить один source of truth (или явно
   развести: CONTEXT.md — ориентир сессии, architecture.md — развёрнутое
   описание), поправить ссылки в ISSUES.md/README.
+
+---
+
+## [FIX] 2026-10-22: class map `CONTEXT.md` — устаревшая строка `db/BookProvider` — [ ] (низкий)
+
+**Создано:** 2026-10-22. Источник: итоговый отчёт сессии ветки
+`feature/modal_filter` (6 коммитов `a0a6aac`…`d9d4717` на `114aa7b`,
+271/271 зелёные, ветка pushed на origin).
+- **Где:** `CONTEXT.md`, class map, строка `db/BookProvider`:
+  «read-only `ContentProvider` — the `ContentObserver` channel for the
+  `CursorLoader` (all / recent / `format=?`)».
+- **Проблема:** с шага 2 фичи (коммит `114aa7b`) `BookProvider.query`
+  принимает третью форму selection — `format IN (?,…)` — set-запрос modal
+  filter, строится вызывающим кодом (`BookDatabase.cursorAll(String[])`,
+  `BookDatabase.java:391-401`), по одному плейсхолдеру `?` на выбранный
+  формат (грамматика зафиксирована в Javadoc `BookProvider.java:29-32` и
+  `:37-42`, `FORMAT_IN`). Строка class map по-прежнему перечисляет только
+  «(all / recent / `format=?`)» — тот же класс, что 7.1 (доки разошлись с
+  кодом; прецедент — 6.5).
+- **Доработка:** обновить строку на все три формы, например
+  «(all / recent / `format=?` / `format IN (?,…)`),» или заменить
+  перечисление ссылкой на Javadoc `BookProvider.query` как единый source of
+  truth грамматики. Однострочное изменение, docs-only коммит; строка
+  `MainActivity` в том же мапе уже обновлена в шаге 4 фичи (коммит
+  `4bc5aba`).
