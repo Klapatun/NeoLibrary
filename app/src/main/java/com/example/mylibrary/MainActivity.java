@@ -1,5 +1,6 @@
 package com.example.mylibrary;
 
+import android.annotation.SuppressLint;
 import android.app.Activity;
 import android.app.AlertDialog;
 import android.app.LoaderManager;
@@ -16,9 +17,13 @@ import android.os.AsyncTask;
 import android.os.Bundle;
 import android.text.Editable;
 import android.text.TextWatcher;
+import android.graphics.Color;
+import android.util.TypedValue;
+import android.view.Gravity;
 import android.view.LayoutInflater;
 import android.view.MenuInflater;
 import android.view.MenuItem;
+import android.view.MotionEvent;
 import android.view.View;
 import android.view.ViewConfiguration;
 import android.view.ViewGroup;
@@ -614,19 +619,41 @@ public class MainActivity extends Activity
         final LinearLayout selectAllRow = new LinearLayout(this);
         selectAllRow.setOrientation(LinearLayout.HORIZONTAL);
         selectAllRow.setPadding(0, 16, 0, 8);
+        selectAllRow.setGravity(Gravity.CENTER_VERTICAL);
 
         final CheckBox selectAllCheckBox = new CheckBox(this);
         selectAllCheckBox.setText(R.string.filter_select_all);
+        // Checkbox takes remaining space, pushes clear button to the right
+        LinearLayout.LayoutParams cbParams = new LinearLayout.LayoutParams(
+                0, ViewGroup.LayoutParams.WRAP_CONTENT, 1.0f);
+        selectAllCheckBox.setLayoutParams(cbParams);
         selectAllRow.addView(selectAllCheckBox);
 
         // Clear button - visible only when at least one format is selected
-        final Button clearButton = new Button(this);
-        clearButton.setText(R.string.filter_clear);
+        // Small cross icon button, transparent background, aligned right
+        final TextView clearButton = new TextView(this);
+        clearButton.setText("\u2715"); // × multiplication sign
+        clearButton.setTextSize(TypedValue.COMPLEX_UNIT_SP, 20);
+        clearButton.setTextColor(0xFF757575); // Medium gray
+        clearButton.setPadding(12, 4, 12, 4);
+        clearButton.setBackgroundColor(Color.TRANSPARENT);
         clearButton.setVisibility(View.GONE);
         LinearLayout.LayoutParams clearParams = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        clearParams.setMargins(16, 0, 0, 0);
+        clearParams.setMargins(8, 0, 16, 0);
         clearButton.setLayoutParams(clearParams);
+        // Make it clickable like a button
+        clearButton.setClickable(true);
+        clearButton.setFocusable(true);
+        clearButton.setOnTouchListener((v, event) -> {
+            if (event.getAction() == MotionEvent.ACTION_DOWN) {
+                v.setAlpha(0.5f);
+            } else if (event.getAction() == MotionEvent.ACTION_UP
+                    || event.getAction() == MotionEvent.ACTION_CANCEL) {
+                v.setAlpha(1.0f);
+            }
+            return false;
+        });
         selectAllRow.addView(clearButton);
 
         dialogView.addView(selectAllRow);
