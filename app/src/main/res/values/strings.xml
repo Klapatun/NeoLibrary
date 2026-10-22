@@ -56,6 +56,7 @@
     <string name="filter_search_hint">Search formats...</string>
     <string name="filter_select_all">Select all</string>
     <string name="filter_deselect_all">Deselect all</string>
+    <string name="filter_clear">Clear</string>
     <string name="view_list">List</string>
     <string name="view_grid">Tiles</string>
 

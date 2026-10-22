@@ -24,6 +24,7 @@ import android.view.ViewConfiguration;
 import android.view.ViewGroup;
 import android.widget.AdapterView;
 import android.widget.ArrayAdapter;
+import android.widget.Button;
 import android.widget.CheckBox;
 import android.widget.CompoundButton;
 import android.widget.EditText;
@@ -609,11 +610,26 @@ public class MainActivity extends Activity
         searchEditText.setSingleLine(true);
         dialogView.addView(searchEditText);
 
-        // Select All / Deselect All CheckBox
+        // Select All / Deselect All CheckBox with Clear button
+        final LinearLayout selectAllRow = new LinearLayout(this);
+        selectAllRow.setOrientation(LinearLayout.HORIZONTAL);
+        selectAllRow.setPadding(0, 16, 0, 8);
+
         final CheckBox selectAllCheckBox = new CheckBox(this);
         selectAllCheckBox.setText(R.string.filter_select_all);
-        selectAllCheckBox.setPadding(0, 16, 0, 8);
-        dialogView.addView(selectAllCheckBox);
+        selectAllRow.addView(selectAllCheckBox);
+
+        // Clear button - visible only when at least one format is selected
+        final Button clearButton = new Button(this);
+        clearButton.setText(R.string.filter_clear);
+        clearButton.setVisibility(View.GONE);
+        LinearLayout.LayoutParams clearParams = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        clearParams.setMargins(16, 0, 0, 0);
+        clearButton.setLayoutParams(clearParams);
+        selectAllRow.addView(clearButton);
+
+        dialogView.addView(selectAllRow);
 
         // ListView for formats
         final ListView listView = new ListView(this);
@@ -665,6 +681,8 @@ public class MainActivity extends Activity
                     selectAllCheckBox.setChecked(false);
                     selectAllCheckBox.setText(R.string.filter_select_all);
                 }
+                // Show clear button if any format is selected
+                clearButton.setVisibility(anyChecked ? View.VISIBLE : View.GONE);
             }
         };
 
@@ -714,6 +732,22 @@ public class MainActivity extends Activity
                     for (int i = 0; i < Formats.ALL.length; i++) {
                         checkedMap.put(i, false);
                     }
+                }
+                // Update the visible list's checked state.
+                for (int i = 0; i < visibleFormats.size(); i++) {
+                    int originalIndex = visibleToOriginalIndex[i];
+                    listView.setItemChecked(i, checkedMap.get(originalIndex));
+                }
+                updateSelectAllState.run();
+            }
+        });
+
+        // Clear button - unchecks all formats
+        clearButton.setOnClickListener(new View.OnClickListener() {
+            @Override public void onClick(View v) {
+                // Uncheck all formats
+                for (int i = 0; i < Formats.ALL.length; i++) {
+                    checkedMap.put(i, false);
                 }
                 // Update the visible list's checked state.
                 for (int i = 0; i < visibleFormats.size(); i++) {
