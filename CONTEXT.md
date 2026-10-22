@@ -38,12 +38,12 @@ Every book's metadata is stored in **two places**:
 
 | Class | Role |
 |---|---|
-| `MainActivity` | catalog: 3-stage load (fast scan → display → background enrich), browse, filter, "Recently read", SAF import; list is cursor-driven (framework `LoaderManager` + `CursorLoader`) |
+| `MainActivity` | catalog: 3-stage load (fast scan → display → background enrich), browse, format filter — multi-select modal opened by the funnel header icon (`ic_filter`/`ic_filter_active`, empty selection = All), "Recently read" — checkable item in the kebab menu (popup composition: `develop` skill §7), SAF import; list is cursor-driven (framework `LoaderManager` + `CursorLoader`) |
 | `DetailActivity` | open in Neo Reader / edit meta / remove; fast-path enrichment of a not-yet-enriched book on open |
 | `EditMetaActivity` | metadata form → writes file (EPUB/FB2) + always updates catalog (`userEdited = true`) |
 | `Book` | Parcelable model (`metaDone`, `metaFailed`, `userEdited` flags) |
 | `db/BookDatabase` | SQLite catalog; **`upsert`/`upsertBasic`/`updateMetadata` preserve `last_read`**; `needMeta()` = stage-2 queue (un-enriched/`meta_failed` books ordered last); `markMetaFailed()`; static write lock |
-| `db/BookProvider` | read-only `ContentProvider` — the `ContentObserver` channel for the `CursorLoader` (all / recent / `format=?`) |
+| `db/BookProvider` | read-only `ContentProvider` — the `ContentObserver` channel for the `CursorLoader` (all / recent / `format=?` / `format IN (?,…)`) |
 | `scan/Formats` | canonical formats + ext→id map (handles `.fb2.zip`) |
 | `scan/LibraryScanner` | stage-1 fast scan (skeleton books, no in-file meta) + `scanSingle()` |
 | `meta/MetaEnricher` | stage-2 background worker: per-book `MetaExtractor` + `CoverExtractor` → DB + `CoverCache`, `notifyChange` per batch; `enrichOne` for import/fast path; **per-file parse budget of 2 min** — a parse that overruns it is abandoned and the book is marked un-enriched (`meta_failed=1`, stays `meta_done=0`, retried last on every rescan); the pass **works the queue cheapest-format-first** (EPUB/FB2 → FB2ZIP → MOBI → the rest, `Formats.enrichmentPriority`; un-enriched books still last of all) |
@@ -113,9 +113,12 @@ pagination is on, a horizontal swipe also turns pages.
 
 ## Header icons (SVG sources → committed PNGs)
 
-The five `MainActivity` header icons (`ic_import`, `ic_refresh`, `ic_grid`,
-`ic_list`, `ic_overflow` — the kebab at the header's right corner) are authored as
-SVG in `app/icons/` (48×48, white, transparent). The runtime PNGs in
+The six `MainActivity` header icons (`ic_import`, `ic_refresh`, `ic_grid`,
+`ic_list`, `ic_overflow` — the kebab at the header's right corner — and the filter
+funnel pair `ic_filter` / `ic_filter_active`: the funnel, and the same funnel with
+an accent dot in the top-right corner while a format filter is configured) are
+authored as SVG in `app/icons/` (48×48, white, transparent — the dot is the only
+accent-coloured element, `#E74C3C`). The runtime PNGs in
 `app/src/main/res/drawable/` (32×32, the 32dp header button size) are generated from
 them via `tools\generate-icons.ps1` and **committed**, so the Android build stays
 100% offline — the tool runs only when an icon is redesigned. Toolchain detail

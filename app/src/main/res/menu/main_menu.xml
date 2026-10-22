@@ -16,6 +16,10 @@
         android:id="@+id/main_menu_clear"
         android:title="@string/menu_clear" />
     <item
+        android:id="@+id/main_menu_recent"
+        android:title="@string/menu_recent"
+        android:checkable="true" />
+    <item
         android:id="@+id/main_menu_pagination"
         android:title="@string/menu_pagination_add"
         android:checkable="true" />

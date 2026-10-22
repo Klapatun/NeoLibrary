@@ -10,6 +10,7 @@
          MainActivity.showHeaderMenu); the title below is the XML default. -->
     <string name="menu_pagination_add">Add pagination</string>
     <string name="menu_pagination_remove">Remove pagination</string>
+    <string name="menu_recent">Recently read</string>
 
     <string name="title_scan">Scanning library…</string>
     <string name="title_no_books">No books found</string>
@@ -49,7 +50,13 @@
     <string name="tab_library">Library</string>
     <string name="tab_last">Recently read</string>
 
-    <string name="filter_all">All</string>
+    <string name="filter_dialog_title">Filter</string>
+    <string name="filter_ok">OK</string>
+    <string name="filter_icon_description">Filter by format</string>
+    <string name="filter_search_hint">Search formats...</string>
+    <string name="filter_select_all">Select all</string>
+    <string name="filter_deselect_all">Deselect all</string>
+    <string name="filter_clear">Clear</string>
     <string name="view_list">List</string>
     <string name="view_grid">Tiles</string>
 

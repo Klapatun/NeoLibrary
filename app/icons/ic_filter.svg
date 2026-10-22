@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Source of res/drawable/ic_filter.png. "Filter by format" (the funnel in
+     the header actions row, left of the list/tiles toggle): a wide mouth
+     narrowing to a short stem, the classic filter metaphor. The state with a
+     configured filter is a SEPARATE icon (ic_filter_active.svg, the funnel +
+     the dot) — on API 19 states are separate PNGs, not a runtime overlay.
+     Regenerate the PNG with tools/generate-icons.ps1. -->
+<svg xmlns="http://www.w3.org/2000/svg" width="48" height="48" viewBox="0 0 48 48">
+    <path fill="#fff" d="M6 8h36L28 26v16h-8V26L6 8z"/>
+</svg>

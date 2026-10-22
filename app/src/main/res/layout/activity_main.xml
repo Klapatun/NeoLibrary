@@ -18,24 +18,11 @@
             android:paddingLeft="8dp"
             android:paddingRight="8dp">
 
-            <!-- The filter spinner takes the start side of the header row and is
-                 bounded by the action row on its right (one-way constraint: the
-                 row stays alignParentEnd, so there is no circular dependency) —
-                 the same pattern the former title TextView used. -->
-            <Spinner
-                android:id="@+id/filter_spinner"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_alignParentStart="true"
-                android:layout_centerVertical="true"
-                android:layout_toStartOf="@id/header_actions"
-                android:layout_marginEnd="8dp"
-                android:prompt="@string/filter_all" />
-
-            <!-- Header actions in one row: the list/tiles toggle, then the
-                 overflow kebab rightmost (the header's right corner). Import and
-                 rescan live in the kebab's menu (main_menu) now, so the header
-                 stays uncluttered. All icons are 48x48 white PNGs on the indigo
+            <!-- Header actions in one row: the filter funnel, then the
+                 list/tiles toggle, then the overflow kebab rightmost (the
+                 header's right corner). Import, rescan and "Recently read"
+                 live in the kebab's menu (main_menu) now, so the header stays
+                 uncluttered. All icons are 48x48 white PNGs on the indigo
                  bar; each button keeps the selectable ripple. -->
             <LinearLayout
                 android:id="@+id/header_actions"
@@ -44,6 +31,19 @@
                 android:layout_alignParentEnd="true"
                 android:layout_centerVertical="true"
                 android:orientation="horizontal">
+
+                <!-- The funnel: the catalog's filter (the multi-choice format
+                     dialog; the "Recently read" view lives in the kebab). The
+                     icon shows the dot (ic_filter_active) while a filter is
+                     configured (MainActivity.updateFilterIcon). -->
+                <ImageButton
+                    android:id="@+id/btn_filter"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:src="@drawable/ic_filter"
+                    android:background="?android:attr/selectableItemBackground"
+                    android:contentDescription="@string/filter_icon_description"
+                    android:padding="8dp" />
 
                 <ImageButton
                     android:id="@+id/toggle_view"

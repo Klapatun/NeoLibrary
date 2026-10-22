@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Source of res/drawable/ic_filter_active.png. The same funnel as
+     ic_filter.svg plus the "filter configured" dot: a 12px-diameter accent
+     dot (~1/4 of the icon) in the top-right corner. The header button
+     switches between this PNG and ic_filter.png depending on
+     FilterState.isActive() (the dot reflects the CONFIGURED filter — it
+     stays while the "Recently read" view is on screen). Regenerate the PNG
+     with tools/generate-icons.ps1. -->
+<svg xmlns="http://www.w3.org/2000/svg" width="48" height="48" viewBox="0 0 48 48">
+    <path fill="#fff" d="M6 8h36L28 26v16h-8V26L6 8z"/>
+    <circle cx="37" cy="11" r="6" fill="#E74C3C"/>
+</svg>

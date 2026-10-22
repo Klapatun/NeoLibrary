@@ -167,14 +167,23 @@ gradlew.bat :app:assembleDebug       # APK, если задевал сборку
 
 ## 7. Иконки (SVG → PNG)
 
-- Пять иконок хедера (`ic_import`, `ic_refresh`, `ic_grid`, `ic_list`,
-  `ic_overflow`) создаются как SVG в `app/icons/` (48×48, белые,
-  прозрачные). Кebab (`ic_overflow`) — правый угол хедера, вытеснил кнопки
+- Шесть иконок хедера (`ic_import`, `ic_refresh`, `ic_grid`, `ic_list`,
+  `ic_overflow`, `ic_filter`/`ic_filter_active` — воронка фильтра;
+  `ic_filter_active` — та же воронка + акцентная точка в правом верхнем углу
+  (12px из 48, #E74C3C), состояние «фильтр настроен») создаются как SVG в
+  `app/icons/` (48×48, белые, прозрачные — точка единственное цветное пятно;
+  состояния — отдельными PNG, на API 19 без рантайм-оверлеев). Кebab
+  (`ic_overflow`) — правый угол хедера, вытеснил кнопки
   Import/Rescan из строки хедера; его popup (`res/menu/main_menu.xml`):
-  **Import**, **Rescan**, checkable **Add/Remove pagination** (title +
-  checkmark отражают состояние, выставляются в `showHeaderMenu`), **Clear
-  library** (диалог подтверждения, `db.clear()` — строки + кэш обложек,
-  файлы на диске не трогаются).
+  **Import**, **Rescan**, **Clear library** (диалог подтверждения,
+  `db.clear()` — строки + кэш обложек, файлы на диске не трогаются),
+  checkable **Recently read** (`main_menu_recent`; checkmark зеркалит
+  `FilterState.recentView`, выставляется в `showHeaderMenu`; «Recently
+  read» и формат-фильтр — взаимоисключающие ВИДЫ, не форматы: клик НЕ
+  очищает выбор форматов (точка на воронке остаётся — она отражает
+  настроенный фильтр, а не текущий вид), OK модалки сбрасывает
+  `recentView` и выигрывает), checkable **Add/Remove pagination** (title +
+  checkmark отражают состояние, выставляются в `showHeaderMenu`).
 - Рантайм-PNG — `app/src/main/res/drawable/` (32×32, размер 32dp кнопки
   хедера) — генерируются из SVG через `tools\generate-icons.ps1` (ведёт
   `tools/SvgToPng` — маленький dependency-free .NET-растеризатор: OS WIC SVG

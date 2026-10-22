@@ -376,15 +376,35 @@ public class BookDatabase extends SQLiteOpenHelper {
     }
 
     /** Same query as {@link #all(String)} but returning a live cursor (for the
-     *  ContentProvider / CursorAdapter). */
+     *  ContentProvider / CursorAdapter). The single-value form: delegates to
+     *  the format-set overload ({@link #cursorAll(String[])}); a null/empty
+     *  value means no selection (all books), as before. */
     public Cursor cursorAll(String formatFilter) {
+        if (formatFilter == null || formatFilter.length() == 0) {
+            return cursorAll((String[]) null);
+        }
+        return cursorAll(new String[]{formatFilter});
+    }
+
+    /** The format-SET overload of the catalog cursor (the modal filter's
+     *  query, the plan's step 2): a non-null, non-empty array becomes
+     *  {@code format IN (?,?,…)} — one placeholder per id; null or an empty
+     *  array means no selection (all books). The row order is the same as the
+     *  single-value overload — title COLLATE NOCASE. */
+    public Cursor cursorAll(String[] formatFilter) {
         synchronized (WRITE_LOCK) {
             SQLiteDatabase db = readableDb();
-            if (formatFilter == null || formatFilter.length() == 0) {
+            if (formatFilter == null || formatFilter.length == 0) {
                 return db.query("books", null, null, null, null, null,
                         "title COLLATE NOCASE ASC");
             }
-            return db.query("books", null, "format=?", new String[]{formatFilter},
+            StringBuilder in = new StringBuilder("format IN (");
+            for (int i = 0; i < formatFilter.length; i++) {
+                if (i > 0) in.append(",");
+                in.append("?");
+            }
+            in.append(")");
+            return db.query("books", null, in.toString(), formatFilter,
                     null, null, "title COLLATE NOCASE ASC");
         }
     }

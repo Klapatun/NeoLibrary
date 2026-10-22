@@ -7,6 +7,9 @@ import android.content.Context;
 import android.database.Cursor;
 import android.net.Uri;
 
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
+
 /**
  * Read-only content provider over the book catalog.
  *
@@ -23,10 +26,22 @@ import android.net.Uri;
 public class BookProvider extends ContentProvider {
 
     public static final String AUTHORITY = "com.example.mylibrary.books";
-    /** All books (optionally filtered by {@code selection = "format=?"}). */
+    /** All books; the optional {@code selection} narrows the result set —
+     *  {@code "format=?"} (the original single-value filter) or
+     *  {@code "format IN (?,…)} (the modal filter's set query, built by the
+     *  caller; the provider's selection grammar, extended additively). */
     public static final Uri CONTENT_URI = Uri.parse("content://" + AUTHORITY + "/books");
     /** The "Recently read" view (limit 200). */
     public static final Uri RECENT_URI = Uri.parse("content://" + AUTHORITY + "/books/recent");
+
+    /** The modal filter's selection clause (the plan's step 2): the caller
+     *  builds the string itself — {@code format IN (?,…)} with one {@code ?}
+     *  per selected format, in {@code Formats.ALL} order — and this provider
+     *  translates it to the format-set query. The grammar is extended
+     *  ADDITIVELY: future filter types add their clause here, and the
+     *  single-value {@code format=?} above keeps working as before. */
+    private static final Pattern FORMAT_IN = Pattern.compile(
+            "^format\\s+IN\\s*\\((\\?(?:\\s*,\\s*\\?)*?)\\)$");
 
     /**
      * Announces a catalog change to BOTH views at once. The all-books list and the
@@ -55,7 +70,23 @@ public class BookProvider extends ContentProvider {
         if (RECENT_URI.equals(uri)) {
             return db.cursorRecent(200);
         }
-        // Books root: an optional "format=?" selection narrows the result set.
+        // Books root: the optional selection narrows the result set. The set
+        // query first (the modal filter's "format IN (?,…)", the caller-built
+        // string, one placeholder per selected format)…
+        if (selection != null && selectionArgs != null) {
+            Matcher m = FORMAT_IN.matcher(selection.trim());
+            if (m.matches()) {
+                String group = m.group(1);
+                int placeholders = 0;
+                for (int i = 0; i < group.length(); i++) {
+                    if (group.charAt(i) == '?') placeholders++;
+                }
+                if (placeholders == selectionArgs.length) {
+                    return db.cursorAll(selectionArgs);
+                }
+            }
+        }
+        // …then the original single-value "format=?" (as before).
         String filter = null;
         if ("format=?".equals(selection) && selectionArgs != null && selectionArgs.length > 0) {
             filter = selectionArgs[0];

@@ -1,5 +1,6 @@
 package com.example.mylibrary;
 
+import android.annotation.SuppressLint;
 import android.app.Activity;
 import android.app.AlertDialog;
 import android.app.LoaderManager;
@@ -14,19 +15,30 @@ import android.database.DataSetObserver;
 import android.net.Uri;
 import android.os.AsyncTask;
 import android.os.Bundle;
+import android.text.Editable;
+import android.text.TextWatcher;
+import android.graphics.Color;
+import android.util.TypedValue;
+import android.view.Gravity;
 import android.view.LayoutInflater;
 import android.view.MenuInflater;
 import android.view.MenuItem;
+import android.view.MotionEvent;
 import android.view.View;
 import android.view.ViewConfiguration;
+import android.view.ViewGroup;
 import android.widget.AdapterView;
 import android.widget.ArrayAdapter;
+import android.widget.Button;
+import android.widget.CheckBox;
+import android.widget.CompoundButton;
+import android.widget.EditText;
 import android.widget.FrameLayout;
 import android.widget.ImageButton;
 import android.widget.LinearLayout;
+import android.widget.ListView;
 import android.widget.PopupMenu;
 import android.widget.ProgressBar;
-import android.widget.Spinner;
 import android.widget.TextView;
 import android.widget.Toast;
 
@@ -42,6 +54,7 @@ import com.example.mylibrary.util.Openers;
 import java.io.File;
 import java.lang.ref.WeakReference;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
@@ -74,20 +87,16 @@ public class MainActivity extends Activity
     private static final int GRID_PAGE_SIZE = 6;
     /** SharedPreferences key: the pagination on/off choice (persists like view_mode). */
     private static final String PREF_KEY_PAGINATION = "pagination_enabled";
-    /** Bundle key: the active filter value ("", "__recent__", or a format id).
-     *  Transient UI state — survives rotation (the instance state), not the
-     *  app being closed (that would be a preference, like view_mode). */
-    private static final String KEY_FILTER = "current_filter";
 
     private BookDatabase db;
     private BookAdapter adapter;
     private FrameLayout bookContainer;
-    private Spinner filterSpinner;
     private ProgressBar progressBar;
     private TextView emptyView;
     private PagedListView list;
     private PagedGridView grid;
     private ImageButton btnMenu;
+    private ImageButton btnFilter;
     private ImageButton toggleView;
     private LinearLayout enrichBar;
     private TextView enrichStatus;
@@ -124,9 +133,11 @@ public class MainActivity extends Activity
         }
     };
 
-    private List<String> filterLabels;
-    private List<String> filterValues; // format ids, or "" for All, or "__recent__"
-    private String currentFilter = "";
+    /** The catalog's filter state (the single "state → query" conversion point,
+     *  the plan's step 2): the format modal, the loader and the instance state
+     *  all work through it. Replaced the old currentFilter string plus the
+     *  spinner's label/value lists. */
+    private FilterState filters;
 
     /** Stage-2 progress strip; invoked on the main thread by MetaEnricher. */
     private final MetaEnricher.OnProgress enrichListener = new MetaEnricher.OnProgress() {
@@ -153,6 +164,13 @@ public class MainActivity extends Activity
         // screen — they hold this object, so it must not pin the Activity.
         db = new BookDatabase(getApplicationContext());
 
+        // The filter state is session-only (unlike view_mode/pagination, which
+        // persist in SharedPreferences): restore it from the instance state
+        // BEFORE the adapter and the loader come up, so the first load is
+        // already filtered and the user never sees a flash of "all books"
+        // data.
+        filters = FilterState.restore(savedInstanceState);
+
         progressBar = (ProgressBar) findViewById(R.id.progress);
         emptyView = (TextView) findViewById(R.id.empty_view);
         enrichBar = (LinearLayout) findViewById(R.id.enrich_bar);
@@ -162,6 +180,7 @@ public class MainActivity extends Activity
         list = (PagedListView) findViewById(R.id.book_list);
         grid = (PagedGridView) findViewById(R.id.book_grid);
         btnMenu = (ImageButton) findViewById(R.id.btn_menu);
+        btnFilter = (ImageButton) findViewById(R.id.btn_filter);
         toggleView = (ImageButton) findViewById(R.id.toggle_view);
         paginationBar = (LinearLayout) findViewById(R.id.pagination_bar);
         btnPrevPage = (ImageButton) findViewById(R.id.page_prev);
@@ -189,7 +208,10 @@ public class MainActivity extends Activity
         // the mode the screen is about to apply, before any row gets inflated.
         int initialMode = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
                 .getInt(PREF_KEY_VIEW_MODE, BookAdapter.MODE_GRID);
-        adapter = new BookAdapter(this, db.cursorAll(null), this);
+        // The initial cursor is the CURRENT filter's query (the all-books one
+        // when the state is empty); the loader below replaces it on the first
+        // load.
+        adapter = new BookAdapter(this, db.cursorAll(filters.queryArgs()), this);
         adapter.setMode(initialMode);
         grid.setAdapter(adapter);
         // Any external data change (an enrichment batch, a remove, a filter, a
@@ -211,6 +233,13 @@ public class MainActivity extends Activity
         btnMenu.setOnClickListener(new View.OnClickListener() {
             @Override public void onClick(View v) {
                 showHeaderMenu(v);
+            }
+        });
+
+        // The funnel opens the filter dialog (the multi-choice format list).
+        btnFilter.setOnClickListener(new View.OnClickListener() {
+            @Override public void onClick(View v) {
+                showFilterDialog();
             }
         });
 
@@ -271,42 +300,40 @@ public class MainActivity extends Activity
         list.enablePageSwipe(swipeSlop, pageSwipe);
         grid.enablePageSwipe(swipeSlop, pageSwipe);
 
-        if (savedInstanceState != null) {
-            // Recreation (rotation / configuration change): the active filter is
-            // transient UI state (unlike view_mode/pagination, which persist in
-            // SharedPreferences) — restore it before the spinner and the loader come
-            // up, so the first load is already filtered and the user never sees a
-            // flash of "All formats" data.
-            currentFilter = savedInstanceState.getString(KEY_FILTER, "");
-        }
-
-        setupFilterSpinner();
-        // The framework Activity (unlike AndroidX's FragmentActivity) has no loader
-        // shortcuts of its own — go through the LoaderManager explicitly.
-        getLoaderManager().initLoader(LOADER_BOOKS, null, this);
+        // The funnel icon reflects the restored state right away (the dot).
+        updateFilterIcon();
         if (savedInstanceState == null) {
             // Cold start (first launch of this task): walk storage and (re)build the
             // catalog. This is also what picks up files added outside the app
-            // between sessions.
+            // between sessions. The catalog loader does NOT start here: its first
+            // query would race the scan (both tasks share the AsyncTask pool) and,
+            // on a loaded machine, its stale pre-scan (0-row) result can be
+            // DELIVERED after the scan's rebind — blanking the fresh catalog and
+            // leaving the list empty. The loader starts in ScanTask.onPostExecute,
+            // after the rebind, so its first query always sees post-scan data.
             startScan();
         } else {
-            // Recreation (rotation / configuration change): the catalog and the
-            // loaders already have the data — a full rescan would be pure waste
-            // (and would reset the enrichment worker from the top of the queue).
-            // The worker was cancelled in onDestroy; if any books still need stage
-            // 2, resume it over the remaining queue (needMeta()).
+            // Recreation (rotation / configuration change): the catalog already
+            // has the data — a full rescan would be pure waste (and would reset
+            // the enrichment worker from the top of the queue). The loader starts
+            // straight away (its first query sees the existing rows); the worker
+            // was cancelled in onDestroy; if any books still need stage 2, resume
+            // it over the remaining queue (needMeta()). The framework Activity
+            // (unlike AndroidX's FragmentActivity) has no loader shortcuts of its
+            // own — go through the LoaderManager explicitly.
+            getLoaderManager().initLoader(LOADER_BOOKS, null, this);
             startEnrichment();
         }
     }
 
-    /** Rotation / configuration change: remember the active filter. The view
+    /** Rotation / configuration change: remember the filter state. The view
      *  mode and the pagination toggle already survive via SharedPreferences;
      *  the filter is session-only, so it goes to the instance state, not
      *  there. */
     @Override
     protected void onSaveInstanceState(Bundle outState) {
         super.onSaveInstanceState(outState);
-        outState.putString(KEY_FILTER, currentFilter);
+        filters.save(outState);
     }
 
     @Override
@@ -386,6 +413,13 @@ public class MainActivity extends Activity
                     ? R.string.menu_pagination_remove : R.string.menu_pagination_add);
             pagination.setChecked(paginationEnabled);
         }
+        // The "Recently read" item's checkmark mirrors the current view (the same
+        // pattern as the pagination item): the item is a checkable VIEW toggle,
+        // not a format, so it lives in the kebab, not the filter dialog.
+        MenuItem recent = menu.getMenu().findItem(R.id.main_menu_recent);
+        if (recent != null) {
+            recent.setChecked(filters.recentView);
+        }
         menu.setOnMenuItemClickListener(new PopupMenu.OnMenuItemClickListener() {
             @Override public boolean onMenuItemClick(MenuItem item) {
                 int id = item.getItemId();
@@ -397,6 +431,13 @@ public class MainActivity extends Activity
                     confirmClear();
                 } else if (id == R.id.main_menu_pagination) {
                     setPaginationEnabled(!paginationEnabled);
+                } else if (id == R.id.main_menu_recent) {
+                    // The views are mutually exclusive: toggling "Recently read"
+                    // does NOT clear the format selection (the funnel's dot
+                    // reflects the CONFIGURED filter); confirming the filter
+                    // dialog (OK) resets the recent view and wins.
+                    filters.recentView = !filters.recentView;
+                    applyCurrentView();
                 }
                 menu.dismiss();
                 return true;
@@ -531,49 +572,273 @@ public class MainActivity extends Activity
     }
 
     // -----------------------------------------------------------------
-    // Filter spinner -> loader arguments
+    // Filter modal (the funnel icon in the header)
     // -----------------------------------------------------------------
 
-    private void setupFilterSpinner() {
-        filterLabels = new ArrayList<String>();
-        filterValues = new ArrayList<String>();
-        filterLabels.add("All formats");
-        filterValues.add("");
-        filterLabels.add("Recently read");
-        filterValues.add("__recent__");
-        for (String f : Formats.ALL) {
-            filterLabels.add("Format: " + f);
-            filterValues.add(f);
-        }
-        // White text layout: the spinner sits on the indigo header bar, where the
-        // default dark-on-light selected item would be hard to read.
-        ArrayAdapter<String> sa = new ArrayAdapter<String>(this,
-                R.layout.spinner_item, filterLabels);
-        sa.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
-        filterSpinner = (Spinner) findViewById(R.id.filter_spinner);
-        filterSpinner.setAdapter(sa);
-        // On recreation currentFilter was restored in onCreate — the spinner must
-        // show the restored filter's position, not always "All formats". An unknown
-        // value (defensive: the filter list can only change across app versions)
-        // falls back to the default position.
-        int restoredPos = filterValues.indexOf(currentFilter);
-        if (restoredPos < 0) {
-            restoredPos = 0;
-            currentFilter = filterValues.get(0);
-        }
-        filterSpinner.setSelection(restoredPos);
-        filterSpinner.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() {
-            @Override public void onItemSelected(AdapterView<?> p, View v, int pos, long id) {
-                applyFilter(pos);
+    /** The funnel icon's filter dialog: a multi-choice list built from
+     *  {@link Formats#ALL} (the single source of truth — a future new filter
+     *  type adds its own group of items here). It works on a DRAFT copy of the
+     *  filter state: the real state (and the dot on the funnel) changes only
+     *  on OK, and OK also resets the recent view — the views are mutually
+     *  exclusive and the filter view wins (the plan's step 4). Cancel throws
+     *  the draft away (nothing changes).
+     *
+     *  PLAN2: The dialog now includes a search bar (EditText) to filter the
+     *  visible formats by substring (case-insensitive), and a "Select all /
+     *  Deselect all" CheckBox that toggles all format checkboxes. When the
+     *  search is active and the user clicks "Select all", the search is reset
+     *  and all formats become selected. */
+    private void showFilterDialog() {
+        final FilterState draft = filters.copy();
+
+        // The dialog works with a SparseBooleanArray mapping the ORIGINAL
+        // index in Formats.ALL -> checked state. This allows search filtering
+        // to work correctly: the visible list is a subset, but the checked
+        // state is maintained for all formats.
+        final android.util.SparseBooleanArray checkedMap =
+                new android.util.SparseBooleanArray();
+        for (int i = 0; i < Formats.ALL.length; i++) {
+            if (draft.selectedFormats.contains(Formats.ALL[i])) {
+                checkedMap.put(i, true);
             }
-            @Override public void onNothingSelected(AdapterView<?> p) {}
+        }
+
+        // Build the custom dialog view: LinearLayout with search, Select All,
+        // and ListView.
+        final LinearLayout dialogView = new LinearLayout(this);
+        dialogView.setOrientation(LinearLayout.VERTICAL);
+        dialogView.setPadding(16, 16, 16, 16);
+
+        // Search EditText
+        final EditText searchEditText = new EditText(this);
+        searchEditText.setHint(R.string.filter_search_hint);
+        searchEditText.setSingleLine(true);
+        dialogView.addView(searchEditText);
+
+        // Select All / Deselect All CheckBox with Clear button
+        final LinearLayout selectAllRow = new LinearLayout(this);
+        selectAllRow.setOrientation(LinearLayout.HORIZONTAL);
+        selectAllRow.setPadding(0, 16, 0, 8);
+        selectAllRow.setGravity(Gravity.CENTER_VERTICAL);
+
+        final CheckBox selectAllCheckBox = new CheckBox(this);
+        selectAllCheckBox.setText(R.string.filter_select_all);
+        // Checkbox takes remaining space, pushes clear button to the right
+        LinearLayout.LayoutParams cbParams = new LinearLayout.LayoutParams(
+                0, ViewGroup.LayoutParams.WRAP_CONTENT, 1.0f);
+        selectAllCheckBox.setLayoutParams(cbParams);
+        selectAllRow.addView(selectAllCheckBox);
+
+        // Clear button - visible only when at least one format is selected
+        // Small cross icon button, transparent background, aligned right
+        final TextView clearButton = new TextView(this);
+        clearButton.setText("\u2715"); // × multiplication sign
+        clearButton.setTextSize(TypedValue.COMPLEX_UNIT_SP, 20);
+        clearButton.setTextColor(0xFF757575); // Medium gray
+        clearButton.setPadding(12, 4, 12, 4);
+        clearButton.setBackgroundColor(Color.TRANSPARENT);
+        clearButton.setVisibility(View.GONE);
+        LinearLayout.LayoutParams clearParams = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        clearParams.setMargins(8, 0, 16, 0);
+        clearButton.setLayoutParams(clearParams);
+        // Make it clickable like a button
+        clearButton.setClickable(true);
+        clearButton.setFocusable(true);
+        clearButton.setOnTouchListener((v, event) -> {
+            if (event.getAction() == MotionEvent.ACTION_DOWN) {
+                v.setAlpha(0.5f);
+            } else if (event.getAction() == MotionEvent.ACTION_UP
+                    || event.getAction() == MotionEvent.ACTION_CANCEL) {
+                v.setAlpha(1.0f);
+            }
+            return false;
         });
+        selectAllRow.addView(clearButton);
+
+        dialogView.addView(selectAllRow);
+
+        // ListView for formats
+        final ListView listView = new ListView(this);
+        listView.setChoiceMode(ListView.CHOICE_MODE_MULTIPLE);
+        listView.setLayoutParams(new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, 0, 1.0f));
+        dialogView.addView(listView);
+
+        // Adapter for the visible (filtered) formats.
+        // We maintain two parallel structures:
+        // - visibleFormats: ArrayList<String> of format IDs currently shown
+        // - visibleToOriginalIndex: int[] mapping visible position -> original index in Formats.ALL
+        final ArrayList<String> visibleFormats = new ArrayList<String>(Arrays.asList(Formats.ALL));
+        final int[] visibleToOriginalIndex = new int[Formats.ALL.length];
+        for (int i = 0; i < Formats.ALL.length; i++) {
+            visibleToOriginalIndex[i] = i;
+        }
+
+        final ArrayAdapter<String> adapter = new ArrayAdapter<String>(
+                this,
+                android.R.layout.simple_list_item_multiple_choice,
+                visibleFormats);
+        listView.setAdapter(adapter);
+
+        // Initialize the checked state for visible items.
+        for (int i = 0; i < visibleFormats.size(); i++) {
+            int originalIndex = visibleToOriginalIndex[i];
+            if (checkedMap.get(originalIndex)) {
+                listView.setItemChecked(i, true);
+            }
+        }
+
+        // Update Select All checkbox state based on current selection.
+        final Runnable updateSelectAllState = new Runnable() {
+            @Override public void run() {
+                boolean allChecked = true;
+                boolean anyChecked = false;
+                for (int i = 0; i < Formats.ALL.length; i++) {
+                    if (checkedMap.get(i)) {
+                        anyChecked = true;
+                    } else {
+                        allChecked = false;
+                    }
+                }
+                if (allChecked && anyChecked) {
+                    selectAllCheckBox.setChecked(true);
+                    selectAllCheckBox.setText(R.string.filter_deselect_all);
+                } else {
+                    selectAllCheckBox.setChecked(false);
+                    selectAllCheckBox.setText(R.string.filter_select_all);
+                }
+                // Show clear button if any format is selected
+                clearButton.setVisibility(anyChecked ? View.VISIBLE : View.GONE);
+            }
+        };
+
+        // Search filtering
+        searchEditText.addTextChangedListener(new TextWatcher() {
+            @Override public void beforeTextChanged(CharSequence s, int start, int count, int after) {}
+            @Override public void onTextChanged(CharSequence s, int start, int before, int count) {}
+            @Override public void afterTextChanged(Editable s) {
+                String query = s.toString().toLowerCase();
+                visibleFormats.clear();
+                int idx = 0;
+                for (int i = 0; i < Formats.ALL.length; i++) {
+                    if (query.isEmpty() || Formats.ALL[i].toLowerCase().contains(query)) {
+                        visibleFormats.add(Formats.ALL[i]);
+                        if (idx < visibleToOriginalIndex.length) {
+                            visibleToOriginalIndex[idx] = i;
+                        }
+                        idx++;
+                    }
+                }
+                adapter.notifyDataSetChanged();
+
+                // Re-apply checked state to newly visible items.
+                for (int i = 0; i < visibleFormats.size(); i++) {
+                    int originalIndex = visibleToOriginalIndex[i];
+                    listView.setItemChecked(i, checkedMap.get(originalIndex));
+                }
+
+                updateSelectAllState.run();
+            }
+        });
+
+        // Select All / Deselect All checkbox - use setOnClickListener to avoid
+        // re-entrancy issues with updateSelectAllState calling setChecked().
+        selectAllCheckBox.setOnClickListener(new View.OnClickListener() {
+            @Override public void onClick(View v) {
+                boolean isChecked = selectAllCheckBox.isChecked();
+                if (isChecked) {
+                    // Select All: check all formats (all 15), reset search.
+                    for (int i = 0; i < Formats.ALL.length; i++) {
+                        checkedMap.put(i, true);
+                    }
+                    // Reset search to show all formats.
+                    searchEditText.setText("");
+                } else {
+                    // Deselect All: uncheck all formats.
+                    for (int i = 0; i < Formats.ALL.length; i++) {
+                        checkedMap.put(i, false);
+                    }
+                }
+                // Update the visible list's checked state.
+                for (int i = 0; i < visibleFormats.size(); i++) {
+                    int originalIndex = visibleToOriginalIndex[i];
+                    listView.setItemChecked(i, checkedMap.get(originalIndex));
+                }
+                updateSelectAllState.run();
+            }
+        });
+
+        // Clear button - unchecks all formats
+        clearButton.setOnClickListener(new View.OnClickListener() {
+            @Override public void onClick(View v) {
+                // Uncheck all formats
+                for (int i = 0; i < Formats.ALL.length; i++) {
+                    checkedMap.put(i, false);
+                }
+                // Update the visible list's checked state.
+                for (int i = 0; i < visibleFormats.size(); i++) {
+                    int originalIndex = visibleToOriginalIndex[i];
+                    listView.setItemChecked(i, checkedMap.get(originalIndex));
+                }
+                updateSelectAllState.run();
+            }
+        });
+
+        // List item click toggles the checked state for that format.
+        listView.setOnItemClickListener(new AdapterView.OnItemClickListener() {
+            @Override public void onItemClick(AdapterView<?> parent, View view, int position, long id) {
+                int originalIndex = visibleToOriginalIndex[position];
+                boolean newChecked = !checkedMap.get(originalIndex);
+                checkedMap.put(originalIndex, newChecked);
+                listView.setItemChecked(position, newChecked);
+                updateSelectAllState.run();
+            }
+        });
+
+        new AlertDialog.Builder(this)
+                .setTitle(R.string.filter_dialog_title)
+                .setView(dialogView)
+                .setNegativeButton(R.string.cancel, null)
+                .setPositiveButton(R.string.filter_ok, new DialogInterface.OnClickListener() {
+                    @Override public void onClick(DialogInterface d, int w) {
+                        // OK adopts the draft: the selection becomes the real
+                        // state, and the recent view is reset (the filter view
+                        // wins over the "Recently read" view).
+                        FilterState next = new FilterState();
+                        for (int i = 0; i < Formats.ALL.length; i++) {
+                            if (checkedMap.get(i)) {
+                                next.selectedFormats.add(Formats.ALL[i]);
+                            }
+                        }
+                        next.recentView = false;
+                        filters = next;
+                        applyCurrentView();
+                    }
+                })
+                .show();
     }
 
-    private void applyFilter(int pos) {
-        if (pos < 0 || pos >= filterValues.size()) return;
-        currentFilter = filterValues.get(pos);
+    /** Re-applies the current filter state to the catalog view: restarts the
+     *  loader (the new query comes from {@code filters} in
+     *  {@link #onCreateLoader}) and refreshes the funnel icon's dot. */
+    private void applyCurrentView() {
         getLoaderManager().restartLoader(LOADER_BOOKS, null, this);
+        updateFilterIcon();
+    }
+
+    /** The funnel icon's state: the dot ({@code ic_filter_active}) while a
+     *  filter is configured — it stays while the recent view is on screen,
+     *  because it reflects the CONFIGURED filter, not the current view. */
+    private void updateFilterIcon() {
+        btnFilter.setImageResource(filters.isActive()
+                ? R.drawable.ic_filter_active : R.drawable.ic_filter);
+    }
+
+    /** The current filter state (package-private: the unit tests read the
+     *  live state through it, same pattern as {@link #getLastHeaderMenu()}). */
+    FilterState getFilterState() {
+        return filters;
     }
 
     // -----------------------------------------------------------------
@@ -582,21 +847,14 @@ public class MainActivity extends Activity
 
     @Override
     public Loader<Cursor> onCreateLoader(int id, Bundle args) {
-        // The filter arguments are read from the activity's current state (the
-        // spinner is the single source of truth), so the args Bundle is not needed.
-        Uri uri;
-        String selection = null;
-        String[] selArgs = null;
-        if ("__recent__".equals(currentFilter)) {
-            uri = BookProvider.RECENT_URI;
-        } else {
-            uri = BookProvider.CONTENT_URI;
-            if (currentFilter.length() > 0) {
-                selection = "format=?";
-                selArgs = new String[]{currentFilter};
-            }
-        }
-        // Ordering lives in BookProvider (title COLLATE NOCASE / last_read DESC).
+        // The query is read from the filter state (the single "state → query"
+        // conversion point, the plan's step 2): this screen does not know the
+        // provider's URIs or the selection syntax — only FilterState does.
+        Uri uri = filters.queryUri();
+        String selection = filters.querySelection();
+        String[] selArgs = filters.queryArgs();
+        // Ordering lives in BookProvider / BookDatabase (title COLLATE NOCASE /
+        // last_read DESC).
         return new CursorLoader(this, uri, null, selection, selArgs, null);
     }
 
@@ -611,24 +869,27 @@ public class MainActivity extends Activity
         adapter.changeCursor(null);
     }
 
-    /** Sets the empty-view hint for the current filter (the list itself is empty). */
+    /** Sets the empty-view hint for the current view (the list itself is
+     *  empty): the "Recently read" view has its own hint, the format-filter
+     *  view the generic one (the texts are not tied to a single format). */
     private void updateEmptyView() {
         if (adapter.getCount() > 0) return;
-        if ("__recent__".equals(currentFilter)) {
+        if (filters.recentView) {
             emptyView.setText("No books read yet.");
         } else {
             emptyView.setText(R.string.empty_filter);
         }
     }
 
-    /** The catalog cursor the current view expects for {@link #currentFilter} — the
-     *  same query {@link #onCreateLoader} would ask the provider for. Used for the
-     *  direct rebind in {@link #startScan} after a rescan. */
+    /** The catalog cursor the current view expects for {@code filters} — the
+     *  same query {@link #onCreateLoader} would ask the provider for (the same
+     *  "state → query" conversion point). Used for the direct rebind in
+     *  {@link #startScan} after a rescan (and after a remove / a clear). */
     private Cursor currentCatalogCursor() {
-        if ("__recent__".equals(currentFilter)) {
+        if (filters.recentView) {
             return db.cursorRecent(200);
         }
-        return db.cursorAll(currentFilter);
+        return db.cursorAll(filters.queryArgs());
     }
 
     private void openDetails(long id) {
@@ -689,7 +950,7 @@ public class MainActivity extends Activity
     }
 
     /** Launches the book in Neo Reader. The shared "file there? viewer there?" logic
-     *  lives in {@link Openers#openFile(File, Activity, OpenOutcome)}; the catalog
+     *  lives in {@link Openers #openFile(File, Activity, OpenOutcome)}; the catalog
      *  side effects (markRead, notify) stay here. */
     private void openBook(final Book book) {
         Openers.openFile(new File(book.path), this, new Openers.OpenOutcome() {
@@ -812,6 +1073,27 @@ public class MainActivity extends Activity
                     // loader's next delivery simply replaces this cursor.
                     a.adapter.changeCursor(a.currentCatalogCursor());
                     a.updateEmptyView();
+                    // Only now start the catalog loader (it is deliberately NOT
+                    // started in onCreate on a cold start — see there): its first
+                    // query must see the post-scan data, never the empty pre-scan
+                    // table whose stale delivery would otherwise race this rebind.
+                    // On a RE-SCAN the loader usually already runs (and may have
+                    // a PRE-scan query in flight): plain initLoader is then a
+                    // no-op, and that in-flight query would be DELIVERED after
+                    // this fresh rebind — a stale cursor that blanks the view
+                    // (the observer that would trigger a fresh re-query is
+                    // usually already dead after the first restart cycle on
+                    // API 19 — same hazard as the rebind above). restartLoader
+                    // cancels the in-flight query and re-queries the post-scan
+                    // data instead; initLoader creates the loader on a cold
+                    // start, where nothing is in flight yet.
+                    Loader<Cursor> existingLoader =
+                            a.getLoaderManager().getLoader(LOADER_BOOKS);
+                    if (existingLoader == null) {
+                        a.getLoaderManager().initLoader(LOADER_BOOKS, null, a);
+                    } else {
+                        a.getLoaderManager().restartLoader(LOADER_BOOKS, null, a);
+                    }
                 }
                 // Also announce through the normal channel (the "recently read"
                 // observer and any other listeners).

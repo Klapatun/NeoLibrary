@@ -23,11 +23,13 @@ import android.os.Looper;
 import android.provider.OpenableColumns;
 import android.view.MotionEvent;
 import android.view.View;
+import android.view.ViewGroup;
 import android.widget.AbsListView;
+import android.widget.CheckBox;
+import android.widget.EditText;
 import android.widget.GridView;
 import android.widget.ImageButton;
 import android.widget.ListView;
-import android.widget.Spinner;
 import android.widget.TextView;
 
 import com.example.mylibrary.db.BookDatabase;
@@ -506,8 +508,9 @@ public class MainActivityTest {
         a.findViewById(R.id.btn_menu).performClick();
         android.widget.PopupMenu menu = a.getLastHeaderMenu();
         assertNotNull("the kebab click must open the menu", menu);
-        assertEquals("the menu must carry import, rescan, clear and the pagination toggle",
-                4, menu.getMenu().size());
+        assertEquals("the menu must carry import, rescan, clear, the pagination"
+                + " toggle and the 'Recently read' view",
+                5, menu.getMenu().size());
         menu.getMenu().performIdentifierAction(R.id.main_menu_rescan, 0);
 
         // The new books land in the catalog...
@@ -624,11 +627,115 @@ public class MainActivityTest {
     }
 
     // ------------------------------------------------------------------
-    // filter spinner
+    // filter modal (the funnel icon in the header)
     // ------------------------------------------------------------------
 
+    /** The dialog's item list: the framework puts it into the dialog's decor
+     *  (its id is not in the public android.R), so find the first AbsListView
+     *  under the decor view. */
+    private static AbsListView findDialogList(android.app.Dialog dialog) {
+        return findFirstAbsListView(dialog.getWindow().getDecorView());
+    }
+
+    private static AbsListView findFirstAbsListView(View v) {
+        if (v instanceof AbsListView) return (AbsListView) v;
+        if (v instanceof ViewGroup) {
+            ViewGroup g = (ViewGroup) v;
+            for (int i = 0; i < g.getChildCount(); i++) {
+                AbsListView found = findFirstAbsListView(g.getChildAt(i));
+                if (found != null) return found;
+            }
+        }
+        return null;
+    }
+
+    /** Finds the search EditText in the filter dialog's custom view. */
+    private static EditText findDialogSearchEditText(android.app.Dialog dialog) {
+        return findViewByType(dialog.getWindow().getDecorView(), EditText.class);
+    }
+
+    /** Finds the "Select all" CheckBox in the filter dialog's custom view. */
+    private static CheckBox findDialogSelectAllCheckBox(android.app.Dialog dialog) {
+        return findViewByType(dialog.getWindow().getDecorView(), CheckBox.class);
+    }
+
+    /** Finds the first view of type {@code T} under {@code root}. */
+    private static <T extends View> T findViewByType(View root, Class<T> type) {
+        if (type.isInstance(root)) return type.cast(root);
+        if (root instanceof ViewGroup) {
+            ViewGroup g = (ViewGroup) root;
+            for (int i = 0; i < g.getChildCount(); i++) {
+                T found = findViewByType(g.getChildAt(i), type);
+                if (found != null) return found;
+            }
+        }
+        return null;
+    }
+
+    /** Clicks the row at adapter position {@code pos} of the dialog list the
+     *  way the list's own touch path does: in a choice-mode list the row itself
+     *  is not clickable — the click is dispatched by the list
+     *  ({@code performItemClick}), and the framework toggles the checkbox state
+     *  and the caller's draft array. The row view is materialized by the layout
+     *  pass that {@code setSelection} requests. */
+    private void clickDialogItem(AbsListView list, int pos) throws InterruptedException {
+        list.setSelection(pos);
+        long deadline = System.currentTimeMillis() + WAIT_MS;
+        int index = pos - list.getFirstVisiblePosition();
+        while (System.currentTimeMillis() < deadline
+                && (index < 0 || index >= list.getChildCount())) {
+            shadowOf(Looper.getMainLooper()).idle();
+            Thread.sleep(10);
+            index = pos - list.getFirstVisiblePosition();
+        }
+        assertTrue("the row " + pos + " must be laid out in the dialog list",
+                index >= 0 && index < list.getChildCount());
+        View row = list.getChildAt(index);
+        list.performItemClick(row, pos, list.getItemIdAtPosition(pos));
+        shadowOf(Looper.getMainLooper()).idle();
+    }
+
+    /** The position of a format id in the dialog list: the list is built from
+     *  {@link Formats#ALL} (the single source of truth), so it is the id's
+     *  position in that array. */
+    private static int formatPos(String formatId) {
+        return Arrays.asList(Formats.ALL).indexOf(formatId);
+    }
+
+    /** The funnel icon opens the filter dialog: a multi-choice list with
+     *  exactly one entry per canonical format, labelled with the id, nothing
+     *  checked on a fresh state. */
     @Test
-    public void filterSpinnerRestrictsTheVisibleBooks() throws Exception {
+    public void theFunnelIconOpensTheFilterDialogWithOneItemPerFormat() throws Exception {
+        TestFixtures.writeText(new File(storage, "story_a.txt"), "alpha\n");
+        TestFixtures.writeText(new File(storage, "story_b.txt"), "beta\n");
+
+        MainActivity a = launchMain();
+        awaitCatalogSize(2);
+
+        a.findViewById(R.id.btn_filter).performClick();
+
+        android.app.Dialog d = ShadowDialog.getLatestDialog();
+        assertNotNull("the funnel click must open the filter dialog", d);
+        assertEquals("the dialog must be titled 'Filter'",
+                a.getString(R.string.filter_dialog_title), shadowOf(d).getTitle());
+
+        AbsListView list = findDialogList(d);
+        assertNotNull("the dialog must carry the format list", list);
+        assertEquals("one item per canonical format (the list is built from"
+                + " Formats.ALL)", Formats.ALL.length, list.getAdapter().getCount());
+        for (int i = 0; i < Formats.ALL.length; i++) {
+            assertEquals("the item label must be the canonical id",
+                    Formats.ALL[i], list.getAdapter().getItem(i).toString());
+            assertFalse("a fresh dialog must not check item " + i, list.isItemChecked(i));
+        }
+    }
+
+    /** Checking a format in the dialog and confirming (OK) restricts the
+     *  catalog to the checked formats and closes the dialog (replaces the old
+     *  spinner's format-filter contract). */
+    @Test
+    public void checkingAFormatInTheDialogRestrictsTheVisibleBooks() throws Exception {
         TestFixtures.writeText(new File(storage, "story_a.txt"), "alpha\n");
         TestFixtures.writeText(new File(storage, "story_b.txt"), "beta\n");
         TestFixtures.writeBytes(new File(storage, "manual.pdf"), new byte[]{0x25, 0x25});
@@ -638,38 +745,178 @@ public class MainActivityTest {
 
         GridView grid = a.findViewById(R.id.book_grid);
         awaitAdapterCount(grid, 3);
-        Spinner spinner = a.findViewById(R.id.filter_spinner);
         final BookAdapter adapter = (BookAdapter) grid.getAdapter();
 
-        final int txtPos = 2 + Arrays.asList(Formats.ALL).indexOf("TXT");
-        spinner.setSelection(txtPos);
+        a.findViewById(R.id.btn_filter).performClick();
+        android.app.Dialog d = ShadowDialog.getLatestDialog();
+        assertNotNull("the funnel click must open the filter dialog", d);
+        AbsListView list = findDialogList(d);
+        clickDialogItem(list, formatPos("TXT"));
 
+        // "OK" — the positive button (the standard alert button-1 view); the
+        // paused main looper must run for the dialog to dismiss and the loader
+        // to restart.
+        shadowOf(d).clickOn(android.R.id.button1);
+        shadowOf(Looper.getMainLooper()).idle();
+
+        assertFalse("the dialog must be dismissed after OK", d.isShowing());
         // The re-query for the filtered cursor is asynchronous; wait it out.
         final AbsListView gridRef = grid;
-        awaitCondition("TXT filter to apply", new Cond() {
+        awaitCondition("the TXT filter to apply", new Cond() {
             public boolean holds() {
                 return adapterHasCount(gridRef, 2);
             }
         });
         for (int i = 0; i < adapter.getCount(); i++) {
-            assertEquals("TXT", adapter.getItem(i).format);
+            assertEquals("the visible rows must all be TXT",
+                    "TXT", adapter.getItem(i).format);
         }
-
-        // "Recently read" with nothing read yet: empty list + hint text.
-        spinner.setSelection(1);
-        final MainActivity act = a;
-        awaitCondition("recent filter to apply", new Cond() {
-            public boolean holds() {
-                return adapterHasCount(gridRef, 0)
-                        && "No books read yet.".equals(
-                        ((TextView) act.findViewById(R.id.empty_view)).getText().toString());
-            }
-        });
-        assertEquals(0, adapter.getCount());
-        TextView empty = a.findViewById(R.id.empty_view);
-        assertEquals("No books read yet.", empty.getText().toString());
     }
 
+    /** Checking a format and cancelling (Cancel) leaves the catalog and the
+     *  filter state untouched — the dialog works on a draft, the real state
+     *  changes only on OK. */
+    @Test
+    public void cancellingTheFilterDialogLeavesTheCatalogAndTheStateUntouched()
+            throws Exception {
+        TestFixtures.writeText(new File(storage, "story_a.txt"), "alpha\n");
+        TestFixtures.writeText(new File(storage, "story_b.txt"), "beta\n");
+        TestFixtures.writeBytes(new File(storage, "manual.pdf"), new byte[]{0x25, 0x25});
+
+        MainActivity a = launchMain();
+        awaitCatalogSize(3);
+
+        GridView grid = a.findViewById(R.id.book_grid);
+        awaitAdapterCount(grid, 3);
+
+        a.findViewById(R.id.btn_filter).performClick();
+        android.app.Dialog d = ShadowDialog.getLatestDialog();
+        assertNotNull(d);
+        AbsListView list = findDialogList(d);
+        clickDialogItem(list, formatPos("TXT"));
+
+        // "Cancel" — the negative button (the standard alert button-2 view).
+        shadowOf(d).clickOn(android.R.id.button2);
+        shadowOf(Looper.getMainLooper()).idle();
+
+        assertFalse("the dialog must be dismissed", d.isShowing());
+        assertEquals("all books must stay visible", 3, grid.getAdapter().getCount());
+        // The dialog's draft was thrown away: the state is unchanged.
+        FilterState state = a.getFilterState();
+        assertFalse("the state must not have changed (the draft was cancelled)",
+                state.isActive());
+        assertTrue(state.selectedFormats.isEmpty());
+    }
+
+    /** An empty checked set means "All formats": un-tick a selected format and
+     *  confirm — the catalog shows every book again and the state is inactive. */
+    @Test
+    public void anEmptySelectionInTheDialogMeansAllFormats() throws Exception {
+        TestFixtures.writeText(new File(storage, "story_a.txt"), "alpha\n");
+        TestFixtures.writeText(new File(storage, "story_b.txt"), "beta\n");
+        TestFixtures.writeBytes(new File(storage, "manual.pdf"), new byte[]{0x25, 0x25});
+
+        MainActivity a = launchMain();
+        awaitCatalogSize(3);
+
+        GridView grid = a.findViewById(R.id.book_grid);
+        awaitAdapterCount(grid, 3);
+
+        // First select TXT (the dialog opens with it pre-checked afterwards).
+        a.findViewById(R.id.btn_filter).performClick();
+        android.app.Dialog d = ShadowDialog.getLatestDialog();
+        AbsListView list = findDialogList(d);
+        clickDialogItem(list, formatPos("TXT"));
+        shadowOf(d).clickOn(android.R.id.button1);
+        shadowOf(Looper.getMainLooper()).idle();
+        final AbsListView gridRef = grid;
+        awaitCondition("the TXT filter to apply", new Cond() {
+            public boolean holds() {
+                return adapterHasCount(gridRef, 2);
+            }
+        });
+
+        // Now un-tick it again and confirm the empty selection.
+        a.findViewById(R.id.btn_filter).performClick();
+        d = ShadowDialog.getLatestDialog();
+        assertNotNull(d);
+        list = findDialogList(d);
+        // Same framework timing as in the other dialog tests: the initial
+        // multi-choice state is applied by the adapter's getView only for
+        // materialized rows, and TXT is off-screen in the fresh dialog —
+        // scroll the row into view first (the same idiom as clickDialogItem).
+        list.setSelection(formatPos("TXT"));
+        shadowOf(Looper.getMainLooper()).idle();
+        assertTrue("the open dialog must show the current selection (TXT checked)",
+                list.isItemChecked(formatPos("TXT")));
+        clickDialogItem(list, formatPos("TXT"));
+        assertFalse("the un-tick must clear the checkbox", list.isItemChecked(formatPos("TXT")));
+        shadowOf(d).clickOn(android.R.id.button1);
+        shadowOf(Looper.getMainLooper()).idle();
+
+        awaitCondition("the empty selection to apply (all books)", new Cond() {
+            public boolean holds() {
+                return adapterHasCount(gridRef, 3);
+            }
+        });
+        assertEquals(3, grid.getAdapter().getCount());
+        // OK adopts the (now empty) draft: the state is inactive.
+        assertFalse(a.getFilterState().isActive());
+    }
+
+    /** The state behind the icon's dot: a configured filter makes the state
+     *  active, clearing the selection deactivates it (the PNG switch itself is
+     *  visual — see the plan's "Как проверять"). */
+    @Test
+    public void theFilterStateIsActiveExactlyWhenAFormatIsSelected() throws Exception {
+        TestFixtures.writeText(new File(storage, "story_a.txt"), "alpha\n");
+        TestFixtures.writeText(new File(storage, "story_b.txt"), "beta\n");
+        TestFixtures.writeBytes(new File(storage, "manual.pdf"), new byte[]{0x25, 0x25});
+
+        MainActivity a = launchMain();
+        awaitCatalogSize(3);
+
+        GridView grid = a.findViewById(R.id.book_grid);
+        awaitAdapterCount(grid, 3);
+        assertFalse("a fresh state is not active", a.getFilterState().isActive());
+
+        // Select TXT.
+        a.findViewById(R.id.btn_filter).performClick();
+        android.app.Dialog d = ShadowDialog.getLatestDialog();
+        AbsListView list = findDialogList(d);
+        clickDialogItem(list, formatPos("TXT"));
+        shadowOf(d).clickOn(android.R.id.button1);
+        shadowOf(Looper.getMainLooper()).idle();
+        final AbsListView gridRef = grid;
+        awaitCondition("the TXT filter to apply", new Cond() {
+            public boolean holds() {
+                return adapterHasCount(gridRef, 2);
+            }
+        });
+        // OK adopts the draft, so the state is re-read from the activity.
+        assertTrue("a configured filter must make the state active",
+                a.getFilterState().isActive());
+
+        // Clear the selection (un-tick, OK).
+        a.findViewById(R.id.btn_filter).performClick();
+        d = ShadowDialog.getLatestDialog();
+        list = findDialogList(d);
+        clickDialogItem(list, formatPos("TXT"));
+        shadowOf(d).clickOn(android.R.id.button1);
+        shadowOf(Looper.getMainLooper()).idle();
+        awaitCondition("the selection to clear", new Cond() {
+            public boolean holds() {
+                return adapterHasCount(gridRef, 3);
+            }
+        });
+        assertFalse("the cleared selection must deactivate the state",
+                a.getFilterState().isActive());
+    }
+
+    /** The filter set in the dialog survives a rotation (the instance state):
+     *  after the recreation the list is already filtered and the new window's
+     *  dialog shows the checked format (replaces the old spinner's rotation
+     *  contract). */
     @Test
     public void theFilterChoiceSurvivesARotation() throws Exception {
         TestFixtures.writeText(new File(storage, "story_a.txt"), "alpha\n");
@@ -682,12 +929,18 @@ public class MainActivityTest {
 
         GridView grid = a.findViewById(R.id.book_grid);
         awaitAdapterCount(grid, 3);
-        Spinner spinner = a.findViewById(R.id.filter_spinner);
-        final int txtPos = 2 + Arrays.asList(Formats.ALL).indexOf("TXT");
-        spinner.setSelection(txtPos);
-        awaitCondition("TXT filter to apply", new Cond() {
+
+        // Select TXT in the dialog.
+        a.findViewById(R.id.btn_filter).performClick();
+        android.app.Dialog d = ShadowDialog.getLatestDialog();
+        AbsListView list = findDialogList(d);
+        clickDialogItem(list, formatPos("TXT"));
+        shadowOf(d).clickOn(android.R.id.button1);
+        shadowOf(Looper.getMainLooper()).idle();
+        final AbsListView gridRef = grid;
+        awaitCondition("the TXT filter to apply", new Cond() {
             public boolean holds() {
-                return adapterHasCount((GridView) a.findViewById(R.id.book_grid), 2);
+                return adapterHasCount(gridRef, 2);
             }
         });
 
@@ -697,24 +950,102 @@ public class MainActivityTest {
 
         final MainActivity a2 = Robolectric.buildActivity(MainActivity.class).setup(saved).get();
         final GridView grid2 = a2.findViewById(R.id.book_grid);
-        awaitCondition("TXT filter to survive rotation", new Cond() {
+        awaitCondition("the TXT filter to survive rotation", new Cond() {
             public boolean holds() {
                 return adapterHasCount(grid2, 2);
             }
         });
         assertEquals(2, grid2.getAdapter().getCount());
-        awaitCondition("the spinner to restore the TXT filter", new Cond() {
-            public boolean holds() {
-                return ((Spinner) a2.findViewById(R.id.filter_spinner)).getSelectedItemPosition()
-                        == txtPos;
-            }
-        });
-        assertEquals(txtPos,
-                ((Spinner) a2.findViewById(R.id.filter_spinner)).getSelectedItemPosition());
+
+        // The dialog of the new window must show the restored selection
+        // (the TXT checkbox pre-checked).
+        a2.findViewById(R.id.btn_filter).performClick();
+        android.app.Dialog d2 = ShadowDialog.getLatestDialog();
+        assertNotNull("the funnel must open the dialog in the recreated window", d2);
+        AbsListView list2 = findDialogList(d2);
+        // The framework applies the INITIAL multi-choice checkbox state in the
+        // list adapter's getView — only for rows it has actually materialized
+        // (SDK 19 AlertParams$1). TXT is the 15th of 15 formats, off-screen in
+        // the fresh dialog, so scroll the row into view (the same idiom as
+        // clickDialogItem below) and let the layout pass materialize it,
+        // before asserting the pre-checked state.
+        list2.setSelection(formatPos("TXT"));
+        shadowOf(Looper.getMainLooper()).idle();
+        assertTrue("the TXT checkbox must be pre-checked in the restored dialog",
+                list2.isItemChecked(formatPos("TXT")));
+        // Close without changes (Cancel): the restored choice must stay.
+        shadowOf(d2).clickOn(android.R.id.button2);
+        shadowOf(Looper.getMainLooper()).idle();
+        assertEquals("the filter must be intact after the dialog cancel",
+                2, grid2.getAdapter().getCount());
+        assertTrue(a2.getFilterState().isActive());
     }
 
+    // ------------------------------------------------------------------
+    // the "Recently read" view (the kebab's checkable item)
+    // ------------------------------------------------------------------
+
+    /** The kebab's checkable "Recently read" item switches the catalog to the
+     *  recently-read view (empty + hint when nothing was read); the item's
+     *  checkmark mirrors the current view, and picking it again goes back to
+     *  the library (all books). */
     @Test
-    public void theRecentFilterKeepsItsEmptyHintAcrossARotation() throws Exception {
+    public void theKebabRecentItemSwitchesToTheRecentlyReadViewAndBack() throws Exception {
+        TestFixtures.writeText(new File(storage, "story_a.txt"), "alpha\n");
+        TestFixtures.writeText(new File(storage, "story_b.txt"), "beta\n");
+        TestFixtures.writeBytes(new File(storage, "manual.pdf"), new byte[]{0x25, 0x25});
+
+        MainActivity a = launchMain();
+        awaitCatalogSize(3);
+
+        GridView grid = a.findViewById(R.id.book_grid);
+        awaitAdapterCount(grid, 3);
+
+        // Pick "Recently read" from the kebab.
+        a.findViewById(R.id.btn_menu).performClick();
+        android.widget.PopupMenu menu = a.getLastHeaderMenu();
+        assertNotNull("the kebab click must open the menu", menu);
+        android.view.MenuItem recent = menu.getMenu().findItem(R.id.main_menu_recent);
+        assertNotNull("the kebab must carry the 'Recently read' item", recent);
+        assertFalse("the item must start unchecked", recent.isChecked());
+        menu.getMenu().performIdentifierAction(R.id.main_menu_recent, 0);
+
+        // Nothing was read yet: the view is empty + the hint.
+        final AbsListView gridRef = grid;
+        final MainActivity act = a;
+        awaitCondition("the recent view to apply", new Cond() {
+            public boolean holds() {
+                return adapterHasCount(gridRef, 0)
+                        && "No books read yet.".equals(
+                        ((TextView) act.findViewById(R.id.empty_view)).getText().toString());
+            }
+        });
+        assertEquals(0, grid.getAdapter().getCount());
+        assertEquals("No books read yet.",
+                ((TextView) a.findViewById(R.id.empty_view)).getText().toString());
+
+        // The item now shows the checkmark...
+        a.findViewById(R.id.btn_menu).performClick();
+        assertTrue("the item must be checked in the recent view",
+                a.getLastHeaderMenu().getMenu().findItem(R.id.main_menu_recent).isChecked());
+        // ...and picking it again goes back to the library (all books).
+        a.getLastHeaderMenu().getMenu().performIdentifierAction(R.id.main_menu_recent, 0);
+        awaitCondition("the library view to apply", new Cond() {
+            public boolean holds() {
+                return adapterHasCount(gridRef, 3);
+            }
+        });
+        assertEquals(3, grid.getAdapter().getCount());
+        a.findViewById(R.id.btn_menu).performClick();
+        assertFalse("the item must be unchecked in the library view",
+                a.getLastHeaderMenu().getMenu().findItem(R.id.main_menu_recent).isChecked());
+    }
+
+    /** The "Recently read" view (picked from the kebab) with its empty hint
+     *  survives a rotation (the instance state) — the same contract the old
+     *  spinner's recent selection had, now through the kebab. */
+    @Test
+    public void theRecentViewKeepsItsEmptyHintAcrossARotation() throws Exception {
         TestFixtures.writeText(new File(storage, "story_a.txt"), "alpha\n");
         TestFixtures.writeText(new File(storage, "story_b.txt"), "beta\n");
         TestFixtures.writeBytes(new File(storage, "manual.pdf"), new byte[]{0x25, 0x25});
@@ -725,11 +1056,15 @@ public class MainActivityTest {
 
         GridView grid = a.findViewById(R.id.book_grid);
         awaitAdapterCount(grid, 3);
-        ((Spinner) a.findViewById(R.id.filter_spinner)).setSelection(1);
-        awaitCondition("recent filter and empty hint to apply", new Cond() {
+
+        // Switch to the recent view via the kebab.
+        a.findViewById(R.id.btn_menu).performClick();
+        a.getLastHeaderMenu().getMenu().performIdentifierAction(R.id.main_menu_recent, 0);
+        final MainActivity act = a;
+        awaitCondition("the recent view and the empty hint to apply", new Cond() {
             public boolean holds() {
-                return adapterHasCount((GridView) a.findViewById(R.id.book_grid), 0)
-                        && "No books read yet.".equals(((TextView) a.findViewById(
+                return adapterHasCount((GridView) act.findViewById(R.id.book_grid), 0)
+                        && "No books read yet.".equals(((TextView) act.findViewById(
                         R.id.empty_view)).getText().toString());
             }
         });
@@ -740,7 +1075,7 @@ public class MainActivityTest {
 
         final MainActivity a2 = Robolectric.buildActivity(MainActivity.class).setup(saved).get();
         final GridView grid2 = a2.findViewById(R.id.book_grid);
-        awaitCondition("recent filter and empty hint to survive rotation", new Cond() {
+        awaitCondition("the recent view and the empty hint to survive rotation", new Cond() {
             public boolean holds() {
                 return adapterHasCount(grid2, 0)
                         && "No books read yet.".equals(((TextView) a2.findViewById(
@@ -750,6 +1085,388 @@ public class MainActivityTest {
         assertEquals(0, grid2.getAdapter().getCount());
         assertEquals("No books read yet.",
                 ((TextView) a2.findViewById(R.id.empty_view)).getText().toString());
+    }
+
+    /** The format filter and the "Recently read" view are mutually exclusive
+     *  VIEWS: enabling "Recently read" does NOT clear the format selection
+     *  (the funnel's dot stays), and confirming the dialog (OK, no changes)
+     *  switches the view back to the filter and resets the recent view. */
+    @Test
+    public void applyingTheFilterDialogOverridesTheRecentViewWithoutLosingTheFilter()
+            throws Exception {
+        TestFixtures.writeText(new File(storage, "story_a.txt"), "alpha\n");
+        TestFixtures.writeText(new File(storage, "story_b.txt"), "beta\n");
+        TestFixtures.writeBytes(new File(storage, "manual.pdf"), new byte[]{0x25, 0x25});
+
+        MainActivity a = launchMain();
+        awaitCatalogSize(3);
+
+        GridView grid = a.findViewById(R.id.book_grid);
+        awaitAdapterCount(grid, 3);
+
+        // 1. Select the TXT filter.
+        a.findViewById(R.id.btn_filter).performClick();
+        android.app.Dialog d = ShadowDialog.getLatestDialog();
+        AbsListView list = findDialogList(d);
+        clickDialogItem(list, formatPos("TXT"));
+        shadowOf(d).clickOn(android.R.id.button1);
+        shadowOf(Looper.getMainLooper()).idle();
+        final AbsListView gridRef = grid;
+        awaitCondition("the TXT filter to apply", new Cond() {
+            public boolean holds() {
+                return adapterHasCount(gridRef, 2);
+            }
+        });
+
+        // 2. The kebab enables "Recently read": the view switches (nothing was
+        //    read yet -> empty), the format selection is NOT cleared.
+        a.findViewById(R.id.btn_menu).performClick();
+        a.getLastHeaderMenu().getMenu().performIdentifierAction(R.id.main_menu_recent, 0);
+        awaitCondition("the recent view to apply", new Cond() {
+            public boolean holds() {
+                return adapterHasCount(gridRef, 0);
+            }
+        });
+        assertTrue("the recent view must be on", a.getFilterState().recentView);
+
+        // 3. Confirm the dialog with no changes: the view goes back to the TXT
+        //    filter (the recent view resets) and the selection (and its dot)
+        //    survives.
+        a.findViewById(R.id.btn_filter).performClick();
+        android.app.Dialog d2 = ShadowDialog.getLatestDialog();
+        AbsListView list2 = findDialogList(d2);
+        // Same framework timing as in the rotation test: the initial multi-choice
+        // state is applied by the list adapter's getView only for materialized
+        // rows, and TXT is off-screen in the fresh dialog — scroll the row into
+        // view first (the same idiom as clickDialogItem below).
+        list2.setSelection(formatPos("TXT"));
+        shadowOf(Looper.getMainLooper()).idle();
+        assertTrue("the open dialog must still show the selection (TXT checked)",
+                list2.isItemChecked(formatPos("TXT")));
+        shadowOf(d2).clickOn(android.R.id.button1); // OK, no changes
+        shadowOf(Looper.getMainLooper()).idle();
+
+        awaitCondition("the TXT filter view to come back", new Cond() {
+            public boolean holds() {
+                return adapterHasCount(gridRef, 2);
+            }
+        });
+        BookAdapter adapter = (BookAdapter) grid.getAdapter();
+        for (int i = 0; i < adapter.getCount(); i++) {
+            assertEquals("the visible rows must all be TXT", "TXT", adapter.getItem(i).format);
+        }
+        FilterState state = a.getFilterState();
+        assertFalse("the dialog OK must reset the recent view", state.recentView);
+        assertTrue("the format selection must not have been lost (the dot stays)",
+                state.isActive());
+
+        // The kebab's item is unchecked again (the view is the filter view).
+        a.findViewById(R.id.btn_menu).performClick();
+        assertFalse("the recent item must be unchecked",
+                a.getLastHeaderMenu().getMenu().findItem(R.id.main_menu_recent).isChecked());
+    }
+
+    // ------------------------------------------------------------------
+    // PLAN2: Search bar in the filter dialog
+    // ------------------------------------------------------------------
+
+    /** The filter dialog's search bar filters the visible formats by substring
+     *  (case-insensitive). Typing "pdf" shows only PDF; clearing the search
+     *  restores all formats. Selecting a filtered format and confirming applies
+     *  the filter to the catalog. */
+    @Test
+    public void theFilterDialogSearchBarFiltersTheFormatList() throws Exception {
+        TestFixtures.writeText(new File(storage, "story_a.txt"), "alpha\n");
+        TestFixtures.writeText(new File(storage, "story_b.txt"), "beta\n");
+        TestFixtures.writeBytes(new File(storage, "manual.pdf"), new byte[]{0x25, 0x25});
+
+        MainActivity a = launchMain();
+        awaitCatalogSize(3);
+
+        GridView grid = a.findViewById(R.id.book_grid);
+        awaitAdapterCount(grid, 3);
+
+        // Open the filter dialog.
+        a.findViewById(R.id.btn_filter).performClick();
+        android.app.Dialog d = ShadowDialog.getLatestDialog();
+        assertNotNull("the funnel click must open the filter dialog", d);
+
+        // Find the search EditText in the dialog's custom view.
+        EditText search = findDialogSearchEditText(d);
+        assertNotNull("the dialog must have a search EditText", search);
+
+        // Type "pdf" (lowercase) — should match "PDF" case-insensitively.
+        search.setText("pdf");
+        shadowOf(Looper.getMainLooper()).idle();
+
+        AbsListView list = findDialogList(d);
+        // Only PDF should be visible now.
+        assertEquals("search 'pdf' must show only PDF", 1, list.getAdapter().getCount());
+        assertEquals("the visible item must be PDF", "PDF", list.getAdapter().getItem(0).toString());
+
+        // Select PDF and confirm.
+        clickDialogItem(list, 0);
+        shadowOf(d).clickOn(android.R.id.button1);
+        shadowOf(Looper.getMainLooper()).idle();
+
+        awaitCondition("the PDF filter to apply", new Cond() {
+            public boolean holds() {
+                return adapterHasCount(grid, 1);
+            }
+        });
+        BookAdapter adapter = (BookAdapter) grid.getAdapter();
+        assertEquals("the visible row must be PDF", "PDF", adapter.getItem(0).format);
+
+        // Open dialog again, clear search — all formats must be visible.
+        a.findViewById(R.id.btn_filter).performClick();
+        android.app.Dialog d2 = ShadowDialog.getLatestDialog();
+        assertNotNull(d2);
+        EditText search2 = findDialogSearchEditText(d2);
+        assertNotNull(search2);
+        search2.setText("");
+        shadowOf(Looper.getMainLooper()).idle();
+
+        AbsListView list2 = findDialogList(d2);
+        assertEquals("clearing search must restore all formats",
+                Formats.ALL.length, list2.getAdapter().getCount());
+        // Cancel to leave state unchanged.
+        shadowOf(d2).clickOn(android.R.id.button2);
+        shadowOf(Looper.getMainLooper()).idle();
+        assertEquals(1, grid.getAdapter().getCount());
+    }
+
+    // ------------------------------------------------------------------
+    // PLAN2: Select All / Deselect All checkbox in the filter dialog
+    // ------------------------------------------------------------------
+
+    /** The filter dialog's "Select all" checkbox toggles all format checkboxes.
+     *  On empty state it shows "Select all" (unchecked). Checking it selects all
+     *  formats and changes its label to "Deselect all". Unchecking deselects all
+     *  and reverts the label. Partial selection (some but not all) shows
+     *  "Select all" unchecked. */
+    @Test
+    public void theFilterDialogSelectAllCheckboxTogglesAllFormats() throws Exception {
+        TestFixtures.writeText(new File(storage, "story_a.txt"), "alpha\n");
+        TestFixtures.writeText(new File(storage, "story_b.txt"), "beta\n");
+        TestFixtures.writeBytes(new File(storage, "manual.pdf"), new byte[]{0x25, 0x25});
+
+        MainActivity a = launchMain();
+        awaitCatalogSize(3);
+
+        GridView grid = a.findViewById(R.id.book_grid);
+        awaitAdapterCount(grid, 3);
+
+        // Open the filter dialog.
+        a.findViewById(R.id.btn_filter).performClick();
+        android.app.Dialog d = ShadowDialog.getLatestDialog();
+        assertNotNull(d);
+
+        AbsListView list = findDialogList(d);
+        CheckBox selectAll = findDialogSelectAllCheckBox(d);
+        assertNotNull("the dialog must have a Select All CheckBox", selectAll);
+
+        // Initial state: "Select all" unchecked, no formats selected.
+        assertFalse("Select All must start unchecked", selectAll.isChecked());
+        assertEquals("Select All text must be 'Select all'",
+                a.getString(R.string.filter_select_all), selectAll.getText().toString());
+        for (int i = 0; i < Formats.ALL.length; i++) {
+            assertFalse("format " + i + " must start unchecked", list.isItemChecked(i));
+        }
+
+        // Click "Select all" — all formats become checked, label changes.
+        selectAll.performClick();
+        shadowOf(Looper.getMainLooper()).idle();
+        assertTrue("Select All must become checked", selectAll.isChecked());
+        assertEquals("Select All text must become 'Deselect all'",
+                a.getString(R.string.filter_deselect_all), selectAll.getText().toString());
+        for (int i = 0; i < Formats.ALL.length; i++) {
+            assertTrue("format " + i + " must be checked after Select All",
+                    list.isItemChecked(i));
+        }
+
+        // Click "Deselect all" — all formats become unchecked, label reverts.
+        selectAll.performClick();
+        shadowOf(Looper.getMainLooper()).idle();
+        assertFalse("Select All must become unchecked", selectAll.isChecked());
+        assertEquals("Select All text must revert to 'Select all'",
+                a.getString(R.string.filter_select_all), selectAll.getText().toString());
+        for (int i = 0; i < Formats.ALL.length; i++) {
+            assertFalse("format " + i + " must be unchecked after Deselect All",
+                    list.isItemChecked(i));
+        }
+
+        // Partial selection: check one format manually -> Select All shows unchecked
+        // with "Select all" label (no tri-state on API 19).
+        clickDialogItem(list, formatPos("TXT"));
+        shadowOf(Looper.getMainLooper()).idle();
+        assertFalse("Select All must be unchecked for partial selection",
+                selectAll.isChecked());
+        assertEquals("Select All text must be 'Select all' for partial",
+                a.getString(R.string.filter_select_all), selectAll.getText().toString());
+
+        // Confirm with partial selection (TXT only).
+        shadowOf(d).clickOn(android.R.id.button1);
+        shadowOf(Looper.getMainLooper()).idle();
+
+        awaitCondition("the TXT filter to apply", new Cond() {
+            public boolean holds() {
+                return adapterHasCount(grid, 2);
+            }
+        });
+        BookAdapter adapter = (BookAdapter) grid.getAdapter();
+        for (int i = 0; i < adapter.getCount(); i++) {
+            assertEquals("visible rows must be TXT", "TXT", adapter.getItem(i).format);
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // PLAN2: Search + Select All interaction
+    // ------------------------------------------------------------------
+
+    /** When a search is active and the user clicks "Select all", the search is
+     *  reset (cleared), all 15 formats become selected, and confirming shows all
+     *  books (because selecting all formats = empty selection = all books). */
+    @Test
+    public void selectAllWithActiveSearchResetsSearchAndSelectsAllFormats() throws Exception {
+        TestFixtures.writeText(new File(storage, "story_a.txt"), "alpha\n");
+        TestFixtures.writeText(new File(storage, "story_b.txt"), "beta\n");
+        TestFixtures.writeBytes(new File(storage, "manual.pdf"), new byte[]{0x25, 0x25});
+
+        MainActivity a = launchMain();
+        awaitCatalogSize(3);
+
+        GridView grid = a.findViewById(R.id.book_grid);
+        awaitAdapterCount(grid, 3);
+
+        a.findViewById(R.id.btn_filter).performClick();
+        android.app.Dialog d = ShadowDialog.getLatestDialog();
+        assertNotNull(d);
+
+        EditText search = findDialogSearchEditText(d);
+        CheckBox selectAll = findDialogSelectAllCheckBox(d);
+        AbsListView list = findDialogList(d);
+        assertNotNull(search);
+        assertNotNull(selectAll);
+        assertNotNull(list);
+
+        // Search for "EPUB" — only EPUB visible.
+        search.setText("EPUB");
+        shadowOf(Looper.getMainLooper()).idle();
+        assertEquals("search 'EPUB' must show only EPUB", 1, list.getAdapter().getCount());
+        assertEquals("EPUB", list.getAdapter().getItem(0).toString());
+
+        // Click "Select all" — search clears, all formats become selected.
+        selectAll.performClick();
+        shadowOf(Looper.getMainLooper()).idle();
+
+        // Search should be cleared (or at least all formats now visible).
+        assertEquals("Select All must show all formats", Formats.ALL.length,
+                list.getAdapter().getCount());
+        // All items must be checked.
+        for (int i = 0; i < Formats.ALL.length; i++) {
+            assertTrue("format " + i + " must be checked after Select All",
+                    list.isItemChecked(i));
+        }
+
+        // Confirm — selecting all formats = empty selection = all books.
+        shadowOf(d).clickOn(android.R.id.button1);
+        shadowOf(Looper.getMainLooper()).idle();
+
+        awaitCondition("all books to be visible (all formats selected = no filter)",
+                new Cond() {
+                    public boolean holds() {
+                        return adapterHasCount(grid, 3);
+                    }
+                });
+        assertEquals(3, grid.getAdapter().getCount());
+    }
+
+    // ------------------------------------------------------------------
+    // PLAN2: Rotation preserves dialog state (dialog is recreated, search empty)
+    // ------------------------------------------------------------------
+
+    /** After a rotation, the filter state survives via instance state, but the
+     *  dialog itself is recreated by the framework — its search text and
+     *  Select All checkbox state are NOT preserved (standard AlertDialog
+     *  behavior on API 19). This test verifies that the filter STATE survives
+     *  and the new dialog opens with empty search and correct checkboxes. */
+    @Test
+    public void theFilterStateSurvivesRotationButDialogStateIsReset() throws Exception {
+        TestFixtures.writeText(new File(storage, "story_a.txt"), "alpha\n");
+        TestFixtures.writeText(new File(storage, "story_b.txt"), "beta\n");
+        TestFixtures.writeBytes(new File(storage, "manual.pdf"), new byte[]{0x25, 0x25});
+
+        ActivityController<MainActivity> c = Robolectric.buildActivity(MainActivity.class);
+        MainActivity a = c.setup().get();
+        awaitCatalogSize(3);
+
+        GridView grid = a.findViewById(R.id.book_grid);
+        awaitAdapterCount(grid, 3);
+
+        // Select TXT in the dialog.
+        a.findViewById(R.id.btn_filter).performClick();
+        android.app.Dialog d = ShadowDialog.getLatestDialog();
+        AbsListView list = findDialogList(d);
+        clickDialogItem(list, formatPos("TXT"));
+        shadowOf(d).clickOn(android.R.id.button1);
+        shadowOf(Looper.getMainLooper()).idle();
+
+        final AbsListView gridRef = grid;
+        awaitCondition("the TXT filter to apply", new Cond() {
+            public boolean holds() {
+                return adapterHasCount(gridRef, 2);
+            }
+        });
+
+        // Rotate (save instance state, destroy, recreate).
+        Bundle saved = new Bundle();
+        c.saveInstanceState(saved);
+        c.destroy();
+
+        final MainActivity a2 = Robolectric.buildActivity(MainActivity.class).setup(saved).get();
+        final GridView grid2 = a2.findViewById(R.id.book_grid);
+        awaitCondition("the TXT filter to survive rotation", new Cond() {
+            public boolean holds() {
+                return adapterHasCount(grid2, 2);
+            }
+        });
+        assertEquals(2, grid2.getAdapter().getCount());
+
+        // Open the dialog in the recreated activity — search is empty,
+        // TXT is checked (from FilterState), Select All shows partial state.
+        a2.findViewById(R.id.btn_filter).performClick();
+        android.app.Dialog d2 = ShadowDialog.getLatestDialog();
+        assertNotNull("the funnel must open the dialog in the recreated window", d2);
+
+        EditText search2 = findDialogSearchEditText(d2);
+        CheckBox selectAll2 = findDialogSelectAllCheckBox(d2);
+        AbsListView list2 = findDialogList(d2);
+        assertNotNull(search2);
+        assertNotNull(selectAll2);
+        assertNotNull(list2);
+
+        // Search should be empty in the new dialog.
+        assertEquals("search must be empty after rotation", "",
+                search2.getText().toString());
+
+        // TXT must be checked (restored from FilterState).
+        list2.setSelection(formatPos("TXT"));
+        shadowOf(Looper.getMainLooper()).idle();
+        assertTrue("TXT must be pre-checked after rotation",
+                list2.isItemChecked(formatPos("TXT")));
+
+        // Select All must show partial state (unchecked, "Select all" label).
+        assertFalse("Select All must be unchecked for partial selection after rotation",
+                selectAll2.isChecked());
+        assertEquals("Select All text must be 'Select all' for partial after rotation",
+                a2.getString(R.string.filter_select_all), selectAll2.getText().toString());
+
+        // Cancel to leave state intact.
+        shadowOf(d2).clickOn(android.R.id.button2);
+        shadowOf(Looper.getMainLooper()).idle();
+        assertEquals("the filter must be intact after the dialog cancel",
+                2, grid2.getAdapter().getCount());
+        assertTrue(a2.getFilterState().isActive());
     }
 
     // ------------------------------------------------------------------

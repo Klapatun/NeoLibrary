@@ -87,6 +87,33 @@ public class BookProviderTest {
         }
     }
 
+    /** The multi-format selection (the modal filter's query, the plan's step 2):
+     *  the caller builds the string itself ({@code format IN (…)} — the provider's
+     *  selection grammar, extended additively) and the provider translates it to
+     *  the set query. The single-value {@code format=?} keeps working exactly as
+     *  before ({@link #queryFiltersByFormat} — the safety net, unchanged). */
+    @Test
+    public void queryWithFormatInSelectionReturnsExactlyThoseFormats() {
+        insert("/a/one.txt", "TXT", "One");
+        insert("/b/two.txt", "TXT", "Two");
+        insert("/c/three.pdf", "PDF", "Three");
+        insert("/d/four.epub", "EPUB", "Four");
+
+        Cursor c = context.getContentResolver().query(BookProvider.CONTENT_URI, null,
+                "format IN (?,?)", new String[]{"TXT", "PDF"}, null);
+        try {
+            assertEquals(3, c.getCount());
+            // The union of the two formats in the title sort order (the EPUB's
+            // "Four" must not leak in).
+            List<String> titles = collectTitles(c);
+            assertEquals("One", titles.get(0));
+            assertEquals("Three", titles.get(1));
+            assertEquals("Two", titles.get(2));
+        } finally {
+            if (c != null) c.close();
+        }
+    }
+
     @Test
     public void queryRecentReturnsOnlyReadBooksNewestFirst() throws Exception {
         long a = insert("/a/one.txt", "TXT", "One");
