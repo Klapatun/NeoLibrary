@@ -148,9 +148,20 @@ public class FilterStateTest {
         // The restored state must convert to the same query as the original.
         assertEquals(state.queryUri(), restored.queryUri());
         assertEquals(state.querySelection(), restored.querySelection());
-        assertEquals(state.queryArgs().length, restored.queryArgs().length);
-        for (int i = 0; i < state.queryArgs().length; i++) {
-            assertEquals(state.queryArgs()[i], restored.queryArgs()[i]);
+        // The args comparison must be null-safe: with recentView on the pinned
+        // contract says queryArgs() is null (the recent view carries no
+        // selection — see theRecentViewWinsOverAFormatSelection), so "the same
+        // query" here means "both null", not an array comparison.
+        String[] args = state.queryArgs();
+        String[] restoredArgs = restored.queryArgs();
+        if (args == null) {
+            assertNull("the recent view carries no args in both states", restoredArgs);
+        } else {
+            assertNotNull(restoredArgs);
+            assertEquals(args.length, restoredArgs.length);
+            for (int i = 0; i < args.length; i++) {
+                assertEquals(args[i], restoredArgs[i]);
+            }
         }
     }
 

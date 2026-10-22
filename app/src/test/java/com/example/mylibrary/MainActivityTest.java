@@ -932,6 +932,11 @@ public class MainActivityTest {
         android.app.Dialog d2 = ShadowDialog.getLatestDialog();
         assertNotNull("the funnel must open the dialog in the recreated window", d2);
         AbsListView list2 = findDialogList(d2);
+        // The framework applies the INITIAL multi-choice checkbox state lazily,
+        // in the list adapter's getView — i.e. at the dialog's first layout
+        // pass, not in show() (SDK 19 AlertParams$1). Idle the main looper so
+        // the window lays out and the state is applied before asserting it.
+        shadowOf(Looper.getMainLooper()).idle();
         assertTrue("the TXT checkbox must be pre-checked in the restored dialog",
                 list2.isItemChecked(formatPos("TXT")));
         // Close without changes (Cancel): the restored choice must stay.
@@ -1096,6 +1101,10 @@ public class MainActivityTest {
         a.findViewById(R.id.btn_filter).performClick();
         android.app.Dialog d2 = ShadowDialog.getLatestDialog();
         AbsListView list2 = findDialogList(d2);
+        // Same framework timing as in the rotation test: the initial multi-choice
+        // state is applied by the list adapter's getView at the first layout
+        // pass, so idle the main looper before asserting it.
+        shadowOf(Looper.getMainLooper()).idle();
         assertTrue("the open dialog must still show the selection (TXT checked)",
                 list2.isItemChecked(formatPos("TXT")));
         shadowOf(d2).clickOn(android.R.id.button1); // OK, no changes
