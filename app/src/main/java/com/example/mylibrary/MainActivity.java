@@ -139,6 +139,12 @@ public class MainActivity extends Activity
      *  spinner's label/value lists. */
     private FilterState filters;
 
+    /** Whether the stage-2 enrichment worker is currently running: the "Genres"
+     *  tab of the filter dialog is locked while it runs (the genre reference is
+     *  still growing), and is unlocked on {@code onFinished()}/{@code
+     *  onCancelled()}. */
+    private boolean enriching;
+
     /** Stage-2 progress strip; invoked on the main thread by MetaEnricher. */
     private final MetaEnricher.OnProgress enrichListener = new MetaEnricher.OnProgress() {
         @Override public void onProgress(int done, int total) {
@@ -146,13 +152,26 @@ public class MainActivity extends Activity
             enrichStatus.setText(getString(R.string.enriching_progress, done, total));
         }
         @Override public void onFinished() {
-            if (isFinishing()) return;
-            // The strip going away gives the list its full height back — the
-            // bookContainer layout listener re-measures the list page size once
-            // the new height is laid out.
-            enrichBar.setVisibility(View.GONE);
+            onEnrichmentStopped();
+        }
+        @Override public void onCancelled() {
+            // By contract onFinished() is NOT sent after a cancel — this is the
+            // cancel-side counterpart (see MetaEnricher.cancel): the same
+            // screen-side effect below.
+            onEnrichmentStopped();
         }
     };
+
+    /** The screen-side effect of a FINISHED or CANCELLED enrichment pass: the
+     *  enriching flag clears and the strip goes away (it gives the list its full
+     *  height back — the bookContainer layout listener re-measures the list page
+     *  size once the new height is laid out); an open filter dialog's "Genres"
+     *  tab is unlocked with a fresh reference. */
+    private void onEnrichmentStopped() {
+        if (isFinishing()) return;
+        enriching = false;
+        enrichBar.setVisibility(View.GONE);
+    }
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -1120,9 +1139,14 @@ public class MainActivity extends Activity
         if (db.needMeta().isEmpty()) return;
         // The strip takes height away from the list — the bookContainer layout
         // listener re-measures the list page size once the new height is laid out.
+        // NOTE the order: start() first CANCELS any previous pass, and that
+        // cancel() fires the previous pass's onCancelled() (enrichListener), which
+        // clears the flag and hides the strip. So the strip and the flag are set
+        // AFTER start() returns — the new pass's state wins.
+        MetaEnricher.start(this, db, enrichListener);
+        enriching = true;
         enrichBar.setVisibility(View.VISIBLE);
         enrichStatus.setText(R.string.enriching);
-        MetaEnricher.start(this, db, enrichListener);
     }
 
     // -----------------------------------------------------------------
