@@ -27,9 +27,11 @@ public class BookProvider extends ContentProvider {
 
     public static final String AUTHORITY = "com.example.mylibrary.books";
     /** All books; the optional {@code selection} narrows the result set —
-     *  {@code "format=?"} (the original single-value filter) or
-     *  {@code "format IN (?,…)} (the modal filter's set query, built by the
-     *  caller; the provider's selection grammar, extended additively). */
+     *  {@code "format=?"} (the original single-value filter),
+     *  {@code "format IN (?,…)"} / {@code "genre IS NOT NULL AND genre
+     *  IN (?,…)"} or the two AND-ed (the modal filter's set queries, built
+     *  by the caller; the provider's selection grammar, extended
+     *  additively — see the {@code FORMAT_IN}/{@code GENRE_IN} patterns). */
     public static final Uri CONTENT_URI = Uri.parse("content://" + AUTHORITY + "/books");
     /** The "Recently read" view (limit 200). */
     public static final Uri RECENT_URI = Uri.parse("content://" + AUTHORITY + "/books/recent");
@@ -38,10 +40,19 @@ public class BookProvider extends ContentProvider {
      *  builds the string itself — {@code format IN (?,…)} with one {@code ?}
      *  per selected format, in {@code Formats.ALL} order — and this provider
      *  translates it to the format-set query. The grammar is extended
-     *  ADDITIVELY: future filter types add their clause here, and the
+     *  ADDITIVELY: the genre filter adds {@code genre IS NOT NULL AND genre
+     *  IN (?,…)} (one clause per selected dimension, AND-ed in the
+     *  {@code FilterState} order — formats first, then genres), and the
      *  single-value {@code format=?} above keeps working as before. */
     private static final Pattern FORMAT_IN = Pattern.compile(
             "^format\\s+IN\\s*\\((\\?(?:\\s*,\\s*\\?)*?)\\)$");
+    private static final Pattern GENRE_IN = Pattern.compile(
+            "^genre\\s+IS\\s+NOT\\s+NULL\\s+AND\\s+genre\\s+IN\\s*\\("
+                    + "(\\?(?:\\s*,\\s*\\?)*?)\\)$");
+    private static final Pattern FORMAT_AND_GENRE_IN = Pattern.compile(
+            "^format\\s+IN\\s*\\((\\?(?:\\s*,\\s*\\?)*?)\\)"
+                    + "\\s+AND\\s+genre\\s+IS\\s+NOT\\s+NULL\\s+AND\\s+genre\\s+IN\\s*"
+                    + "\\((\\?(?:\\s*,\\s*\\?)*?)\\)$");
 
     /**
      * Announces a catalog change to BOTH views at once. The all-books list and the
@@ -71,18 +82,34 @@ public class BookProvider extends ContentProvider {
             return db.cursorRecent(200);
         }
         // Books root: the optional selection narrows the result set. The set
-        // query first (the modal filter's "format IN (?,…)", the caller-built
-        // string, one placeholder per selected format)…
+        // queries first (the modal filter's caller-built strings, one
+        // placeholder per selected id): "format IN (?,…)" (the format set),
+        // "genre IS NOT NULL AND genre IN (?,…)" (the genre set), and the two
+        // AND-ed (formats first, in FilterState's queryArgs order)…
         if (selection != null && selectionArgs != null) {
-            Matcher m = FORMAT_IN.matcher(selection.trim());
+            String sel = selection.trim();
+            Matcher m = FORMAT_IN.matcher(sel);
             if (m.matches()) {
-                String group = m.group(1);
-                int placeholders = 0;
-                for (int i = 0; i < group.length(); i++) {
-                    if (group.charAt(i) == '?') placeholders++;
+                if (countPlaceholders(m.group(1)) == selectionArgs.length) {
+                    return db.cursorAll(selectionArgs, null);
                 }
-                if (placeholders == selectionArgs.length) {
-                    return db.cursorAll(selectionArgs);
+            }
+            Matcher gm = GENRE_IN.matcher(sel);
+            if (gm.matches()) {
+                if (countPlaceholders(gm.group(1)) == selectionArgs.length) {
+                    return db.cursorAll(null, selectionArgs);
+                }
+            }
+            Matcher cg = FORMAT_AND_GENRE_IN.matcher(sel);
+            if (cg.matches()) {
+                int formats = countPlaceholders(cg.group(1));
+                int genres = countPlaceholders(cg.group(2));
+                if (formats + genres == selectionArgs.length) {
+                    String[] fmtArgs = new String[formats];
+                    String[] genreArgs = new String[genres];
+                    System.arraycopy(selectionArgs, 0, fmtArgs, 0, formats);
+                    System.arraycopy(selectionArgs, formats, genreArgs, 0, genres);
+                    return db.cursorAll(fmtArgs, genreArgs);
                 }
             }
         }
@@ -92,6 +119,15 @@ public class BookProvider extends ContentProvider {
             filter = selectionArgs[0];
         }
         return db.cursorAll(filter);
+    }
+
+    /** How many {@code ?} placeholders a captured IN-clause group holds. */
+    private static int countPlaceholders(String group) {
+        int count = 0;
+        for (int i = 0; i < group.length(); i++) {
+            if (group.charAt(i) == '?') count++;
+        }
+        return count;
     }
 
     @Override

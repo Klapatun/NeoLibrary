@@ -402,26 +402,76 @@ public class BookDatabase extends SQLiteOpenHelper {
         return cursorAll(new String[]{formatFilter});
     }
 
-    /** The format-SET overload of the catalog cursor (the modal filter's
-     *  query, the plan's step 2): a non-null, non-empty array becomes
-     *  {@code format IN (?,?,…)} — one placeholder per id; null or an empty
-     *  array means no selection (all books). The row order is the same as the
-     *  single-value overload — title COLLATE NOCASE. */
+    /** The format-set overload of the catalog cursor (the modal filter's
+     *  query): delegates to the format+genre overload with no genre
+     *  restriction. */
     public Cursor cursorAll(String[] formatFilter) {
+        return cursorAll(formatFilter, null);
+    }
+
+    /** The combined catalog cursor (the modal filter's query, the plan's
+     *  step 3): a non-null, non-empty array per dimension becomes
+     *  {@code format IN (?,?,…)} and {@code genre IS NOT NULL AND genre
+     *  IN (?,?,…)} — one placeholder per id; null or an empty array means
+     *  "no restriction" for that dimension, and both null gives the plain
+     *  {@code SELECT * FROM books} over the whole catalog. The row order is
+     *  the same as the single-value overload — title COLLATE NOCASE. */
+    public Cursor cursorAll(String[] formatFilter, String[] genreFilter) {
         synchronized (WRITE_LOCK) {
             SQLiteDatabase db = readableDb();
-            if (formatFilter == null || formatFilter.length == 0) {
+            StringBuilder selection = new StringBuilder();
+            List<String> args = new ArrayList<String>();
+            if (formatFilter != null && formatFilter.length > 0) {
+                appendInClause(selection, "format", formatFilter, args);
+            }
+            if (genreFilter != null && genreFilter.length > 0) {
+                if (selection.length() > 0) selection.append(" AND ");
+                // The IS NOT NULL makes the intent explicit for readers of the
+                // generated query (IN never matches NULL anyway): a book only
+                // reaches the genre filter if it actually has a genre.
+                appendInClause(selection, "genre IS NOT NULL AND genre",
+                        genreFilter, args);
+            }
+            if (selection.length() == 0) {
                 return db.query("books", null, null, null, null, null,
                         "title COLLATE NOCASE ASC");
             }
-            StringBuilder in = new StringBuilder("format IN (");
-            for (int i = 0; i < formatFilter.length; i++) {
-                if (i > 0) in.append(",");
-                in.append("?");
+            return db.query("books", null, selection.toString(),
+                    args.toArray(new String[0]), null, null,
+                    "title COLLATE NOCASE ASC");
+        }
+    }
+
+    /** Appends {@code <column> IN (?,…)} (one placeholder per id) to the
+     *  selection and the ids to the args. */
+    private static void appendInClause(StringBuilder selection, String column,
+            String[] ids, List<String> args) {
+        selection.append(column).append(" IN (");
+        for (int i = 0; i < ids.length; i++) {
+            if (i > 0) selection.append(",");
+            selection.append("?");
+            args.add(ids[i]);
+        }
+        selection.append(")");
+    }
+
+    /** The distinct non-null genres of the catalog in genre order — the
+     *  dynamic reference of the filter dialog's "Genres" tab (the plan's
+     *  step 6): genres are formed from the enriched books, never from a
+     *  hardcoded list, so the reference grows with the content. */
+    public List<String> distinctGenres() {
+        synchronized (WRITE_LOCK) {
+            List<String> genres = new ArrayList<String>();
+            SQLiteDatabase db = readableDb();
+            Cursor c = db.rawQuery(
+                    "SELECT DISTINCT genre FROM books WHERE genre IS NOT NULL ORDER BY genre",
+                    null);
+            try {
+                while (c.moveToNext()) genres.add(c.getString(0));
+            } finally {
+                c.close();
             }
-            in.append(")");
-            return db.query("books", null, in.toString(), formatFilter,
-                    null, null, "title COLLATE NOCASE ASC");
+            return genres;
         }
     }
 
