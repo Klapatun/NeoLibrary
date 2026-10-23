@@ -18,6 +18,7 @@ import android.os.Bundle;
 import android.text.Editable;
 import android.text.TextWatcher;
 import android.graphics.Color;
+import android.util.SparseBooleanArray;
 import android.util.TypedValue;
 import android.view.Gravity;
 import android.view.LayoutInflater;
@@ -39,6 +40,8 @@ import android.widget.LinearLayout;
 import android.widget.ListView;
 import android.widget.PopupMenu;
 import android.widget.ProgressBar;
+import android.widget.TabHost;
+import android.widget.TabWidget;
 import android.widget.TextView;
 import android.widget.Toast;
 
@@ -145,6 +148,12 @@ public class MainActivity extends Activity
      *  onCancelled()}. */
     private boolean enriching;
 
+    /** The open filter dialog's "Genres" tab, or null while the dialog is
+     *  closed: startEnrichment() locks it, onEnrichmentStopped() unlocks it
+     *  with a fresh reference (the finished/cancelled pass may have added
+     *  genres). */
+    private FilterTab openFilterGenresTab;
+
     /** Stage-2 progress strip; invoked on the main thread by MetaEnricher. */
     private final MetaEnricher.OnProgress enrichListener = new MetaEnricher.OnProgress() {
         @Override public void onProgress(int done, int total) {
@@ -171,6 +180,12 @@ public class MainActivity extends Activity
         if (isFinishing()) return;
         enriching = false;
         enrichBar.setVisibility(View.GONE);
+        // An open filter dialog's "Genres" tab unlocks now — the reference is
+        // rebuilt (the finished/cancelled pass may have added genres).
+        if (openFilterGenresTab != null) {
+            openFilterGenresTab.setLoading(false);
+            openFilterGenresTab.refresh(db.distinctGenres().toArray(new String[0]));
+        }
     }
 
     @Override
@@ -227,10 +242,10 @@ public class MainActivity extends Activity
         // the mode the screen is about to apply, before any row gets inflated.
         int initialMode = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
                 .getInt(PREF_KEY_VIEW_MODE, BookAdapter.MODE_GRID);
-        // The initial cursor is the CURRENT filter's query (the all-books one
-        // when the state is empty); the loader below replaces it on the first
-        // load.
-        adapter = new BookAdapter(this, db.cursorAll(filters.queryArgs()), this);
+        // The initial cursor is the CURRENT view's query (recent-aware, through
+        // the same "state → query" conversion point as the rebinds below); the
+        // loader replaces it on the first load.
+        adapter = new BookAdapter(this, currentCatalogCursor(), this);
         adapter.setMode(initialMode);
         grid.setAdapter(adapter);
         // Any external data change (an enrichment batch, a remove, a filter, a
@@ -594,245 +609,122 @@ public class MainActivity extends Activity
     // Filter modal (the funnel icon in the header)
     // -----------------------------------------------------------------
 
-    /** The funnel icon's filter dialog: a multi-choice list built from
-     *  {@link Formats#ALL} (the single source of truth — a future new filter
-     *  type adds its own group of items here). It works on a DRAFT copy of the
-     *  filter state: the real state (and the dot on the funnel) changes only
-     *  on OK, and OK also resets the recent view — the views are mutually
-     *  exclusive and the filter view wins (the plan's step 4). Cancel throws
+    /** The funnel icon's filter dialog: a TabHost with the two filter
+     *  dimensions — "Formats" (the format ids, {@link Formats#ALL}, the single
+     *  source of truth) and "Genres" (the dynamic genre reference: the
+     *  catalog's distinct non-null genres). Each tab is a {@link FilterTab}
+     *  (search field, select-all/clear row, multi-choice list), and the dialog
+     *  works on a DRAFT copy of the filter state: the real state (and the dot
+     *  on the funnel) changes only on OK, and OK also resets the recent view —
+     *  the views are mutually exclusive, the filter view wins. Cancel throws
      *  the draft away (nothing changes).
      *
-     *  PLAN2: The dialog now includes a search bar (EditText) to filter the
-     *  visible formats by substring (case-insensitive), and a "Select all /
-     *  Deselect all" CheckBox that toggles all format checkboxes. When the
-     *  search is active and the user clicks "Select all", the search is reset
-     *  and all formats become selected. */
+     *  <p>While the stage-2 enrichment worker runs, the Genres tab is LOCKED
+     *  (its reference is still growing): the checkboxes are untouchable, the
+     *  search / select-all / clear are disabled and the hint says why. It
+     *  unlocks — with a fresh reference — on {@code onFinished()}/{@code
+     *  onCancelled()} (see {@link #openFilterGenresTab}).</p> */
     private void showFilterDialog() {
         final FilterState draft = filters.copy();
 
-        // The dialog works with a SparseBooleanArray mapping the ORIGINAL
-        // index in Formats.ALL -> checked state. This allows search filtering
-        // to work correctly: the visible list is a subset, but the checked
-        // state is maintained for all formats.
-        final android.util.SparseBooleanArray checkedMap =
-                new android.util.SparseBooleanArray();
+        // The two tab pages (children of the tabcontent frame the TabHost
+        // swaps). The formats tab works on the static Formats.ALL vocabulary;
+        // the checked state is filled from the draft (cancel semantics: the
+        // real state changes only on OK).
+        final FilterTab formatsTab = new FilterTab(this, Formats.ALL,
+                R.string.filter_search_hint, R.id.formats_tab);
         for (int i = 0; i < Formats.ALL.length; i++) {
             if (draft.selectedFormats.contains(Formats.ALL[i])) {
-                checkedMap.put(i, true);
+                formatsTab.checked.put(i, true);
             }
         }
 
-        // Build the custom dialog view: LinearLayout with search, Select All,
-        // and ListView.
-        final LinearLayout dialogView = new LinearLayout(this);
-        dialogView.setOrientation(LinearLayout.VERTICAL);
-        dialogView.setPadding(16, 16, 16, 16);
-
-        // Search EditText
-        final EditText searchEditText = new EditText(this);
-        searchEditText.setHint(R.string.filter_search_hint);
-        searchEditText.setSingleLine(true);
-        dialogView.addView(searchEditText);
-
-        // Select All / Deselect All CheckBox with Clear button
-        final LinearLayout selectAllRow = new LinearLayout(this);
-        selectAllRow.setOrientation(LinearLayout.HORIZONTAL);
-        selectAllRow.setPadding(0, 16, 0, 8);
-        selectAllRow.setGravity(Gravity.CENTER_VERTICAL);
-
-        final CheckBox selectAllCheckBox = new CheckBox(this);
-        selectAllCheckBox.setText(R.string.filter_select_all);
-        // Checkbox takes remaining space, pushes clear button to the right
-        LinearLayout.LayoutParams cbParams = new LinearLayout.LayoutParams(
-                0, ViewGroup.LayoutParams.WRAP_CONTENT, 1.0f);
-        selectAllCheckBox.setLayoutParams(cbParams);
-        selectAllRow.addView(selectAllCheckBox);
-
-        // Clear button - visible only when at least one format is selected
-        // Small cross icon button, transparent background, aligned right
-        final TextView clearButton = new TextView(this);
-        clearButton.setText("\u2715"); // × multiplication sign
-        clearButton.setTextSize(TypedValue.COMPLEX_UNIT_SP, 20);
-        clearButton.setTextColor(0xFF757575); // Medium gray
-        clearButton.setPadding(12, 4, 12, 4);
-        clearButton.setBackgroundColor(Color.TRANSPARENT);
-        clearButton.setVisibility(View.GONE);
-        LinearLayout.LayoutParams clearParams = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        clearParams.setMargins(8, 0, 16, 0);
-        clearButton.setLayoutParams(clearParams);
-        // Make it clickable like a button
-        clearButton.setClickable(true);
-        clearButton.setFocusable(true);
-        clearButton.setOnTouchListener((v, event) -> {
-            if (event.getAction() == MotionEvent.ACTION_DOWN) {
-                v.setAlpha(0.5f);
-            } else if (event.getAction() == MotionEvent.ACTION_UP
-                    || event.getAction() == MotionEvent.ACTION_CANCEL) {
-                v.setAlpha(1.0f);
+        // The genre reference is DYNAMIC: the catalog's distinct non-null
+        // genres, read here on open and again whenever an enrichment pass
+        // stops (the finished/cancelled pass may have added genres).
+        final String[] genreNames = db.distinctGenres().toArray(new String[0]);
+        final FilterTab genreTab = new FilterTab(this, genreNames,
+                R.string.filter_search_hint_genres, R.id.genres_tab);
+        for (int i = 0; i < genreNames.length; i++) {
+            if (draft.selectedGenres.contains(genreNames[i])) {
+                genreTab.checked.put(i, true);
             }
-            return false;
-        });
-        selectAllRow.addView(clearButton);
+        }
+        // Locked while the worker runs; the enrichment callbacks keep it in
+        // sync while the dialog is open (see openFilterGenresTab).
+        genreTab.setLoading(enriching);
+        openFilterGenresTab = genreTab;
 
-        dialogView.addView(selectAllRow);
+        // The TabHost (framework, API 19 — no ViewPager): the TabWidget on
+        // top, the tabcontent frame (holding the two pages) below it. setup()
+        // must run after the frame is in place; addTab() then swaps the pages
+        // by id (the first addTab selects the Formats tab).
+        final TabWidget tabs = new TabWidget(this);
+        tabs.setId(android.R.id.tabs);
+        final FrameLayout tabContent = new FrameLayout(this);
+        tabContent.setId(android.R.id.tabcontent);
+        tabContent.addView(formatsTab.page, new FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.MATCH_PARENT));
+        tabContent.addView(genreTab.page, new FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.MATCH_PARENT));
 
-        // ListView for formats
-        final ListView listView = new ListView(this);
-        listView.setChoiceMode(ListView.CHOICE_MODE_MULTIPLE);
-        listView.setLayoutParams(new LinearLayout.LayoutParams(
+        final LinearLayout tabLayout = new LinearLayout(this);
+        tabLayout.setOrientation(LinearLayout.VERTICAL);
+        tabLayout.addView(tabs, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT));
+        tabLayout.addView(tabContent, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, 0, 1.0f));
-        dialogView.addView(listView);
 
-        // Adapter for the visible (filtered) formats.
-        // We maintain two parallel structures:
-        // - visibleFormats: ArrayList<String> of format IDs currently shown
-        // - visibleToOriginalIndex: int[] mapping visible position -> original index in Formats.ALL
-        final ArrayList<String> visibleFormats = new ArrayList<String>(Arrays.asList(Formats.ALL));
-        final int[] visibleToOriginalIndex = new int[Formats.ALL.length];
-        for (int i = 0; i < Formats.ALL.length; i++) {
-            visibleToOriginalIndex[i] = i;
-        }
-
-        final ArrayAdapter<String> adapter = new ArrayAdapter<String>(
-                this,
-                android.R.layout.simple_list_item_multiple_choice,
-                visibleFormats);
-        listView.setAdapter(adapter);
-
-        // Initialize the checked state for visible items.
-        for (int i = 0; i < visibleFormats.size(); i++) {
-            int originalIndex = visibleToOriginalIndex[i];
-            if (checkedMap.get(originalIndex)) {
-                listView.setItemChecked(i, true);
-            }
-        }
-
-        // Update Select All checkbox state based on current selection.
-        final Runnable updateSelectAllState = new Runnable() {
-            @Override public void run() {
-                boolean allChecked = true;
-                boolean anyChecked = false;
-                for (int i = 0; i < Formats.ALL.length; i++) {
-                    if (checkedMap.get(i)) {
-                        anyChecked = true;
-                    } else {
-                        allChecked = false;
-                    }
-                }
-                if (allChecked && anyChecked) {
-                    selectAllCheckBox.setChecked(true);
-                    selectAllCheckBox.setText(R.string.filter_deselect_all);
-                } else {
-                    selectAllCheckBox.setChecked(false);
-                    selectAllCheckBox.setText(R.string.filter_select_all);
-                }
-                // Show clear button if any format is selected
-                clearButton.setVisibility(anyChecked ? View.VISIBLE : View.GONE);
-            }
-        };
-
-        // Search filtering
-        searchEditText.addTextChangedListener(new TextWatcher() {
-            @Override public void beforeTextChanged(CharSequence s, int start, int count, int after) {}
-            @Override public void onTextChanged(CharSequence s, int start, int before, int count) {}
-            @Override public void afterTextChanged(Editable s) {
-                String query = s.toString().toLowerCase();
-                visibleFormats.clear();
-                int idx = 0;
-                for (int i = 0; i < Formats.ALL.length; i++) {
-                    if (query.isEmpty() || Formats.ALL[i].toLowerCase().contains(query)) {
-                        visibleFormats.add(Formats.ALL[i]);
-                        if (idx < visibleToOriginalIndex.length) {
-                            visibleToOriginalIndex[idx] = i;
-                        }
-                        idx++;
-                    }
-                }
-                adapter.notifyDataSetChanged();
-
-                // Re-apply checked state to newly visible items.
-                for (int i = 0; i < visibleFormats.size(); i++) {
-                    int originalIndex = visibleToOriginalIndex[i];
-                    listView.setItemChecked(i, checkedMap.get(originalIndex));
-                }
-
-                updateSelectAllState.run();
-            }
-        });
-
-        // Select All / Deselect All checkbox - use setOnClickListener to avoid
-        // re-entrancy issues with updateSelectAllState calling setChecked().
-        selectAllCheckBox.setOnClickListener(new View.OnClickListener() {
-            @Override public void onClick(View v) {
-                boolean isChecked = selectAllCheckBox.isChecked();
-                if (isChecked) {
-                    // Select All: check all formats (all 15), reset search.
-                    for (int i = 0; i < Formats.ALL.length; i++) {
-                        checkedMap.put(i, true);
-                    }
-                    // Reset search to show all formats.
-                    searchEditText.setText("");
-                } else {
-                    // Deselect All: uncheck all formats.
-                    for (int i = 0; i < Formats.ALL.length; i++) {
-                        checkedMap.put(i, false);
-                    }
-                }
-                // Update the visible list's checked state.
-                for (int i = 0; i < visibleFormats.size(); i++) {
-                    int originalIndex = visibleToOriginalIndex[i];
-                    listView.setItemChecked(i, checkedMap.get(originalIndex));
-                }
-                updateSelectAllState.run();
-            }
-        });
-
-        // Clear button - unchecks all formats
-        clearButton.setOnClickListener(new View.OnClickListener() {
-            @Override public void onClick(View v) {
-                // Uncheck all formats
-                for (int i = 0; i < Formats.ALL.length; i++) {
-                    checkedMap.put(i, false);
-                }
-                // Update the visible list's checked state.
-                for (int i = 0; i < visibleFormats.size(); i++) {
-                    int originalIndex = visibleToOriginalIndex[i];
-                    listView.setItemChecked(i, checkedMap.get(originalIndex));
-                }
-                updateSelectAllState.run();
-            }
-        });
-
-        // List item click toggles the checked state for that format.
-        listView.setOnItemClickListener(new AdapterView.OnItemClickListener() {
-            @Override public void onItemClick(AdapterView<?> parent, View view, int position, long id) {
-                int originalIndex = visibleToOriginalIndex[position];
-                boolean newChecked = !checkedMap.get(originalIndex);
-                checkedMap.put(originalIndex, newChecked);
-                listView.setItemChecked(position, newChecked);
-                updateSelectAllState.run();
-            }
-        });
+        final TabHost tabHost = new TabHost(this);
+        tabHost.addView(tabLayout, new FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.MATCH_PARENT));
+        tabHost.setup();
+        tabHost.addTab(tabHost.newTabSpec("formats")
+                .setIndicator(getString(R.string.filter_tab_formats))
+                .setContent(R.id.formats_tab));
+        tabHost.addTab(tabHost.newTabSpec("genres")
+                .setIndicator(getString(R.string.filter_tab_genres))
+                .setContent(R.id.genres_tab));
+        // A re-open lands on the Genres tab when the draft carries a genre
+        // selection (the plan's step 8); otherwise on Formats (already
+        // selected by the first addTab).
+        tabHost.setCurrentTab(draft.selectedGenres.isEmpty() ? 0 : 1);
 
         new AlertDialog.Builder(this)
                 .setTitle(R.string.filter_dialog_title)
-                .setView(dialogView)
+                .setView(tabHost)
                 .setNegativeButton(R.string.cancel, null)
                 .setPositiveButton(R.string.filter_ok, new DialogInterface.OnClickListener() {
                     @Override public void onClick(DialogInterface d, int w) {
-                        // OK adopts the draft: the selection becomes the real
-                        // state, and the recent view is reset (the filter view
-                        // wins over the "Recently read" view).
+                        // OK adopts the draft of BOTH tabs: the selections
+                        // become the real state, and the recent view is reset
+                        // (the filter view wins over the "Recently read"
+                        // view).
                         FilterState next = new FilterState();
-                        for (int i = 0; i < Formats.ALL.length; i++) {
-                            if (checkedMap.get(i)) {
-                                next.selectedFormats.add(Formats.ALL[i]);
+                        for (int i = 0; i < formatsTab.all.length; i++) {
+                            if (formatsTab.checked.get(i)) {
+                                next.selectedFormats.add(formatsTab.all[i]);
+                            }
+                        }
+                        for (int i = 0; i < genreTab.all.length; i++) {
+                            if (genreTab.checked.get(i)) {
+                                next.selectedGenres.add(genreTab.all[i]);
                             }
                         }
                         next.recentView = false;
                         filters = next;
                         applyCurrentView();
+                    }
+                })
+                .setOnDismissListener(new DialogInterface.OnDismissListener() {
+                    @Override public void onDismiss(DialogInterface d) {
+                        // The dialog is gone: no open tab to lock/unlock
+                        // anymore.
+                        openFilterGenresTab = null;
                     }
                 })
                 .show();
@@ -902,13 +794,17 @@ public class MainActivity extends Activity
 
     /** The catalog cursor the current view expects for {@code filters} — the
      *  same query {@link #onCreateLoader} would ask the provider for (the same
-     *  "state → query" conversion point). Used for the direct rebind in
-     *  {@link #startScan} after a rescan (and after a remove / a clear). */
+     *  "state → query" conversion point). Used as the initial cursor in
+     *  {@link #onCreate} and for the direct rebind in {@link #startScan}
+     *  after a rescan (and after a remove / a clear). The format/genre args go
+     *  through {@link FilterState#formatFilterArgs()}/{@link
+     *  FilterState#genreFilterArgs()} — the two-dimension overload of
+     *  {@code BookDatabase.cursorAll} (the direct path bypasses the provider). */
     private Cursor currentCatalogCursor() {
         if (filters.recentView) {
             return db.cursorRecent(200);
         }
-        return db.cursorAll(filters.queryArgs());
+        return db.cursorAll(filters.formatFilterArgs(), filters.genreFilterArgs());
     }
 
     private void openDetails(long id) {
@@ -1147,6 +1043,14 @@ public class MainActivity extends Activity
         enriching = true;
         enrichBar.setVisibility(View.VISIBLE);
         enrichStatus.setText(R.string.enriching);
+        // An open filter dialog's "Genres" tab locks for the pass (its
+        // reference is still growing). AFTER start(): start()'s internal
+        // cancel of the previous pass fires that pass's onCancelled() ->
+        // onEnrichmentStopped(), which would unlock the tab — the new pass's
+        // lock must win.
+        if (openFilterGenresTab != null) {
+            openFilterGenresTab.setLoading(true);
+        }
     }
 
     // -----------------------------------------------------------------
@@ -1284,6 +1188,260 @@ public class MainActivity extends Activity
             // The notifyChange in doInBackground still goes out for the other
             // listeners (e.g. the "recently read" view); this rebind only
             // guarantees that the list in front of the user catches up.
+        }
+    }
+
+    /** One tab of the filter dialog: the search field, the select-all/clear
+     *  row and the multi-choice list of ONE vocabulary (the format ids or the
+     *  genre names). The checked state lives in {@link #checked} indexed over
+     *  the ORIGINAL vocabulary, so search filtering (a visible subset) never
+     *  loses it. The genres tab is this same class with a DYNAMIC vocabulary:
+     *  its reference can be rebuilt in place via {@link #refresh} while the
+     *  dialog is open (the unlock after an enrichment pass adds the newly
+     *  enriched genres).
+     *
+     *  <p>While {@link #loading} is on (the genres tab only, while the stage-2
+     *  worker runs) the whole tab is locked: the checkboxes are untouchable,
+     *  the search / select-all / clear are disabled, and the hint explains
+     *  why. STATIC on purpose: the tab views outlive the dialog's local
+     *  variables, and a non-static inner class would pin the Activity.</p> */
+    private static final class FilterTab {
+
+        /** The tab's page view (a child of the tabcontent frame). */
+        final LinearLayout page;
+        final EditText search;
+        final TextView loadingHint;
+        final CheckBox selectAll;
+        final TextView clear;
+        final ListView list;
+        final ArrayAdapter<String> adapter;
+
+        /** The vocabulary (Formats.ALL or the catalog's distinct genres). */
+        String[] all;
+        /** The checked state indexed over the ORIGINAL {@link #all} positions. */
+        SparseBooleanArray checked;
+        /** The visible (search-filtered) subset of {@link #all}. */
+        final ArrayList<String> visible = new ArrayList<String>();
+        /** visible[i] -> its index in {@link #all} (grown on demand). */
+        int[] visibleToOriginal = new int[0];
+        /** True while the stage-2 worker runs (the genres tab): the tab is
+         *  locked (see the class javadoc). */
+        boolean loading;
+
+        FilterTab(Context context, String[] all, int searchHintRes, int pageId) {
+            this.all = all;
+            this.checked = new SparseBooleanArray();
+
+            page = new LinearLayout(context);
+            page.setOrientation(LinearLayout.VERTICAL);
+            page.setId(pageId);
+            page.setPadding(16, 8, 16, 16);
+
+            search = new EditText(context);
+            search.setHint(searchHintRes);
+            search.setSingleLine(true);
+            page.addView(search);
+
+            // The lock indicator: shown while the reference is being rebuilt
+            // (the genres tab only — the formats tab never sets loading).
+            loadingHint = new TextView(context);
+            loadingHint.setText(R.string.filter_genres_loading);
+            loadingHint.setTextColor(0xFF757575);
+            loadingHint.setVisibility(View.GONE);
+            page.addView(loadingHint);
+
+            final LinearLayout selectAllRow = new LinearLayout(context);
+            selectAllRow.setOrientation(LinearLayout.HORIZONTAL);
+            selectAllRow.setPadding(0, 16, 0, 8);
+            selectAllRow.setGravity(Gravity.CENTER_VERTICAL);
+
+            selectAll = new CheckBox(context);
+            selectAll.setText(R.string.filter_select_all);
+            // Checkbox takes remaining space, pushes clear button to the right.
+            selectAll.setLayoutParams(new LinearLayout.LayoutParams(
+                    0, ViewGroup.LayoutParams.WRAP_CONTENT, 1.0f));
+            selectAllRow.addView(selectAll);
+
+            // The clear button: visible only when at least one item is
+            // selected (a small cross, aligned right).
+            clear = new TextView(context);
+            clear.setText("\u2715");
+            clear.setTextSize(TypedValue.COMPLEX_UNIT_SP, 20);
+            clear.setTextColor(0xFF757575);
+            clear.setPadding(12, 4, 12, 4);
+            clear.setVisibility(View.GONE);
+            LinearLayout.LayoutParams clearParams = new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+            clearParams.setMargins(8, 0, 16, 0);
+            clear.setLayoutParams(clearParams);
+            clear.setClickable(true);
+            clear.setFocusable(true);
+            selectAllRow.addView(clear);
+
+            page.addView(selectAllRow);
+
+            list = new ListView(context);
+            list.setChoiceMode(ListView.CHOICE_MODE_MULTIPLE);
+            list.setLayoutParams(new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, 0, 1.0f));
+            page.addView(list);
+
+            // The adapter holds the VISIBLE list: the search rebuilds it in
+            // place (notifyDataSetChanged), while the checked state stays
+            // indexed over the full vocabulary.
+            adapter = new ArrayAdapter<String>(context,
+                    android.R.layout.simple_list_item_multiple_choice, visible);
+            list.setAdapter(adapter);
+
+            // Search filtering (ignored while the reference is being rebuilt).
+            search.addTextChangedListener(new TextWatcher() {
+                @Override public void beforeTextChanged(CharSequence s, int start, int count, int after) {}
+                @Override public void onTextChanged(CharSequence s, int start, int before, int count) {}
+                @Override public void afterTextChanged(Editable s) {
+                    if (loading) return;
+                    rebuildVisible();
+                }
+            });
+
+            // Select All / Deselect All: check (and re-show the full list) or
+            // uncheck the WHOLE vocabulary — the visible rows are just a
+            // subset of it.
+            selectAll.setOnClickListener(new View.OnClickListener() {
+                @Override public void onClick(View v) {
+                    if (loading) return;
+                    boolean isChecked = selectAll.isChecked();
+                    for (int i = 0; i < all.length; i++) {
+                        checked.put(i, isChecked);
+                    }
+                    if (isChecked) {
+                        // Select All re-shows the full list (search reset).
+                        search.setText("");
+                    }
+                    reapplyRowStates();
+                    updateSelectAllState();
+                }
+            });
+
+            clear.setOnClickListener(new View.OnClickListener() {
+                @Override public void onClick(View v) {
+                    if (loading) return;
+                    for (int i = 0; i < all.length; i++) {
+                        checked.put(i, false);
+                    }
+                    reapplyRowStates();
+                    updateSelectAllState();
+                }
+            });
+
+            // List item click toggles the checked state for that entry.
+            list.setOnItemClickListener(new AdapterView.OnItemClickListener() {
+                @Override public void onItemClick(AdapterView<?> parent, View view, int position, long id) {
+                    if (loading) return;
+                    int originalIndex = visibleToOriginal[position];
+                    boolean newChecked = !checked.get(originalIndex);
+                    checked.put(originalIndex, newChecked);
+                    list.setItemChecked(position, newChecked);
+                    updateSelectAllState();
+                }
+            });
+
+            rebuildVisible();
+            applyLoading();
+        }
+
+        /** Rebuilds the visible subset from the current search text and
+         *  re-applies the checked state and the select-all/clear row. */
+        void rebuildVisible() {
+            String query = search.getText().toString().toLowerCase();
+            visible.clear();
+            int idx = 0;
+            for (int i = 0; i < all.length; i++) {
+                if (query.isEmpty() || all[i].toLowerCase().contains(query)) {
+                    if (idx >= visibleToOriginal.length) {
+                        visibleToOriginal = new int[all.length];
+                    }
+                    visible.add(all[i]);
+                    visibleToOriginal[idx] = i;
+                    idx++;
+                }
+            }
+            adapter.notifyDataSetChanged();
+            reapplyRowStates();
+            updateSelectAllState();
+        }
+
+        /** Re-applies the checked state to the visible rows (the rows are the
+         *  searchable subset; the state itself lives over the full
+         *  vocabulary). */
+        void reapplyRowStates() {
+            for (int i = 0; i < visible.size(); i++) {
+                list.setItemChecked(i, checked.get(visibleToOriginal[i]));
+            }
+        }
+
+        /** Refreshes the select-all label and the clear button's visibility to
+         *  match the current checked state. */
+        void updateSelectAllState() {
+            boolean allChecked = all.length > 0;
+            boolean anyChecked = false;
+            for (int i = 0; i < all.length; i++) {
+                if (checked.get(i)) {
+                    anyChecked = true;
+                } else {
+                    allChecked = false;
+                }
+            }
+            selectAll.setChecked(allChecked && anyChecked);
+            selectAll.setText(allChecked && anyChecked
+                    ? R.string.filter_deselect_all : R.string.filter_select_all);
+            clear.setVisibility(anyChecked ? View.VISIBLE : View.GONE);
+        }
+
+        /** Rebuilds the vocabulary in place (the dynamic genre reference: a
+         *  finished or cancelled enrichment pass may have added genres). The
+         *  checked state is preserved BY NAME across the rebuild — a selected
+         *  genre stays selected even as the reference grows. */
+        void refresh(String[] newAll) {
+            final String[] old = this.all;
+            final SparseBooleanArray oldChecked = this.checked;
+            this.all = newAll;
+            SparseBooleanArray next = new SparseBooleanArray();
+            for (int j = 0; j < old.length; j++) {
+                if (!oldChecked.get(j)) continue;
+                for (int i = 0; i < newAll.length; i++) {
+                    if (newAll[i].equals(old[j])) {
+                        next.put(i, true);
+                        break;
+                    }
+                }
+            }
+            this.checked = next;
+            // The search no longer matches the rebuilt vocabulary: reset it
+            // and re-show the full list.
+            search.setText("");
+            rebuildVisible();
+        }
+
+        /** Locks or unlocks the whole tab (the genres tab while the stage-2
+         *  worker runs): the checkboxes are untouchable, the search /
+         *  select-all / clear are disabled, and the hint explains why. */
+        void setLoading(boolean isLoading) {
+            loading = isLoading;
+            applyLoading();
+        }
+
+        private void applyLoading() {
+            search.setEnabled(!loading);
+            selectAll.setEnabled(!loading);
+            clear.setEnabled(!loading);
+            list.setEnabled(!loading);
+            // The already-inflated rows' checkboxes too (a disabled list
+            // delivers no row touches regardless; newly inflated rows come up
+            // enabled and stay untouchable while the list itself is locked).
+            for (int i = 0; i < list.getChildCount(); i++) {
+                list.getChildAt(i).setEnabled(!loading);
+            }
+            loadingHint.setVisibility(loading ? View.VISIBLE : View.GONE);
         }
     }
 }

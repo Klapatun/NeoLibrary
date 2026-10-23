@@ -53,7 +53,13 @@
     <string name="filter_dialog_title">Filter</string>
     <string name="filter_ok">OK</string>
     <string name="filter_icon_description">Filter by format</string>
+    <string name="filter_tab_formats">Formats</string>
+    <string name="filter_tab_genres">Genres</string>
     <string name="filter_search_hint">Search formats...</string>
+    <string name="filter_search_hint_genres">Search genres...</string>
+    <!-- The Genres tab's lock indicator while the stage-2 worker runs (the
+         genre reference is still growing). -->
+    <string name="filter_genres_loading">Enriching metadata…</string>
     <string name="filter_select_all">Select all</string>
     <string name="filter_deselect_all">Deselect all</string>
     <string name="filter_clear">Clear</string>
