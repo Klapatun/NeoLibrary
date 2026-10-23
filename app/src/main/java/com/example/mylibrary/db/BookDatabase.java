@@ -26,7 +26,7 @@ public class BookDatabase extends SQLiteOpenHelper {
 
     private static final String TAG = "BookDatabase";
     private static final String DB_NAME = "library.db";
-    private static final int DB_VERSION = 5;
+    private static final int DB_VERSION = 6;
 
     /** How many books go into one batch commit (one SQLite transaction per group;
      *  see {@link #upsertBasicBatch} and {@link #updateMetadataBatch}): one commit
@@ -62,7 +62,8 @@ public class BookDatabase extends SQLiteOpenHelper {
             + "meta_done INTEGER NOT NULL DEFAULT 0, "
             + "user_edited INTEGER NOT NULL DEFAULT 0, "
             + "meta_failed INTEGER NOT NULL DEFAULT 0, "
-            + "last_read INTEGER"
+            + "last_read INTEGER, "
+            + "genre TEXT"
             + ")";
 
     public BookDatabase(Context context) {
@@ -104,6 +105,15 @@ public class BookDatabase extends SQLiteOpenHelper {
             // The v5 title index. createIndexes is idempotency-guarded, so it only
             // creates what is missing (the older indexes already exist).
             createIndexes(db);
+        }
+        if (oldVersion < 6) {
+            // The v6 genre column (the modal filter's genre selection): nullable —
+            // a book without a genre (or of a format that carries none) is NULL.
+            // Same idempotency guard as the meta_failed column of v4.
+            try {
+                db.execSQL("ALTER TABLE books ADD COLUMN genre TEXT");
+            } catch (Exception ignored) { // column already present (partial upgrade)
+            }
         }
     }
 
