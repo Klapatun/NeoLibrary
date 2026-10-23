@@ -327,7 +327,7 @@ public class BookDatabase extends SQLiteOpenHelper {
     private static void applyUpdate(SQLiteDatabase db, long id, MetaData md,
                                      boolean fileReadable) {
         String[] cols = {"title", "author", "publisher", "description", "series",
-                "user_edited"};
+                "genre", "user_edited"};
         Cursor cur = db.query("books", cols, "_id=?", new String[]{String.valueOf(id)},
                 null, null, null);
         if (!cur.moveToFirst()) {
@@ -343,6 +343,7 @@ public class BookDatabase extends SQLiteOpenHelper {
         String curPublisher = cur.getString(cur.getColumnIndexOrThrow("publisher"));
         String curDescription = cur.getString(cur.getColumnIndexOrThrow("description"));
         String curSeries = cur.getString(cur.getColumnIndexOrThrow("series"));
+        String curGenre = cur.getString(cur.getColumnIndexOrThrow("genre"));
         cur.close();
 
         ContentValues cv = new ContentValues();
@@ -355,6 +356,11 @@ public class BookDatabase extends SQLiteOpenHelper {
             if (!userEdited || isBlank(curPublisher)) cv.put("publisher", md.publisher);
             if (!userEdited || isBlank(curDescription)) cv.put("description", md.description);
             if (!userEdited || isBlank(curSeries)) cv.put("series", md.series);
+            // Same merge rule as the other fields: enrichment fills the genre only
+            // while it is blank (or overwrites it when the user never edited the
+            // row), so a user-edited value is never clobbered. Formats that carry
+            // no genre write NULL (the book simply has no genre).
+            if (!userEdited || isBlank(curGenre)) cv.put("genre", md.genre);
         }
         // cv always carries at least meta_done, so the update is unconditional.
         db.update("books", cv, "_id=?", new String[]{String.valueOf(id)});
@@ -608,6 +614,7 @@ public class BookDatabase extends SQLiteOpenHelper {
         b.publisher = c.getString(c.getColumnIndexOrThrow("publisher"));
         b.description = c.getString(c.getColumnIndexOrThrow("description"));
         b.series = c.getString(c.getColumnIndexOrThrow("series"));
+        b.genre = c.getString(c.getColumnIndexOrThrow("genre"));
         b.sizeBytes = c.getLong(c.getColumnIndexOrThrow("size_bytes"));
         b.exported = c.getInt(c.getColumnIndexOrThrow("exported")) == 1;
         b.metaDone = c.getInt(c.getColumnIndexOrThrow("meta_done")) == 1;

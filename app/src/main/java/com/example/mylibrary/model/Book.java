@@ -22,6 +22,7 @@ public class Book implements Parcelable {
     public String publisher;    // publisher
     public String description;  // description / notes
     public String series;       // optional series name
+    public String genre;        // genre from the in-file metadata (FB2/FB2ZIP only; NULL = none)
     public long sizeBytes;
     public boolean exported;    // true if the on-disk file metadata was edited
     public boolean metaDone;    // true once the background stage extracted in-file metadata
@@ -54,6 +55,7 @@ public class Book implements Parcelable {
         publisher = in.readString();
         description = in.readString();
         series = in.readString();
+        genre = in.readString();
         sizeBytes = in.readLong();
         exported = in.readByte() != 0;
         metaDone = in.readByte() != 0;
@@ -71,6 +73,7 @@ public class Book implements Parcelable {
         dest.writeString(publisher);
         dest.writeString(description);
         dest.writeString(series);
+        dest.writeString(genre);
         dest.writeLong(sizeBytes);
         dest.writeByte((byte) (exported ? 1 : 0));
         dest.writeByte((byte) (metaDone ? 1 : 0));
