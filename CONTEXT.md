@@ -38,15 +38,16 @@ Every book's metadata is stored in **two places**:
 
 | Class | Role |
 |---|---|
-| `MainActivity` | catalog: 3-stage load (fast scan → display → background enrich), browse, format filter — multi-select modal opened by the funnel header icon (`ic_filter`/`ic_filter_active`, empty selection = All), "Recently read" — checkable item in the kebab menu (popup composition: `develop` skill §7), SAF import; list is cursor-driven (framework `LoaderManager` + `CursorLoader`) |
+| `MainActivity` | catalog: 3-stage load (fast scan → display → background enrich), browse, the filter modal opened by the funnel header icon (`ic_filter`/`ic_filter_active`, empty selection = All) — framework **`TabHost`** (API 19, no ViewPager) with two `FilterTab` pages: **Formats** (static `Formats.ALL` vocabulary) and **Genres** (dynamic vocabulary — `db.distinctGenres()` on open; **locked while the stage-2 worker runs**: checkboxes untouchable, search/select-all/clear disabled, "Enriching metadata…" hint; unlocked with a fresh reference on `onFinished()`/`onCancelled()`); draft semantics (OK commits both tabs + resets `recentView`, Cancel discards, re-open lands on Genres if the draft has genres); "Recently read" — checkable item in the kebab menu (popup composition: `develop` skill §7), SAF import; list is cursor-driven (framework `LoaderManager` + `CursorLoader`) |
+| `FilterState` | the single "state → query" conversion point for the catalog: `selectedFormats` (canonical `Formats.ALL` values) + `selectedGenres` (dynamic reference, first-added order — genres have no canonical list) + `recentView` (wins over both in the query: `RECENT_URI`, no selection); `querySelection()`/`queryArgs()` → the provider grammar (`format IN (…)`, `genre IS NOT NULL AND genre IN (…)`, both AND-ed, formats first), `formatFilterArgs()`/`genreFilterArgs()` for the direct `BookDatabase.cursorAll(String[], String[])` path (initial cursor / rescan / remove rebinds bypass the provider); session-only: `save()`/`restore()` via the instance state (survives rotation, not the app closing), `copy()` = the dialog's draft, `isActive()` drives the funnel dot |
 | `DetailActivity` | open in Neo Reader / edit meta / remove; fast-path enrichment of a not-yet-enriched book on open |
 | `EditMetaActivity` | metadata form → writes file (EPUB/FB2) + always updates catalog (`userEdited = true`) |
-| `Book` | Parcelable model (`metaDone`, `metaFailed`, `userEdited` flags) |
-| `db/BookDatabase` | SQLite catalog; **`upsert`/`upsertBasic`/`updateMetadata` preserve `last_read`**; `needMeta()` = stage-2 queue (un-enriched/`meta_failed` books ordered last); `markMetaFailed()`; static write lock |
-| `db/BookProvider` | read-only `ContentProvider` — the `ContentObserver` channel for the `CursorLoader` (all / recent / `format=?` / `format IN (?,…)`) |
+| `Book` | Parcelable model (`genre` field — from FB2 enrichment, plus `metaDone`, `metaFailed`, `userEdited` flags) |
+| `db/BookDatabase` | SQLite catalog (**DB v6**; the `genre TEXT` column added by the v5→v6 migration — idempotent `ALTER TABLE` guard like `meta_failed` v3; nullable = no genre); **`upsert`/`upsertBasic`/`updateMetadata` preserve `last_read`** (`updateMetadata` writes `genre` with the same merge rule as `series`: enrichment fills only the blank, never clobbers `user_edited`); `cursorAll(formatFilter, genreFilter)` — each dimension null/empty = unrestricted, genres as `genre IS NOT NULL AND genre IN (…)`; `distinctGenres()` = the dynamic genre reference (`SELECT DISTINCT genre … WHERE genre IS NOT NULL ORDER BY genre`); `needMeta()` = stage-2 queue (un-enriched/`meta_failed` books ordered last); `markMetaFailed()`; static write lock |
+| `db/BookProvider` | read-only `ContentProvider` — the `ContentObserver` channel for the `CursorLoader` (all / recent / `format IN (?,…)` / `genre IS NOT NULL AND genre IN (?,…)` / both combined — the combined selection args are split on the format-count boundary: `FilterState.queryArgs()` = formats in `Formats.ALL` order, then genres in first-added order) |
 | `scan/Formats` | canonical formats + ext→id map (handles `.fb2.zip`) |
 | `scan/LibraryScanner` | stage-1 fast scan (skeleton books, no in-file meta) + `scanSingle()` |
-| `meta/MetaEnricher` | stage-2 background worker: per-book `MetaExtractor` + `CoverExtractor` → DB + `CoverCache`, `notifyChange` per batch; `enrichOne` for import/fast path; **per-file parse budget of 2 min** — a parse that overruns it is abandoned and the book is marked un-enriched (`meta_failed=1`, stays `meta_done=0`, retried last on every rescan); the pass **works the queue cheapest-format-first** (EPUB/FB2 → FB2ZIP → MOBI → the rest, `Formats.enrichmentPriority`; un-enriched books still last of all) |
+| `meta/MetaEnricher` | stage-2 background worker: per-book `MetaExtractor` + `CoverExtractor` → DB + `CoverCache`, `notifyChange` per batch; `enrichOne` for import/fast path; **per-file parse budget of 2 min** — a parse that overruns it is abandoned and the book is marked un-enriched (`meta_failed=1`, stays `meta_done=0`, retried last on every rescan); the pass **works the queue cheapest-format-first** (EPUB/FB2 → FB2ZIP → MOBI → the rest, `Formats.enrichmentPriority`; un-enriched books still last of all); the `OnProgress` contract: `onFinished()` fires on a finished pass and is **never** sent after `cancel()` — a cancel fires `onCancelled()` instead (the listener is held weakly, a fresh `start()` reassigns it, so a `start()`-internal cancel can't clear the new pass's state) |
 | `meta/MetaExtractor` | read meta: EPUB/FB2/FB2ZIP (inner `.fb2` entry)/MOBI/TXT/HTML |
 | `meta/MobiParser` | shared MOBI/AZW binary reader (package-private): PalmDB record table + MOBI header + EXTH |
 | `meta/MetaWriter` | write meta EPUB/FB2, non-destructive (`.tmp`→swap→`.bak`) |
@@ -106,7 +107,13 @@ pagination is on, a horizontal swipe also turns pages.
   `namespace com.example.mylibrary` in `app/build.gradle`.
 - Never leave a book file half-written (always `.tmp`→swap→`.bak`).
 - `BookDatabase.upsert` must preserve `last_read`.
-- `Formats.ALL` is the single source of truth for scanning/filter/badge.
+- `Formats.ALL` is the single source of truth for scanning/filter/badge. The genre
+  reference has NO canonical list — it is formed dynamically from the enriched books
+  (`db.distinctGenres()`), never hardcoded.
+- Catalog filters are **session-only** (`FilterState` in the instance state): they
+  survive a rotation, not the app closing; `recentView` wins over the format AND genre
+  filters in the query (`RECENT_URI`, no selection) while the selection itself stays
+  configured (the funnel dot).
 - A single slow/hung file must never block the enrichment queue: the per-file parse
   budget is 2 minutes; overruns are abandoned, the book is marked un-enriched and
   retried last on every rescan.
