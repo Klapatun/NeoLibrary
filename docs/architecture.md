@@ -408,7 +408,7 @@ URI (`ContentObserver`, см.
 └───────────────────────────────────┬───────────────────────────────────────┘
                                     │ persists via
 ┌────────────────────────────────── STORAGE ─────────────────────────────────┐
-│  db/BookDatabase       SQLite library.db (v5): схема, batch-upsert,       │
+│  db/BookDatabase       SQLite library.db (v7): works/files/work_genres,   │
 │                        флаги, needMeta(), clear()                         │
 │  db/BookProvider       read-only ContentProvider (канал notifyChange)     │
 └────────────────────────────────────────────────────────────────────────────┘
@@ -848,8 +848,11 @@ read не должен попасть в середину батч-записи 
 
 ### 7.2 Модель `Book`
 
-`model/Book` — «плоский» `Parcelable`-класс с тем же набором полей + флаги
-`metaDone` / `metaFailed` / `userEdited`. Методы-«помощники»: `initial()`
+`model/Book` — «плоский» `Parcelable`. Поля курсора — произведение и одно
+издание (`id` = `works._id`). `genres` — список имён в порядке `position`,
+пустой список = жанра нет; курсор списка его не несёт, карточка и форма
+берут его из `getById`. Флаги `metaDone` / `metaFailed` / `userEdited`.
+Методы-«помощники»: `initial()`
 (первая буква для «буквенного» бейджа), `displayFormat()`. Пересылка между
 Activity — через `Intent.putExtra` / `getParcelableExtra` (см. [2.7](#27-передача-объектов-между-экранами-parcelable)).
 
@@ -857,8 +860,11 @@ Activity — через `Intent.putExtra` / `getParcelableExtra` (см. [2.7](#2
 
 `meta/MetaData` — POJO-контейнер «то, что прочитано из файла / что надо
 записать в файл»: `title`, `author`, `publisher`, `description`, `series`,
-`language`, `genre`, `documentId`, `firstName/middleName/lastName` (для FB2) и
-флаг `found` («удалось ли прочитать что-то осмысленное»).
+`language`, `genres`, `documentId`, `firstName/middleName/lastName` (для FB2) и
+флаг `found` («удалось ли прочитать что-то осмысленное»). `genres` — список:
+`null` значит, что вызывающий список не передавал (запись в файл жанры не
+меняет), пустой список — жанров нет. В каталог имена попадают уже в нижнем
+регистре (`Locale.ROOT`).
 
 ---
 
@@ -1156,7 +1162,7 @@ app/src/main/java/com/example/mylibrary/
 │   └── Book.java            # Parcelable-модель книги (metaDone/metaFailed/
 │                            #   userEdited)
 ├── db/
-│   ├── BookDatabase.java    # SQLite v5: схема, batch-upsert, флаги,
+│   ├── BookDatabase.java    # SQLite v7: works/files/work_genres, флаги,
 │   │                        #   needMeta(), clear(), статический WRITE_LOCK
 │   └── BookProvider.java    # read-only ContentProvider (канал notifyChange)
 ├── scan/
@@ -1447,7 +1453,7 @@ CI **сам по себе** merge не блокирует — блокирует
 1. **`model/Book.java`** — модель, маленькая, без магии.
 2. **`scan/Formats.java`** — «что такое формат в этом проекте» + tier стоимости
    обогащения (`enrichmentPriority`).
-3. **`db/BookDatabase.java`** — схема (v5), `upsert`, флаги. Поймите **почему**
+3. **`db/BookDatabase.java`** — схема (v7: `works` / `files` / `work_genres`), `upsert`, флаги. Поймите **почему**
    `last_read` / `meta_done` / `meta_failed` / `user_edited` не трогают
    `upsert`, и как устроены batch-коммиты.
 4. **`MainActivity.java`** — главный экран; 3 ступени; `CursorLoader`;
@@ -1470,6 +1476,6 @@ CI **сам по себе** merge не блокирует — блокирует
 ---
 
 *Документ составлен по состоянию на текущую кодовую базу (AGP 8.5.2, Gradle 8.7,
-compileSdk 34, minSdk 19, JDK 17+; схема каталога `library.db` v5;
+compileSdk 34, minSdk 19, JDK 17+; схема каталога `library.db` v7 (`works` / `files` / `work_genres`);
 single-pass обогащение с 2-минутным бюджетом на файл; пагинация и свайп
 страницы).*
