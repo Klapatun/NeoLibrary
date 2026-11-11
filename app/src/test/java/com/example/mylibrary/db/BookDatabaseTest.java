@@ -188,6 +188,28 @@ public class BookDatabaseTest {
         }
     }
 
+    /** {@code upsert} round-trips {@code genre} and writes NULL when the model
+     *  carries none. {@code last_read} stays put across that second upsert. */
+    @Test
+    public void upsertPersistsGenreAndClearsItWithNull() {
+        Book b = book("/storage/emulated/0/genre.fb2", "FB2", "Title", "Author");
+        b.genre = "prose";
+        long id = db.upsert(b);
+
+        assertEquals("prose", db.getById(id).genre);
+
+        db.markRead(id);
+        long lastRead = lastReadOf(id);
+
+        Book cleared = book("/storage/emulated/0/genre.fb2", "FB2", "Title", "Author");
+        cleared.genre = null;
+        assertEquals(id, db.upsert(cleared));
+
+        assertEquals("exactly one row", 1, db.all(null).size());
+        assertNull("a null genre on the model clears the column", db.getById(id).genre);
+        assertEquals("last_read must survive the genre upsert", lastRead, lastReadOf(id));
+    }
+
     // ------------------------------------------------------------------
     // Missing-file cleanup
     // ------------------------------------------------------------------

@@ -174,6 +174,7 @@ public class BookDatabase extends SQLiteOpenHelper {
             cv.put("publisher", b.publisher);
             cv.put("description", b.description);
             cv.put("series", b.series);
+            cv.put("genre", b.genre);
             cv.put("size_bytes", b.sizeBytes);
             cv.put("exported", b.exported ? 1 : 0);
 

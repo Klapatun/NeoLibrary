@@ -22,7 +22,7 @@ public class Book implements Parcelable {
     public String publisher;    // publisher
     public String description;  // description / notes
     public String series;       // optional series name
-    public String genre;        // genre from the in-file metadata (FB2/FB2ZIP only; NULL = none)
+    public String genre;        // one genre: first FB2 <genre>, or a user edit (NULL = none)
     public long sizeBytes;
     public boolean exported;    // true if the on-disk file metadata was edited
     public boolean metaDone;    // true once the background stage extracted in-file metadata
