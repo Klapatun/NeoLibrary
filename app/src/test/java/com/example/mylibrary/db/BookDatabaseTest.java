@@ -60,7 +60,67 @@ public class BookDatabaseTest {
         b.series = "A Series";
         b.sizeBytes = 12345;
         b.exported = true;
+        b.genres = new ArrayList<String>();
         return b;
+    }
+
+    private static ArrayList<String> genres(String... names) {
+        ArrayList<String> g = new ArrayList<String>();
+        for (int i = 0; i < names.length; i++) g.add(names[i]);
+        return g;
+    }
+
+    private static void assertGenresEquals(String[] expected, ArrayList<String> actual) {
+        assertNotNull("genres must not be null after read", actual);
+        assertEquals(expected.length, actual.size());
+        for (int i = 0; i < expected.length; i++) {
+            assertEquals(expected[i], actual.get(i));
+        }
+    }
+
+    private static boolean tableExists(SQLiteDatabase raw, String name) {
+        Cursor c = raw.rawQuery(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name=?",
+                new String[]{name});
+        try {
+            return c.moveToFirst();
+        } finally {
+            c.close();
+        }
+    }
+
+    private static boolean columnExists(SQLiteDatabase raw, String table, String column) {
+        Cursor c = raw.rawQuery("PRAGMA table_info(" + table + ")", null);
+        try {
+            while (c.moveToNext()) {
+                if (column.equals(c.getString(1))) return true;
+            }
+            return false;
+        } finally {
+            c.close();
+        }
+    }
+
+    private static int rowCount(SQLiteDatabase raw, String table) {
+        Cursor c = raw.rawQuery("SELECT COUNT(*) FROM " + table, null);
+        try {
+            c.moveToFirst();
+            return c.getInt(0);
+        } finally {
+            c.close();
+        }
+    }
+
+    private static int workGenreRowCount(SQLiteDatabase raw, long workId) {
+        Cursor c = raw.rawQuery(
+                "SELECT COUNT(*) FROM work_genres WHERE work_id=?",
+                new String[]{String.valueOf(workId)});
+        try {
+            c.moveToFirst();
+            return c.getInt(0);
+        } finally {
+            c.close();
+        }
     }
 
     // ------------------------------------------------------------------
@@ -177,7 +237,7 @@ public class BookDatabaseTest {
         assertEquals(id, db.upsert(r2));
 
         SQLiteDatabase raw = db.getReadableDatabase();
-        Cursor c = raw.rawQuery("SELECT last_read FROM books WHERE _id=?",
+        Cursor c = raw.rawQuery("SELECT last_read FROM works WHERE _id=?",
                 new String[]{String.valueOf(id)});
         try {
             assertTrue("row must exist", c.moveToFirst());
@@ -188,25 +248,27 @@ public class BookDatabaseTest {
         }
     }
 
-    /** {@code upsert} round-trips {@code genre} and writes NULL when the model
-     *  carries none. {@code last_read} stays put across that second upsert. */
+    /** {@code upsert} round-trips the genre list; an empty list clears it.
+     *  {@code last_read} stays put across that second upsert. */
     @Test
     public void upsertPersistsGenreAndClearsItWithNull() {
         Book b = book("/storage/emulated/0/genre.fb2", "FB2", "Title", "Author");
-        b.genre = "prose";
+        b.genres = genres("prose");
         long id = db.upsert(b);
 
-        assertEquals("prose", db.getById(id).genre);
+        assertGenresEquals(new String[]{"prose"}, db.getById(id).genres);
 
         db.markRead(id);
         long lastRead = lastReadOf(id);
 
         Book cleared = book("/storage/emulated/0/genre.fb2", "FB2", "Title", "Author");
-        cleared.genre = null;
+        cleared.genres = new ArrayList<String>();
         assertEquals(id, db.upsert(cleared));
 
         assertEquals("exactly one row", 1, db.all(null).size());
-        assertNull("a null genre on the model clears the column", db.getById(id).genre);
+        assertTrue("an empty list clears genres",
+                db.getById(id).genres.isEmpty());
+        assertNotNull(db.getById(id).genres);
         assertEquals("last_read must survive the genre upsert", lastRead, lastReadOf(id));
     }
 
@@ -455,7 +517,7 @@ public class BookDatabaseTest {
 
     private void setLastRead(long id, long ts) {
         SQLiteDatabase raw = db.getWritableDatabase();
-        raw.execSQL("UPDATE books SET last_read = " + ts + " WHERE _id = " + id);
+        raw.execSQL("UPDATE works SET last_read = " + ts + " WHERE _id = " + id);
     }
 
     @Test
@@ -468,7 +530,7 @@ public class BookDatabaseTest {
 
     private void assertNullLastRead(long id) {
         SQLiteDatabase raw = db.getReadableDatabase();
-        Cursor c = raw.rawQuery("SELECT last_read FROM books WHERE _id=?",
+        Cursor c = raw.rawQuery("SELECT last_read FROM works WHERE _id=?",
                 new String[]{String.valueOf(id)});
         try {
             assertTrue(c.moveToFirst());
@@ -480,7 +542,7 @@ public class BookDatabaseTest {
 
     private void assertNonNullLastRead(long id) {
         SQLiteDatabase raw = db.getReadableDatabase();
-        Cursor c = raw.rawQuery("SELECT last_read FROM books WHERE _id=?",
+        Cursor c = raw.rawQuery("SELECT last_read FROM works WHERE _id=?",
                 new String[]{String.valueOf(id)});
         try {
             assertTrue(c.moveToFirst());
@@ -494,7 +556,7 @@ public class BookDatabaseTest {
      *  that a whole flow (reimport, rescan) did not touch the timestamp. */
     private long lastReadOf(long id) {
         SQLiteDatabase raw = db.getReadableDatabase();
-        Cursor c = raw.rawQuery("SELECT last_read FROM books WHERE _id=?",
+        Cursor c = raw.rawQuery("SELECT last_read FROM works WHERE _id=?",
                 new String[]{String.valueOf(id)});
         try {
             assertTrue(c.moveToFirst());
@@ -572,17 +634,19 @@ public class BookDatabaseTest {
     @Test
     public void allFieldsRoundTripThroughCursor() {
         Book b = book("/storage/emulated/0/cyr.epub", "EPUB", "Мастер и Маргарита", "М. А. Булгаков");
+        b.genres = genres("sf");
         long id = db.upsert(b);
         // The stage flags are row-owned state (upsert no longer writes them from the
         // model) — set them through their own channels, then verify the full row
-        // round-trips through the cursor.
+        // round-trips through the cursor (genres are not in the list cursor).
         db.markUserEdited(id);
         SQLiteDatabase raw = db.getWritableDatabase();
-        raw.execSQL("UPDATE books SET meta_done = 1 WHERE _id = " + id);
+        raw.execSQL("UPDATE files SET meta_done = 1 WHERE work_id = " + id);
 
-        raw.execSQL("UPDATE books SET meta_failed = 1 WHERE _id = " + id);
+        raw.execSQL("UPDATE files SET meta_failed = 1 WHERE work_id = " + id);
 
         Book got = db.getById(id);
+        assertGenresEquals(new String[]{"sf"}, got.genres);
         assertEquals(b.path, got.path);
         assertEquals(b.format, got.format);
         assertEquals("Мастер и Маргарита", got.title);
@@ -643,16 +707,22 @@ public class BookDatabaseTest {
             rawDb.close();
         }
 
-        // First open at the new version: onUpgrade(db, 0 -> 2) must ALTER, not DROP.
+        // First open at the new version: upgrades in place through v7 without DROP.
         BookDatabase upgraded = new BookDatabase(context);
         SQLiteDatabase raw = upgraded.getReadableDatabase();
-        Cursor c = raw.rawQuery("SELECT title, last_read, meta_done, user_edited FROM books", null);
+        assertFalse("books table must be gone after v7", tableExists(raw, "books"));
+        Cursor c = raw.rawQuery(
+                "SELECT w._id, w.title, w.last_read, w.user_edited, f.meta_done, f.path, f.format"
+                        + " FROM works w INNER JOIN files f ON f.work_id = w._id",
+                null);
         try {
             assertTrue("row must survive the upgrade", c.moveToFirst());
-            assertEquals("Old Title", c.getString(0));
-            assertEquals(99999L, c.getLong(1));
-            assertEquals(0, c.getInt(2)); // meta_done defaults to 0
+            assertEquals("Old Title", c.getString(1));
+            assertEquals(99999L, c.getLong(2));
             assertEquals(0, c.getInt(3)); // user_edited defaults to 0
+            assertEquals(0, c.getInt(4)); // meta_done defaults to 0
+            assertEquals("/x/old.pdf", c.getString(5));
+            assertEquals("PDF", c.getString(6));
         } finally {
             c.close();
         }
@@ -702,33 +772,51 @@ public class BookDatabaseTest {
 
         BookDatabase upgraded = new BookDatabase(context);
         SQLiteDatabase raw = upgraded.getReadableDatabase();
-        Cursor c = raw.rawQuery("SELECT title, last_read FROM books", null);
+        assertFalse(tableExists(raw, "books"));
+        Cursor c = raw.rawQuery(
+                "SELECT w.title, w.last_read, f.path FROM works w"
+                        + " INNER JOIN files f ON f.work_id = w._id",
+                null);
         try {
             assertTrue("row must survive the upgrade", c.moveToFirst());
             assertEquals("V2 Title", c.getString(0));
             assertEquals(42424L, c.getLong(1));
+            assertEquals("/x/v2.pdf", c.getString(2));
         } finally {
             c.close();
         }
-        List<String> indexes = indexNames(raw);
-        assertTrue("meta_done index must be created on upgrade",
-                indexes.contains("idx_books_meta_done"));
-        assertTrue("last_read index must be created on upgrade",
-                indexes.contains("idx_books_last_read"));
+        List<String> fileIndexes = indexNames(raw, "files");
+        List<String> workIndexes = indexNames(raw, "works");
+        assertTrue(fileIndexes.contains("idx_files_meta_done"));
+        assertTrue(workIndexes.contains("idx_works_last_read"));
     }
 
-    /** A brand-new database (onCreate path) must have both hot-path indexes. */
+    /** v7 onCreate: new tables, no books, expected indexes. */
     @Test
-    public void freshDatabaseHasIndexesOnMetaDoneAndLastRead() {
-        List<String> indexes = indexNames(db.getReadableDatabase());
-        assertTrue(indexes.contains("idx_books_meta_done"));
-        assertTrue(indexes.contains("idx_books_last_read"));
+    public void freshDatabaseHasWorksAndFilesAndNoBooksTable() {
+        SQLiteDatabase raw = db.getReadableDatabase();
+        assertFalse(tableExists(raw, "books"));
+        assertTrue(tableExists(raw, "works"));
+        assertTrue(tableExists(raw, "files"));
+        assertTrue(tableExists(raw, "work_genres"));
+        assertFalse(columnExists(raw, "works", "genre"));
+
+        List<String> files = indexNames(raw, "files");
+        List<String> works = indexNames(raw, "works");
+        List<String> wg = indexNames(raw, "work_genres");
+        assertTrue(files.contains("idx_files_meta_done"));
+        assertTrue(files.contains("idx_files_work_format"));
+        assertTrue(works.contains("idx_works_last_read"));
+        assertTrue(works.contains("idx_works_title_nocase"));
+        assertTrue(wg.contains("idx_work_genres_work_pos"));
+        assertTrue(wg.contains("idx_work_genres_work_name"));
+        assertTrue(wg.contains("idx_work_genres_name"));
     }
 
-    /** The index names of the books table (PRAGMA index_list, name = column 1). */
-    private static List<String> indexNames(SQLiteDatabase db) {
+    /** The index names of a table (PRAGMA index_list, name = column 1). */
+    private static List<String> indexNames(SQLiteDatabase db, String table) {
         List<String> names = new ArrayList<String>();
-        Cursor c = db.rawQuery("PRAGMA index_list(books)", null);
+        Cursor c = db.rawQuery("PRAGMA index_list(" + table + ")", null);
         try {
             while (c.moveToNext()) names.add(c.getString(1));
         } finally {
@@ -782,7 +870,11 @@ public class BookDatabaseTest {
 
         BookDatabase upgraded = new BookDatabase(context);
         SQLiteDatabase raw = upgraded.getReadableDatabase();
-        Cursor c = raw.rawQuery("SELECT title, last_read, meta_failed FROM books", null);
+        assertFalse(tableExists(raw, "books"));
+        Cursor c = raw.rawQuery(
+                "SELECT w.title, w.last_read, f.meta_failed FROM works w"
+                        + " INNER JOIN files f ON f.work_id = w._id",
+                null);
         try {
             assertTrue("row must survive the upgrade", c.moveToFirst());
             assertEquals("V3 Title", c.getString(0));
@@ -836,7 +928,9 @@ public class BookDatabaseTest {
         db.upsertBasic(b);
 
         SQLiteDatabase raw = db.getReadableDatabase();
-        Cursor c = raw.rawQuery("SELECT title, size_bytes, last_read FROM books WHERE _id=?",
+        Cursor c = raw.rawQuery(
+                "SELECT w.title, f.size_bytes, w.last_read FROM works w"
+                        + " INNER JOIN files f ON f.work_id = w._id WHERE w._id=?",
                 new String[]{String.valueOf(id)});
         try {
             assertTrue(c.moveToFirst());
@@ -860,7 +954,9 @@ public class BookDatabaseTest {
         db.updateMetadata(id, md, true);
 
         SQLiteDatabase raw = db.getReadableDatabase();
-        Cursor c = raw.rawQuery("SELECT title, author, last_read, meta_done FROM books WHERE _id=?",
+        Cursor c = raw.rawQuery(
+                "SELECT w.title, w.author, w.last_read, f.meta_done FROM works w"
+                        + " INNER JOIN files f ON f.work_id = w._id WHERE w._id=?",
                 new String[]{String.valueOf(id)});
         try {
             assertTrue(c.moveToFirst());
@@ -1101,7 +1197,11 @@ public class BookDatabaseTest {
 
         BookDatabase upgraded = new BookDatabase(context);
         SQLiteDatabase raw = upgraded.getReadableDatabase();
-        Cursor c = raw.rawQuery("SELECT title, last_read FROM books", null);
+        assertFalse(tableExists(raw, "books"));
+        Cursor c = raw.rawQuery(
+                "SELECT w.title, w.last_read FROM works w"
+                        + " INNER JOIN files f ON f.work_id = w._id",
+                null);
         try {
             assertTrue("row must survive the upgrade", c.moveToFirst());
             assertEquals("V4 Title", c.getString(0));
@@ -1109,19 +1209,16 @@ public class BookDatabaseTest {
         } finally {
             c.close();
         }
-        List<String> indexes = indexNames(raw);
-        assertTrue("the nocase title index must be created on upgrade",
-                indexes.contains("idx_books_title_nocase"));
-        assertTrue("the old indexes must still be there",
-                indexes.contains("idx_books_meta_done"));
-        assertTrue(indexes.contains("idx_books_last_read"));
+        assertTrue(indexNames(raw, "works").contains("idx_works_title_nocase"));
+        assertTrue(indexNames(raw, "files").contains("idx_files_meta_done"));
+        assertTrue(indexNames(raw, "works").contains("idx_works_last_read"));
     }
 
     /** A brand-new database (onCreate path) must have the title index too. */
     @Test
     public void freshDatabaseHasTheTitleNocaseIndex() {
-        List<String> indexes = indexNames(db.getReadableDatabase());
-        assertTrue(indexes.contains("idx_books_title_nocase"));
+        assertTrue(indexNames(db.getReadableDatabase(), "works")
+                .contains("idx_works_title_nocase"));
     }
 
     // ------------------------------------------------------------------
@@ -1186,5 +1283,414 @@ public class BookDatabaseTest {
             assertEquals("Author " + i, got.author);
             assertTrue("the book must be marked enriched", got.metaDone);
         }
+    }
+
+    // ------------------------------------------------------------------
+    // schema v7 / work_genres (plan step 1)
+    // ------------------------------------------------------------------
+
+    /** v6 table shape (includes {@code genre}) for migration tests. */
+    private static final String V6_CREATE =
+            "CREATE TABLE books ("
+            + "_id INTEGER PRIMARY KEY AUTOINCREMENT, "
+            + "path TEXT UNIQUE NOT NULL, "
+            + "format TEXT, "
+            + "title TEXT, "
+            + "author TEXT, "
+            + "publisher TEXT, "
+            + "description TEXT, "
+            + "series TEXT, "
+            + "size_bytes INTEGER, "
+            + "exported INTEGER DEFAULT 0, "
+            + "meta_done INTEGER NOT NULL DEFAULT 0, "
+            + "user_edited INTEGER NOT NULL DEFAULT 0, "
+            + "meta_failed INTEGER NOT NULL DEFAULT 0, "
+            + "last_read INTEGER, "
+            + "genre TEXT"
+            + ")";
+
+    @Test
+    public void upgradeFromV6SplitsRowKeepingWorkId() {
+        db.close();
+        java.io.File f = context.getDatabasePath("library.db");
+        if (f.getParentFile() != null) f.getParentFile().mkdirs();
+        SQLiteDatabase rawDb = SQLiteDatabase.openOrCreateDatabase(f.getAbsolutePath(), null);
+        try {
+            rawDb.execSQL(V6_CREATE);
+            rawDb.execSQL("INSERT INTO books (_id, path, format, title, last_read, user_edited,"
+                    + " meta_done, meta_failed, genre, size_bytes) VALUES "
+                    + "(7, '/x/v6.epub', 'EPUB', 'V6 Title', 12345, 1, 1, 0, 'prose', 100)");
+            rawDb.execSQL("INSERT INTO books (path, format, title, genre) VALUES "
+                    + "('/x/blank-genre.epub', 'EPUB', 'Blank', NULL)");
+            rawDb.execSQL("INSERT INTO books (path, format, title, genre) VALUES "
+                    + "('/x/spaces-genre.epub', 'EPUB', 'Spaces', '   ')");
+            rawDb.execSQL("INSERT INTO books (path, format, title, genre) VALUES "
+                    + "('/x/cyr-genre.epub', 'EPUB', 'Cyr', '  Фэнтези  ')");
+            rawDb.execSQL("PRAGMA user_version = 6");
+        } finally {
+            rawDb.close();
+        }
+
+        BookDatabase upgraded = new BookDatabase(context);
+        SQLiteDatabase raw = upgraded.getReadableDatabase();
+        assertFalse(tableExists(raw, "books"));
+
+        Cursor w = raw.rawQuery(
+                "SELECT title, last_read, user_edited, remote_id, revision, deleted"
+                        + " FROM works WHERE _id=7",
+                null);
+        try {
+            assertTrue(w.moveToFirst());
+            assertEquals("V6 Title", w.getString(0));
+            assertEquals(12345L, w.getLong(1));
+            assertEquals(1, w.getInt(2));
+            assertTrue(w.isNull(3));
+            assertEquals(0, w.getInt(4));
+            assertEquals(0, w.getInt(5));
+        } finally {
+            w.close();
+        }
+
+        Cursor file = raw.rawQuery(
+                "SELECT path, format, size_bytes, meta_done, availability, remote_key,"
+                        + " content_hash FROM files WHERE work_id=7",
+                null);
+        try {
+            assertTrue(file.moveToFirst());
+            assertEquals("/x/v6.epub", file.getString(0));
+            assertEquals("EPUB", file.getString(1));
+            assertEquals(100L, file.getLong(2));
+            assertEquals(1, file.getInt(3));
+            assertEquals("local", file.getString(4));
+            assertTrue(file.isNull(5));
+            assertTrue(file.isNull(6));
+        } finally {
+            file.close();
+        }
+
+        assertEquals(1, workGenreRowCount(raw, 7));
+        Cursor g = raw.rawQuery(
+                "SELECT position, name FROM work_genres WHERE work_id=7", null);
+        try {
+            assertTrue(g.moveToFirst());
+            assertEquals(0, g.getInt(0));
+            assertEquals("prose", g.getString(1));
+        } finally {
+            g.close();
+        }
+
+        Book got = upgraded.getById(7);
+        assertNotNull(got);
+        assertEquals("V6 Title", got.title);
+        assertEquals("/x/v6.epub", got.path);
+        assertGenresEquals(new String[]{"prose"}, got.genres);
+
+        long blankId = upgraded.getIdForPath("/x/blank-genre.epub");
+        assertEquals(0, workGenreRowCount(raw, blankId));
+        long spacesId = upgraded.getIdForPath("/x/spaces-genre.epub");
+        assertEquals(0, workGenreRowCount(raw, spacesId));
+        long cyrId = upgraded.getIdForPath("/x/cyr-genre.epub");
+        assertEquals(1, workGenreRowCount(raw, cyrId));
+        assertGenresEquals(new String[]{"фэнтези"}, upgraded.getById(cyrId).genres);
+    }
+
+    @Test
+    public void upsertBasicOnNewPathCreatesOneWorkAndOneLocalFile() {
+        Book b = book("/x/new-path.epub", "EPUB", "N", "A");
+        long id = db.upsertBasic(b);
+        SQLiteDatabase raw = db.getReadableDatabase();
+        assertEquals(1, rowCount(raw, "works"));
+        assertEquals(1, rowCount(raw, "files"));
+        assertEquals(0, rowCount(raw, "work_genres"));
+        Cursor c = raw.rawQuery("SELECT availability FROM files WHERE work_id=?",
+                new String[]{String.valueOf(id)});
+        try {
+            assertTrue(c.moveToFirst());
+            assertEquals("local", c.getString(0));
+        } finally {
+            c.close();
+        }
+        assertEquals(id, b.id);
+        Cursor w = raw.rawQuery("SELECT _id FROM works WHERE _id=?",
+                new String[]{String.valueOf(id)});
+        try {
+            assertTrue(w.moveToFirst());
+            assertEquals(id, w.getLong(0));
+        } finally {
+            w.close();
+        }
+    }
+
+    @Test
+    public void secondPathCreatesASecondWork() {
+        db.upsertBasic(book("/x/one.pdf", "PDF", "One", null));
+        db.upsertBasic(book("/x/two.pdf", "PDF", "Two", null));
+        SQLiteDatabase raw = db.getReadableDatabase();
+        assertEquals(2, rowCount(raw, "works"));
+        assertEquals(2, rowCount(raw, "files"));
+    }
+
+    @Test
+    public void schemaAllowsASecondFileOnTheSameWork() {
+        long workId = db.upsertBasic(book("/x/dual.epub", "EPUB", "Dual", null));
+        SQLiteDatabase raw = db.getWritableDatabase();
+        raw.execSQL("INSERT INTO files (work_id, format, path, availability) VALUES ("
+                + workId + ", 'PDF', '/x/dual.pdf', 'local')");
+
+        Cursor c = db.cursorAll(null, null);
+        try {
+            assertEquals(2, c.getCount());
+            c.moveToFirst();
+            long id0 = c.getLong(c.getColumnIndexOrThrow("_id"));
+            String fmt0 = c.getString(c.getColumnIndexOrThrow("format"));
+            c.moveToNext();
+            long id1 = c.getLong(c.getColumnIndexOrThrow("_id"));
+            String fmt1 = c.getString(c.getColumnIndexOrThrow("format"));
+            assertEquals(workId, id0);
+            assertEquals(workId, id1);
+            Set<String> formats = new HashSet<String>();
+            formats.add(fmt0);
+            formats.add(fmt1);
+            assertTrue(formats.contains("EPUB"));
+            assertTrue(formats.contains("PDF"));
+        } finally {
+            c.close();
+        }
+    }
+
+    @Test
+    public void duplicatePathIsRejected() {
+        long workId = db.upsertBasic(book("/x/dup.epub", "EPUB", "One", null));
+        long otherWork = db.upsertBasic(book("/x/other.epub", "EPUB", "Two", null));
+        SQLiteDatabase raw = db.getWritableDatabase();
+        boolean failed = false;
+        try {
+            raw.execSQL("INSERT INTO files (work_id, format, path, availability) VALUES "
+                    + "(" + otherWork + ", 'PDF', '/x/dup.epub', 'local')");
+        } catch (android.database.SQLException e) {
+            failed = true;
+        }
+        assertTrue("duplicate path must violate UNIQUE", failed);
+        assertEquals(workId, db.getIdForPath("/x/dup.epub"));
+    }
+
+    @Test
+    public void deletedWorkIsHiddenFromCatalogReads() {
+        Book b = book("/x/hidden.epub", "EPUB", "Hidden", null);
+        b.genres = genres("prose");
+        long id = db.upsert(b);
+        db.getWritableDatabase().execSQL("UPDATE works SET deleted=1 WHERE _id=" + id);
+
+        assertEquals(0, count(db.cursorAll(null, null)));
+        assertEquals(0, db.recent(10).size());
+        assertNull(db.getById(id));
+        assertTrue(db.needMeta().isEmpty());
+        assertTrue(db.distinctGenres().isEmpty());
+    }
+
+    @Test
+    public void newColumnsStayAtDefaults() {
+        long id = db.upsertBasic(book("/x/defaults.epub", "EPUB", "D", null));
+        SQLiteDatabase raw = db.getReadableDatabase();
+        Cursor w = raw.rawQuery(
+                "SELECT remote_id, revision, deleted FROM works WHERE _id=?",
+                new String[]{String.valueOf(id)});
+        try {
+            assertTrue(w.moveToFirst());
+            assertTrue(w.isNull(0));
+            assertEquals(0, w.getInt(1));
+            assertEquals(0, w.getInt(2));
+        } finally {
+            w.close();
+        }
+        Cursor f = raw.rawQuery(
+                "SELECT remote_key, content_hash, availability FROM files WHERE work_id=?",
+                new String[]{String.valueOf(id)});
+        try {
+            assertTrue(f.moveToFirst());
+            assertTrue(f.isNull(0));
+            assertTrue(f.isNull(1));
+            assertEquals("local", f.getString(2));
+        } finally {
+            f.close();
+        }
+
+        Book up = book("/x/defaults.epub", "EPUB", "D2", null);
+        db.upsert(up);
+        MetaData md = new MetaData();
+        md.title = "T";
+        md.found = true;
+        db.updateMetadata(id, md, true);
+
+        w = raw.rawQuery(
+                "SELECT remote_id, revision, deleted FROM works WHERE _id=?",
+                new String[]{String.valueOf(id)});
+        try {
+            assertTrue(w.moveToFirst());
+            assertTrue(w.isNull(0));
+            assertEquals(0, w.getInt(1));
+            assertEquals(0, w.getInt(2));
+        } finally {
+            w.close();
+        }
+    }
+
+    @Test
+    public void markMetaPendingClearsFileFlagsAndUserEditedTogether() {
+        Book b = book("/x/pending.epub", "EPUB", "P", null);
+        b.genres = genres("stay");
+        long id = db.upsert(b);
+        db.markUserEdited(id);
+        SQLiteDatabase raw = db.getWritableDatabase();
+        raw.execSQL("UPDATE files SET meta_done=1, meta_failed=1 WHERE work_id=" + id);
+        db.markRead(id);
+        long lastRead = lastReadOf(id);
+        assertEquals(1, workGenreRowCount(raw, id));
+
+        db.markMetaPending(id);
+
+        Cursor f = raw.rawQuery(
+                "SELECT meta_done, meta_failed FROM files WHERE work_id=?",
+                new String[]{String.valueOf(id)});
+        try {
+            assertTrue(f.moveToFirst());
+            assertEquals(0, f.getInt(0));
+            assertEquals(0, f.getInt(1));
+        } finally {
+            f.close();
+        }
+        assertFalse(db.getById(id).userEdited);
+        assertEquals(lastRead, lastReadOf(id));
+        assertEquals(1, workGenreRowCount(db.getReadableDatabase(), id));
+    }
+
+    @Test
+    public void foreignKeyRejectsFileWithoutWork() {
+        SQLiteDatabase raw = db.getWritableDatabase();
+        boolean fileFailed = false;
+        try {
+            raw.execSQL("INSERT INTO files (work_id, format, path, availability) VALUES "
+                    + "(99999, 'PDF', '/x/orphan.pdf', 'local')");
+        } catch (android.database.SQLException e) {
+            fileFailed = true;
+        }
+        assertTrue(fileFailed);
+
+        boolean genreFailed = false;
+        try {
+            raw.execSQL("INSERT INTO work_genres (work_id, position, name) VALUES "
+                    + "(99999, 0, 'x')");
+        } catch (android.database.SQLException e) {
+            genreFailed = true;
+        }
+        assertTrue(genreFailed);
+    }
+
+    @Test
+    public void upsertReplacesGenreListInOrder() {
+        Book b = book("/x/order.fb2", "FB2", "T", "A");
+        b.genres = genres("sf");
+        long id = db.upsert(b);
+        b.genres = genres("prose");
+        db.upsert(b);
+
+        Book next = book("/x/order.fb2", "FB2", "T", "A");
+        next.genres = genres("Detective", "  Prose  ", "detective", "Фэнтези", "фэнтези");
+        db.upsert(next);
+
+        assertGenresEquals(new String[]{"detective", "prose", "фэнтези"},
+                db.getById(id).genres);
+
+        SQLiteDatabase raw = db.getReadableDatabase();
+        Cursor c = raw.rawQuery(
+                "SELECT position, name FROM work_genres WHERE work_id=? ORDER BY position",
+                new String[]{String.valueOf(id)});
+        try {
+            assertEquals(3, c.getCount());
+            c.moveToFirst();
+            assertEquals(0, c.getInt(0));
+            assertEquals("detective", c.getString(1));
+            c.moveToNext();
+            assertEquals(1, c.getInt(0));
+            assertEquals("prose", c.getString(1));
+            c.moveToNext();
+            assertEquals(2, c.getInt(0));
+            assertEquals("фэнтези", c.getString(1));
+        } finally {
+            c.close();
+        }
+    }
+
+    @Test
+    public void genreFilterMatchesAnyGenreOfTheWork() {
+        Book b = book("/x/filter.epub", "EPUB", "Filter", null);
+        b.genres = genres("alpha", "beta");
+        long id = db.upsert(b);
+
+        Cursor hit = db.cursorAll(null, new String[]{"beta"});
+        try {
+            assertEquals(1, hit.getCount());
+            hit.moveToFirst();
+            assertEquals(id, hit.getLong(hit.getColumnIndexOrThrow("_id")));
+        } finally {
+            hit.close();
+        }
+
+        assertEquals(0, count(db.cursorAll(null, new String[]{"gamma"})));
+        Cursor hitAlpha = db.cursorAll(null, new String[]{"alpha"});
+        try {
+            assertEquals(1, hitAlpha.getCount());
+        } finally {
+            hitAlpha.close();
+        }
+
+        b.genres = new ArrayList<String>();
+        db.upsert(b);
+        assertEquals(0, count(db.cursorAll(null, new String[]{"beta"})));
+        assertEquals(1, count(db.cursorAll(null, null)));
+    }
+
+    @Test
+    public void updateMetadataFillsEmptyGenreListAndKeepsUserList() {
+        long id = db.upsert(book("/x/md-genre.epub", "EPUB", "T", "A"));
+        db.markRead(id);
+        long lastRead = lastReadOf(id);
+
+        MetaData md = new MetaData();
+        md.found = true;
+        md.genres = genres("mystery");
+        db.updateMetadata(id, md, true);
+        assertGenresEquals(new String[]{"mystery"}, db.getById(id).genres);
+
+        Book kept = book("/x/md-genre.epub", "EPUB", "T", "A");
+        kept.genres = genres("user-pick");
+        db.upsert(kept);
+        db.markUserEdited(id);
+        md.genres = genres("file-genre");
+        db.updateMetadata(id, md, true);
+        assertGenresEquals(new String[]{"user-pick"}, db.getById(id).genres);
+        assertEquals(lastRead, lastReadOf(id));
+    }
+
+    @Test
+    public void deleteByPathDropsGenresWithTheLastFile() {
+        Book b = book("/x/last-file.epub", "EPUB", "L", null);
+        b.genres = genres("prose");
+        long id = db.upsert(b);
+        SQLiteDatabase raw = db.getReadableDatabase();
+        assertEquals(1, workGenreRowCount(raw, id));
+
+        db.deleteByPath("/x/last-file.epub");
+        assertEquals(0, workGenreRowCount(db.getReadableDatabase(), id));
+        assertEquals(0, rowCount(db.getReadableDatabase(), "work_genres"));
+    }
+
+    @Test
+    public void clearEmptiesWorkGenres() {
+        Book b = book("/x/clear-genre.epub", "EPUB", "C", null);
+        b.genres = genres("prose");
+        db.upsert(b);
+        db.clear();
+        assertEquals(0, rowCount(db.getReadableDatabase(), "work_genres"));
     }
 }

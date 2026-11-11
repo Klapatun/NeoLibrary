@@ -135,6 +135,7 @@ public final class MetaExtractor {
      * shares it with the public {@link #extract} path.
      */
     static void parseOpf(InputStream in, MetaData md) throws Exception {
+        java.util.ArrayList<String> subjects = new java.util.ArrayList<String>();
         XmlPullParser p = Xml.newPullParser();
         p.setInput(in, "UTF-8");
         int event;
@@ -155,11 +156,13 @@ public final class MetaExtractor {
                     else if (tag.equals("publisher") && md.publisher == null) md.publisher = text;
                     else if (tag.equals("description") && md.description == null) md.description = text;
                     else if (tag.equals("language") && md.language == null) md.language = text;
+                    else if (tag.equals("subject")) subjects.add(text);
                 }
             } else if (event == XmlPullParser.END_TAG) {
                 tag = null;
             }
         }
+        md.genres = MetaData.normalizeGenres(subjects);
     }
 
     // Reads the first text child of the current element (used for <dc:creator>).
@@ -220,14 +223,22 @@ public final class MetaExtractor {
      */
     static MetaData parseFb2Xml(InputStream in) throws Exception {
         MetaData md = new MetaData();
+        java.util.ArrayList<String> genreParts = new java.util.ArrayList<String>();
         XmlPullParser p = Xml.newPullParser();
         p.setInput(in, "UTF-8");
         int event;
         String pending = null; // current leaf element we care about
+        boolean seenTitleInfo = false;
+        boolean titleInfoClosed = false;
+        int titleInfoDepth = 0;
+        try {
         while ((event = p.next()) != XmlPullParser.END_DOCUMENT) {
             if (event == XmlPullParser.START_TAG) {
                 String local = localName(p.getName());
-                if (local.equals("title")) pending = "title";
+                if (local.equals("title-info")) {
+                    seenTitleInfo = true;
+                    titleInfoDepth++;
+                } else if (local.equals("title")) pending = "title";
                 else if (local.equals("first-name")) pending = "first";
                 else if (local.equals("last-name")) pending = "last";
                 else if (local.equals("middle-name")) pending = "middle";
@@ -249,15 +260,29 @@ public final class MetaExtractor {
                 else if (pending.equals("publisher") && md.publisher == null) md.publisher = text;
                 else if (pending.equals("annotation") && md.description == null) md.description = text;
                 else if (pending.equals("lang") && md.language == null) md.language = text;
-                else if (pending.equals("genre") && md.genre == null) md.genre = text;
+                else if (pending.equals("genre")) {
+                    if (titleInfoDepth > 0) {
+                        genreParts.add(text);
+                    } else if (!seenTitleInfo && !titleInfoClosed) {
+                        genreParts.add(text);
+                    }
+                }
             } else if (event == XmlPullParser.END_TAG) {
-                // Every metadata element (and the cover's binary id) lives inside
-                // <description>, which the FB2 XSD places before <body>: stop here —
-                // the body (the bulk of a real file) is never parsed. A non-conformant
-                // file without the closing tag simply parses to the end, as before.
-                if (localName(p.getName()).equals("description")) break;
+                String local = localName(p.getName());
+                if (local.equals("title-info")) {
+                    titleInfoDepth--;
+                    if (titleInfoDepth <= 0) {
+                        titleInfoDepth = 0;
+                        titleInfoClosed = true;
+                    }
+                }
+                if (local.equals("description")) break;
                 pending = null;
             }
+        }
+        } catch (Exception ignored) {
+            // Non-conformant FB2 (e.g. missing </title-info>) may trip the pull
+            // parser after </description>; keep the metadata collected so far.
         }
 
         StringBuilder author = new StringBuilder();
@@ -265,6 +290,7 @@ public final class MetaExtractor {
         if (md.middleName != null) author.append(md.middleName).append(' ');
         if (md.lastName != null) author.append(md.lastName);
         md.author = author.toString().trim();
+        md.genres = MetaData.normalizeGenres(genreParts);
         md.found = md.title != null && md.title.length() > 0;
         return md;
     }

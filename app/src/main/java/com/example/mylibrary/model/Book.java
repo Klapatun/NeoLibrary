@@ -3,6 +3,8 @@ package com.example.mylibrary.model;
 import android.os.Parcel;
 import android.os.Parcelable;
 
+import java.util.ArrayList;
+
 /**
  * A single book entry in the library.
  *
@@ -14,7 +16,7 @@ import android.os.Parcelable;
  *    other format.
  */
 public class Book implements Parcelable {
-    public long id;             // SQLite row id (-1 if not yet persisted)
+    public long id;             // SQLite work id (-1 if not yet persisted)
     public String path;         // absolute filesystem path
     public String format;       // canonical format id, e.g. EPUB, FB2, PDF, TXT...
     public String title;        // display title
@@ -22,7 +24,7 @@ public class Book implements Parcelable {
     public String publisher;    // publisher
     public String description;  // description / notes
     public String series;       // optional series name
-    public String genre;        // one genre: first FB2 <genre>, or a user edit (NULL = none)
+    public ArrayList<String> genres; // ordered genre names (never null after load)
     public long sizeBytes;
     public boolean exported;    // true if the on-disk file metadata was edited
     public boolean metaDone;    // true once the background stage extracted in-file metadata
@@ -44,7 +46,9 @@ public class Book implements Parcelable {
     // Parcelable
     // ---------------------------------------------------------------
 
-    public Book() {}
+    public Book() {
+        genres = new ArrayList<String>();
+    }
 
     protected Book(Parcel in) {
         id = in.readLong();
@@ -55,7 +59,8 @@ public class Book implements Parcelable {
         publisher = in.readString();
         description = in.readString();
         series = in.readString();
-        genre = in.readString();
+        genres = new ArrayList<String>();
+        in.readStringList(genres);
         sizeBytes = in.readLong();
         exported = in.readByte() != 0;
         metaDone = in.readByte() != 0;
@@ -73,7 +78,7 @@ public class Book implements Parcelable {
         dest.writeString(publisher);
         dest.writeString(description);
         dest.writeString(series);
-        dest.writeString(genre);
+        dest.writeStringList(genres);
         dest.writeLong(sizeBytes);
         dest.writeByte((byte) (exported ? 1 : 0));
         dest.writeByte((byte) (metaDone ? 1 : 0));

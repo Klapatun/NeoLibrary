@@ -91,7 +91,7 @@ public class MetaEnricherTest {
         Book b = get(id);
         // last_read is a DB-only column: check it through a raw query.
         android.database.Cursor c = db.getReadableDatabase().rawQuery(
-                "SELECT last_read FROM books WHERE _id=?", new String[]{String.valueOf(id)});
+                "SELECT last_read FROM works WHERE _id=?", new String[]{String.valueOf(id)});
         try {
             assertTrue(c.moveToFirst());
             assertTrue("last_read must survive enrichment", c.getLong(0) > 0);

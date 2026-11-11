@@ -8,7 +8,7 @@ flowchart LR
 
     subgraph CATALOG ["В каталог (in-catalog) — ВСЕ 15 форматов"]
         direction TB
-        DB[("SQLite: library.db, v5\nтаблица books\n(1 строка = 1 файл)\nфлаги: meta_done / meta_failed /\nuser_edited / last_read")]
+        DB[("SQLite: library.db, v7\nworks + files + work_genres\nлокальный скан: 1 путь = 1 произведение\nфлаги: meta_done / meta_failed /\nuser_edited / last_read")]
         CACHE["CoverCache\ngetExternalFilesDir('covers')/&lt;hash&gt;.img\n(байты обложки на диске)"]
     end
 

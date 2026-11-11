@@ -275,7 +275,8 @@ public class MainActivityTest {
         // Simulate the worker having been cut off mid-work: make one row need
         // enrichment again.
         Book first = db.all(null).get(0);
-        db.getWritableDatabase().execSQL("UPDATE books SET meta_done = 0 WHERE _id = " + first.id);
+        db.getWritableDatabase().execSQL(
+                "UPDATE files SET meta_done = 0 WHERE work_id = " + first.id);
         assertFalse("precondition: one book is pending again", db.needMeta().isEmpty());
 
         // Simulate a rotation: save the instance state, destroy the activity, and
@@ -1239,6 +1240,24 @@ public class MainActivityTest {
     // PLAN2: Select All / Deselect All checkbox in the filter dialog
     // ------------------------------------------------------------------
 
+    /** The inactive filter tab must not stay visible: TabHost hides a page only
+     *  when leaving it, so the Genres page (added second) would otherwise sit
+     *  on top of Formats and draw a second "Select all" over the first. */
+    @Test
+    public void filterDialogHidesTheTabThatIsNotCurrent() throws Exception {
+        MainActivity a = launchMain();
+        a.findViewById(R.id.btn_filter).performClick();
+        android.app.Dialog d = ShadowDialog.getLatestDialog();
+        assertNotNull(d);
+
+        View formats = d.findViewById(R.id.formats_tab);
+        View genres = d.findViewById(R.id.genres_tab);
+        assertNotNull(formats);
+        assertNotNull(genres);
+        assertEquals(View.VISIBLE, formats.getVisibility());
+        assertEquals(View.GONE, genres.getVisibility());
+    }
+
     /** The filter dialog's "Select all" checkbox toggles all format checkboxes.
      *  On empty state it shows "Select all" (unchecked). Checking it selects all
      *  formats and changes its label to "Deselect all". Unchecking deselects all
@@ -1608,7 +1627,7 @@ public class MainActivityTest {
 
         // The markRead side effect must have hit the catalog.
         android.database.Cursor c = db.getReadableDatabase().rawQuery(
-                "SELECT last_read FROM books WHERE _id=?",
+                "SELECT last_read FROM works WHERE _id=?",
                 new String[]{String.valueOf(target.id)});
         assertTrue("row must exist", c.moveToFirst());
         assertTrue("last_read must be set", c.getLong(0) > 0);
@@ -1639,7 +1658,7 @@ public class MainActivityTest {
         assertNull("no intent may be started", shadowOf(a).getNextStartedActivity());
 
         android.database.Cursor c = db.getReadableDatabase().rawQuery(
-                "SELECT last_read FROM books WHERE _id=?",
+                "SELECT last_read FROM works WHERE _id=?",
                 new String[]{String.valueOf(target.id)});
         assertTrue("row must exist", c.moveToFirst());
         assertEquals("last_read must stay 0", 0L, c.getLong(0));

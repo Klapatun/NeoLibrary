@@ -1,6 +1,8 @@
 package com.example.mylibrary;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 import static org.robolectric.Shadows.shadowOf;
@@ -14,8 +16,10 @@ import android.database.sqlite.SQLiteDatabase;
 import android.net.Uri;
 import android.os.Handler;
 import android.os.Looper;
+import android.view.View;
 import android.widget.Button;
 import android.widget.EditText;
+import android.widget.LinearLayout;
 import android.widget.TextView;
 
 import com.example.mylibrary.db.BookDatabase;
@@ -36,6 +40,7 @@ import org.robolectric.shadows.ShadowLooper;
 import org.robolectric.shadows.ShadowToast;
 
 import java.io.File;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Map;
 
@@ -74,7 +79,8 @@ public class EditMetaActivityTest {
         return addBookToCatalog(file, format, title, author, null);
     }
 
-    private long addBookToCatalog(File file, String format, String title, String author, String genre) {
+    private long addBookToCatalog(File file, String format, String title, String author,
+            ArrayList<String> genres) {
         Book b = new Book();
         b.path = file.getAbsolutePath();
         b.format = format;
@@ -82,7 +88,11 @@ public class EditMetaActivityTest {
         b.author = author;
         b.publisher = "Original Publisher";
         b.description = "An original story.";
-        b.genre = genre;
+        if (genres != null) {
+            b.genres = new ArrayList<String>(genres);
+        } else {
+            b.genres = new ArrayList<String>();
+        }
         b.sizeBytes = 4321;
         return db.upsert(b);
     }
@@ -107,28 +117,60 @@ public class EditMetaActivityTest {
         throw new AssertionError("catalog did not reach title='" + expected + "'");
     }
 
-    /** Waits until the background save has stored {@code expected} as the genre.
-     *  {@code null} means the column was cleared. */
-    private static void awaitCatalogGenre(BookDatabase db, long id, String expected)
+    /** Waits until {@code getById} returns the expected genre list (order matters). */
+    private static void awaitCatalogGenres(BookDatabase db, long id, String... expected)
             throws InterruptedException {
         long deadline = System.currentTimeMillis() + 10000;
         while (System.currentTimeMillis() < deadline) {
             Book b = db.getById(id);
-            if (b != null) {
-                if (expected == null) {
-                    if (b.genre == null) return;
-                } else if (expected.equals(b.genre)) {
-                    return;
+            if (b != null && b.genres != null && b.genres.size() == expected.length) {
+                boolean match = true;
+                for (int i = 0; i < expected.length; i++) {
+                    if (!expected[i].equals(b.genres.get(i))) {
+                        match = false;
+                        break;
+                    }
                 }
+                if (match) return;
             }
             Thread.sleep(10);
         }
-        throw new AssertionError("catalog did not reach genre='" + expected + "'");
+        throw new AssertionError("catalog did not reach genres");
+    }
+
+    private static LinearLayout genreContainer(EditMetaActivity a) {
+        return (LinearLayout) a.findViewById(R.id.edit_genres);
+    }
+
+    private static int genreFieldCount(EditMetaActivity a) {
+        return genreContainer(a).getChildCount();
+    }
+
+    private static EditText genreFieldAt(EditMetaActivity a, int index) {
+        View child = genreContainer(a).getChildAt(index);
+        return (EditText) child;
+    }
+
+  private static void setGenreFieldCount(EditMetaActivity a, int count) {
+    LinearLayout box = genreContainer(a);
+    while (box.getChildCount() < count) {
+      ((Button) a.findViewById(R.id.btn_add_genre)).performClick();
+    }
+    while (box.getChildCount() > count) {
+      box.removeViewAt(box.getChildCount() - 1);
+    }
+  }
+
+    private static void setGenreFields(EditMetaActivity a, String... texts) {
+        setGenreFieldCount(a, texts.length);
+        for (int i = 0; i < texts.length; i++) {
+            genreFieldAt(a, i).setText(texts[i]);
+        }
     }
 
     private long lastReadOf(long id) {
         SQLiteDatabase raw = db.getReadableDatabase();
-        Cursor c = raw.rawQuery("SELECT last_read FROM books WHERE _id=?",
+        Cursor c = raw.rawQuery("SELECT last_read FROM works WHERE _id=?",
                 new String[]{String.valueOf(id)});
         try {
             assertTrue(c.moveToFirst());
@@ -142,6 +184,26 @@ public class EditMetaActivityTest {
         Intent i = new Intent();
         i.putExtra(EditMetaActivity.EXTRA_BOOK, db.getById(id));
         return Robolectric.buildActivity(EditMetaActivity.class, i).setup().get();
+    }
+
+    @Test
+    public void editorFillsGenresFromCatalogWhenTheParcelListIsEmpty() throws Exception {
+        File file = new File(folder.getRoot(), "book.txt");
+        TestFixtures.writeText(file, "hello\n");
+        ArrayList<String> genres = new ArrayList<String>();
+        genres.add("prose");
+        genres.add("mystery");
+        long id = addBookToCatalog(file, "TXT", "T", "A", genres);
+
+        Book parcel = db.getById(id);
+        parcel.genres = new ArrayList<String>();
+        Intent i = new Intent();
+        i.putExtra(EditMetaActivity.EXTRA_BOOK, parcel);
+        EditMetaActivity a = Robolectric.buildActivity(EditMetaActivity.class, i).setup().get();
+
+        assertEquals(2, genreFieldCount(a));
+        assertEquals("prose", genreFieldAt(a, 0).getText().toString());
+        assertEquals("mystery", genreFieldAt(a, 1).getText().toString());
     }
 
     @Test
@@ -326,27 +388,40 @@ public class EditMetaActivityTest {
         app.getContentResolver().unregisterContentObserver(onRecent);
     }
 
-    /** The genre field is prefilled from the catalog. A missing genre is an empty field. */
+    /** Two catalog genres -> two fields; none -> one empty field (same order). */
     @Test
     public void editGenrePrefillsTheField() throws Exception {
-        File withGenre = new File(folder.getRoot(), "with-genre.pdf");
-        TestFixtures.writeBytes(withGenre, new byte[]{1});
-        long proseId = addBookToCatalog(withGenre, "PDF", "T", "A", "prose");
-        EditMetaActivity prose = openEditor(proseId);
-        assertEquals("prose",
-                ((EditText) prose.findViewById(R.id.edit_genre)).getText().toString());
+        File withGenres = new File(folder.getRoot(), "with-genre.pdf");
+        TestFixtures.writeBytes(withGenres, new byte[]{1});
+        ArrayList<String> two = new ArrayList<String>();
+        two.add("prose");
+        two.add("mystery");
+        long twoId = addBookToCatalog(withGenres, "PDF", "T", "A", two);
+        EditMetaActivity twoFields = openEditor(twoId);
+        assertEquals(2, genreFieldCount(twoFields));
+        assertEquals("prose", genreFieldAt(twoFields, 0).getText().toString());
+        assertEquals("mystery", genreFieldAt(twoFields, 1).getText().toString());
 
         File withoutGenre = new File(folder.getRoot(), "no-genre.pdf");
         TestFixtures.writeBytes(withoutGenre, new byte[]{2});
         long emptyId = addBookToCatalog(withoutGenre, "PDF", "T", "A", null);
         EditMetaActivity empty = openEditor(emptyId);
-        assertEquals("",
-                ((EditText) empty.findViewById(R.id.edit_genre)).getText().toString());
+        assertEquals(1, genreFieldCount(empty));
+        assertEquals("", genreFieldAt(empty, 0).getText().toString());
     }
 
-    /** A trimmed genre is stored for a format whose file we do not rewrite.
-     *  The file bytes, {@code last_read} and the user-edited flag stay consistent
-     *  with the other catalog-only fields. */
+    @Test
+    public void addGenreButtonAppendsAnotherField() throws Exception {
+        File pdf = new File(folder.getRoot(), "add-genre.pdf");
+        TestFixtures.writeBytes(pdf, new byte[]{1});
+        long id = addBookToCatalog(pdf, "PDF", "T", "A", null);
+        EditMetaActivity a = openEditor(id);
+        assertEquals(1, genreFieldCount(a));
+        ((Button) a.findViewById(R.id.btn_add_genre)).performClick();
+        assertEquals(2, genreFieldCount(a));
+    }
+
+    /** Trimming, normalization and catalog-only save for PDF (file bytes untouched). */
     @Test
     public void saveGenrePersistsInTheCatalogForAnyFormat() throws Exception {
         File pdf = new File(folder.getRoot(), "genre.pdf");
@@ -358,36 +433,38 @@ public class EditMetaActivityTest {
         long lastRead = lastReadOf(id);
 
         EditMetaActivity a = openEditor(id);
-        ((EditText) a.findViewById(R.id.edit_genre)).setText("  Mystery  ");
+        setGenreFields(a, "  Mystery  ", "prose", "");
         ((Button) a.findViewById(R.id.btn_save)).performClick();
 
-        awaitCatalogGenre(db, id, "Mystery");
+        awaitCatalogGenres(db, id, "mystery", "prose");
         shadowOf(Looper.getMainLooper()).idle();
 
         assertTrue(Arrays.equals(original, TestFixtures.readAll(pdf)));
         Book got = db.getById(id);
-        assertEquals("Mystery", got.genre);
+        assertGenres("mystery", "prose", got.genres);
         assertTrue(got.userEdited);
         assertTrue("no in-file write happened, so exported must be false", !got.exported);
         assertEquals(lastRead, lastReadOf(id));
     }
 
-    /** Whitespace in the genre field is a cleared genre: the column becomes NULL. */
     @Test
-    public void clearingGenreStoresNull() throws Exception {
+    public void clearingGenreStoresEmptyList() throws Exception {
         File pdf = new File(folder.getRoot(), "clear-genre.pdf");
         byte[] original = new byte[]{9, 8, 7};
         TestFixtures.writeBytes(pdf, original);
 
-        long id = addBookToCatalog(pdf, "PDF", "Old Title", "Old Author", "prose");
+        ArrayList<String> one = new ArrayList<String>();
+        one.add("prose");
+        long id = addBookToCatalog(pdf, "PDF", "Old Title", "Old Author", one);
         EditMetaActivity a = openEditor(id);
-        ((EditText) a.findViewById(R.id.edit_genre)).setText("   ");
+        setGenreFields(a, "   ");
         ((Button) a.findViewById(R.id.btn_save)).performClick();
 
-        awaitCatalogGenre(db, id, null);
+        awaitCatalogGenres(db, id);
         shadowOf(Looper.getMainLooper()).idle();
 
-        assertNull(db.getById(id).genre);
+        assertNotNull(db.getById(id).genres);
+        assertTrue(db.getById(id).genres.isEmpty());
         assertTrue(Arrays.equals(original, TestFixtures.readAll(pdf)));
     }
 
@@ -398,18 +475,19 @@ public class EditMetaActivityTest {
 
         long id = addBookToCatalog(epub, "EPUB", "Original Title", "Original Author", null);
         EditMetaActivity a = openEditor(id);
-        ((EditText) a.findViewById(R.id.edit_genre)).setText("Mystery");
+        setGenreFields(a, "Mystery", "Фэнтези");
         ((Button) a.findViewById(R.id.btn_save)).performClick();
 
-        awaitCatalogGenre(db, id, "Mystery");
+        awaitCatalogGenres(db, id, "mystery", "фэнтези");
         shadowOf(Looper.getMainLooper()).idle();
 
         Map<String, byte[]> entries = TestFixtures.readZip(epub);
         String opf = new String(entries.get("OEBPS/content.opf"), "UTF-8");
-        assertTrue(opf.contains("<dc:subject>Mystery</dc:subject>"));
+        assertTrue(opf.contains("<dc:subject>mystery</dc:subject>"));
+        assertTrue(opf.contains("<dc:subject>фэнтези</dc:subject>"));
 
         Book got = db.getById(id);
-        assertEquals("Mystery", got.genre);
+        assertGenres("mystery", "фэнтези", got.genres);
         assertTrue(got.exported);
     }
 
@@ -418,19 +496,21 @@ public class EditMetaActivityTest {
         File fb2 = new File(folder.getRoot(), "genre.fb2");
         TestFixtures.writeText(fb2, TestFixtures.FB2_FULL);
 
-        long id = addBookToCatalog(fb2, "FB2", "Original Title", "Ivan Ivanovich Petrov", "prose");
+        ArrayList<String> one = new ArrayList<String>();
+        one.add("prose");
+        long id = addBookToCatalog(fb2, "FB2", "Original Title", "Ivan Ivanovich Petrov", one);
         EditMetaActivity a = openEditor(id);
-        ((EditText) a.findViewById(R.id.edit_genre)).setText("sf_history");
+        setGenreFields(a, "SF_History");
         ((Button) a.findViewById(R.id.btn_save)).performClick();
 
-        awaitCatalogGenre(db, id, "sf_history");
+        awaitCatalogGenres(db, id, "sf_history");
         shadowOf(Looper.getMainLooper()).idle();
 
         String xml = new String(TestFixtures.readAll(fb2), "UTF-8");
         assertTrue(xml.contains("<genre>sf_history</genre>"));
 
         Book got = db.getById(id);
-        assertEquals("sf_history", got.genre);
+        assertGenres("sf_history", got.genres);
         assertTrue(got.exported);
     }
 
@@ -439,17 +519,48 @@ public class EditMetaActivityTest {
         File fb2 = new File(folder.getRoot(), "clear-genre.fb2");
         TestFixtures.writeText(fb2, TestFixtures.FB2_FULL);
 
-        long id = addBookToCatalog(fb2, "FB2", "Original Title", "Ivan Ivanovich Petrov", "prose");
+        ArrayList<String> one = new ArrayList<String>();
+        one.add("prose");
+        long id = addBookToCatalog(fb2, "FB2", "Original Title", "Ivan Ivanovich Petrov", one);
         EditMetaActivity a = openEditor(id);
-        ((EditText) a.findViewById(R.id.edit_genre)).setText("");
+        setGenreFields(a, "", "");
         ((Button) a.findViewById(R.id.btn_save)).performClick();
 
-        awaitCatalogGenre(db, id, null);
+        awaitCatalogGenres(db, id);
         shadowOf(Looper.getMainLooper()).idle();
 
-        assertNull(db.getById(id).genre);
+        assertTrue(db.getById(id).genres.isEmpty());
         String xml = new String(TestFixtures.readAll(fb2), "UTF-8");
-        assertTrue("the file genre must be removed", !xml.contains("<genre>prose</genre>"));
+        assertFalse("all genre elements must be gone", xml.contains("<genre>"));
+    }
+
+    @Test
+    public void saveDeduplicatesGenresAfterNormalization() throws Exception {
+        File pdf = new File(folder.getRoot(), "dedupe-genre.pdf");
+        TestFixtures.writeBytes(pdf, new byte[]{1});
+        long id = addBookToCatalog(pdf, "PDF", "T", "A", null);
+        EditMetaActivity a = openEditor(id);
+        setGenreFields(a, "Фэнтези", "фэнтези");
+        ((Button) a.findViewById(R.id.btn_save)).performClick();
+
+        awaitCatalogGenres(db, id, "фэнтези");
+        shadowOf(Looper.getMainLooper()).idle();
+    }
+
+    private static void assertGenres(String a, String b, ArrayList<String> actual) {
+        assertGenres(new String[]{a, b}, actual);
+    }
+
+    private static void assertGenres(String a, ArrayList<String> actual) {
+        assertGenres(new String[]{a}, actual);
+    }
+
+    private static void assertGenres(String[] expected, ArrayList<String> actual) {
+        assertNotNull(actual);
+        assertEquals(expected.length, actual.size());
+        for (int i = 0; i < expected.length; i++) {
+            assertEquals(expected[i], actual.get(i));
+        }
     }
 
     /** Records whether the observer fired (for one registered URI). */

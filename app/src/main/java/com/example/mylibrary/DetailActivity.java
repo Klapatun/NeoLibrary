@@ -120,7 +120,7 @@ public class DetailActivity extends Activity {
 
         StringBuilder other = new StringBuilder();
         if (b.format != null) other.append("Format: ").append(b.format).append("\n");
-        other.append("Genre: ").append(nz(b.genre)).append("\n");
+        other.append("Genre: ").append(formatGenres(b.genres)).append("\n");
         if (b.publisher != null && b.publisher.length() > 0)
             other.append("Publisher: ").append(b.publisher).append("\n");
         other.append("Size: ").append(humanSize(b.sizeBytes)).append("\n");
@@ -162,6 +162,17 @@ public class DetailActivity extends Activity {
 
     private static String nz(String s) {
         return (s == null || s.length() == 0) ? "—" : s;
+    }
+
+    private static String formatGenres(java.util.ArrayList<String> genres) {
+        if (genres == null || genres.isEmpty()) return "—";
+        StringBuilder sb = new StringBuilder();
+        for (int i = 0; i < genres.size(); i++) {
+            if (i > 0) sb.append(", ");
+            String g = genres.get(i);
+            if (g != null) sb.append(g);
+        }
+        return sb.length() == 0 ? "—" : sb.toString();
     }
 
     private static String humanSize(long bytes) {

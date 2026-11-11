@@ -14,6 +14,7 @@ import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.zip.ZipEntry;
@@ -402,46 +403,7 @@ public class MetaWriterTest {
     }
 
     @Test
-    public void fb2WriteReplacesTheFirstGenre() throws Exception {
-        final File fb2 = writeFb2Fixture();
-
-        MetaData md = new MetaData();
-        md.title = "Original Title";
-        md.genre = "sf_history";
-        assertTrue(MetaWriter.write(fb2, md));
-        String xml = new String(readAll(fb2), "UTF-8");
-
-        assertTrue(xml.contains("<genre>sf_history</genre>"));
-        assertFalse(xml.contains("<genre>prose</genre>"));
-        assertTrue(xml.contains("<title-info>"));
-        assertTrue(xml.contains("</title-info>"));
-        assertWellFormedXml(xml);
-        assertNoLeftovers(folder.getRoot());
-    }
-
-    @Test
-    public void fb2WriteInsertsGenreWhenMissing() throws Exception {
-        File fb2 = folder.newFile("nogenre.fb2");
-        String source = FB2_FIXTURE.replace("      <genre>prose</genre>\n", "");
-        FileOutputStream out = new FileOutputStream(fb2);
-        try { out.write(text(source)); } finally { out.close(); }
-
-        MetaData md = new MetaData();
-        md.genre = "prose";
-        assertTrue(MetaWriter.write(fb2, md));
-        String xml = new String(readAll(fb2), "UTF-8");
-
-        int genreAt = xml.indexOf("<genre>prose</genre>");
-        int titleInfoClose = xml.indexOf("</title-info>");
-        assertTrue("genre element must be inserted", genreAt >= 0);
-        assertTrue("the inserted genre sits before </title-info>", genreAt < titleInfoClose);
-        assertEquals("exactly one genre element", genreAt, xml.lastIndexOf("<genre>prose</genre>"));
-        assertWellFormedXml(xml);
-        assertNoLeftovers(folder.getRoot());
-    }
-
-    @Test
-    public void fb2WriteEmptyGenreRemovesTheFirstGenreElement() throws Exception {
+    public void fb2WriteReplacesTheWholeGenreList() throws Exception {
         File fb2 = folder.newFile("twogenre.fb2");
         String source = FB2_FIXTURE.replace("<genre>prose</genre>",
                 "<genre>prose</genre>\n      <genre>poetry</genre>");
@@ -449,13 +411,79 @@ public class MetaWriterTest {
         try { out.write(text(source)); } finally { out.close(); }
 
         MetaData md = new MetaData();
-        md.genre = "";
+        md.title = "Original Title";
+        md.genres = genres("sf_history");
         assertTrue(MetaWriter.write(fb2, md));
         String xml = new String(readAll(fb2), "UTF-8");
 
-        assertFalse("the first genre is removed", xml.contains("<genre>prose</genre>"));
-        assertTrue("later genres stay", xml.contains("<genre>poetry</genre>"));
+        assertTrue(xml.contains("<genre>sf_history</genre>"));
+        assertFalse(xml.contains("<genre>prose</genre>"));
+        assertFalse(xml.contains("<genre>poetry</genre>"));
         assertWellFormedXml(xml);
+        assertNoLeftovers(folder.getRoot());
+    }
+
+    @Test
+    public void fb2WriteInsertsGenresWhenMissing() throws Exception {
+        File fb2 = folder.newFile("nogenre.fb2");
+        String source = FB2_FIXTURE.replace("      <genre>prose</genre>\n", "");
+        FileOutputStream out = new FileOutputStream(fb2);
+        try { out.write(text(source)); } finally { out.close(); }
+
+        MetaData md = new MetaData();
+        md.genres = genres("prose", "sf");
+        assertTrue(MetaWriter.write(fb2, md));
+        String xml = new String(readAll(fb2), "UTF-8");
+
+        int proseAt = xml.indexOf("<genre>prose</genre>");
+        int sfAt = xml.indexOf("<genre>sf</genre>");
+        int titleInfoClose = xml.indexOf("</title-info>");
+        assertTrue("prose must be inserted", proseAt >= 0);
+        assertTrue("sf must be inserted", sfAt >= 0);
+        assertTrue("genres sit before </title-info>", sfAt < titleInfoClose);
+        assertTrue("prose comes before sf", proseAt < sfAt);
+        assertWellFormedXml(xml);
+        assertNoLeftovers(folder.getRoot());
+    }
+
+    @Test
+    public void fb2WriteEmptyGenreListRemovesEveryGenreElement() throws Exception {
+        File fb2 = folder.newFile("twogenre.fb2");
+        String source = FB2_FIXTURE.replace("<genre>prose</genre>",
+                "<genre>prose</genre>\n      <genre>poetry</genre>");
+        FileOutputStream out = new FileOutputStream(fb2);
+        try { out.write(text(source)); } finally { out.close(); }
+
+        MetaData md = new MetaData();
+        md.genres = new ArrayList<String>();
+        assertTrue(MetaWriter.write(fb2, md));
+        String xml = new String(readAll(fb2), "UTF-8");
+
+        assertFalse(xml.contains("<genre>"));
+        assertWellFormedXml(xml);
+        assertNoLeftovers(folder.getRoot());
+    }
+
+    @Test
+    public void fb2WriteKeepsGenresWhenTitleInfoIsUnclosed() throws Exception {
+        File fb2 = folder.newFile("unclosed.fb2");
+        String source = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+                + "<FictionBook>\n"
+                + "  <description>\n"
+                + "    <title-info>\n"
+                + "      <genre>prose</genre>\n"
+                + "  </description>\n"
+                + "</FictionBook>\n";
+        FileOutputStream out = new FileOutputStream(fb2);
+        try { out.write(text(source)); } finally { out.close(); }
+
+        MetaData md = new MetaData();
+        md.genres = genres("sf");
+        assertTrue(MetaWriter.write(fb2, md));
+        String xml = new String(readAll(fb2), "UTF-8");
+
+        assertTrue(xml.contains("<genre>prose</genre>"));
+        assertFalse(xml.contains("<genre>sf</genre>"));
         assertNoLeftovers(folder.getRoot());
     }
 
@@ -464,7 +492,7 @@ public class MetaWriterTest {
         final File fb2 = writeFb2Fixture();
 
         MetaData md = new MetaData();
-        md.genre = "A & B <C>";
+        md.genres = genres("A & B <C>");
         assertTrue(MetaWriter.write(fb2, md));
         String xml = new String(readAll(fb2), "UTF-8");
 
@@ -474,8 +502,11 @@ public class MetaWriterTest {
     }
 
     @Test
-    public void epubWriteSetsDcSubject() throws Exception {
-        final File epub = writeEpubFixture(OPF_FULL);
+    public void epubWriteSetsEveryDcSubject() throws Exception {
+        String opfWithSubject = OPF_FULL.replace("    <dc:language>en</dc:language>\n",
+                "    <dc:language>en</dc:language>\n"
+              + "    <dc:subject>Old</dc:subject>\n");
+        final File epub = writeEpubFixture(opfWithSubject);
 
         MetaData md = new MetaData();
         md.title = "Original Title";
@@ -483,22 +514,22 @@ public class MetaWriterTest {
         md.publisher = "Original Publisher";
         md.description = "An original story.";
         md.language = "en";
-        md.genre = "Mystery";
+        md.genres = genres("Mystery", "prose");
         assertTrue(MetaWriter.write(epub, md));
 
         String opf = new String(readZip(epub).get("OEBPS/content.opf"), "UTF-8");
-        assertTrue(opf.contains("<dc:subject>Mystery</dc:subject>"));
-        assertTrue(opf.contains("<dc:title>Original Title</dc:title>"));
-        assertTrue(opf.contains("<dc:creator>Original Author</dc:creator>"));
-        assertTrue(opf.contains("<dc:publisher>Original Publisher</dc:publisher>"));
-        assertTrue(opf.contains("<dc:description>An original story.</dc:description>"));
-        assertTrue(opf.contains("<dc:language>en</dc:language>"));
+        int mAt = opf.indexOf("<dc:subject>Mystery</dc:subject>");
+        int pAt = opf.indexOf("<dc:subject>prose</dc:subject>");
+        assertTrue(mAt >= 0);
+        assertTrue(pAt >= 0);
+        assertTrue("subjects stay ordered", mAt < pAt);
+        assertFalse(opf.contains("<dc:subject>Old</dc:subject>"));
         assertWellFormedXml(opf);
         assertNoLeftovers(folder.getRoot());
     }
 
     @Test
-    public void epubWriteLeavesDcSubjectUntouchedWhenGenreIsNull() throws Exception {
+    public void epubWriteLeavesDcSubjectUntouchedWhenGenresIsNull() throws Exception {
         String opfWithSubject = OPF_FULL.replace("    <dc:language>en</dc:language>\n",
                 "    <dc:language>en</dc:language>\n"
               + "    <dc:subject>Keep</dc:subject>\n");
@@ -515,10 +546,29 @@ public class MetaWriterTest {
     }
 
     @Test
-    public void epubWriteEmptyGenreClearsDcSubject() throws Exception {
+    public void epubWriteKeepsDcSubjectWhenMetadataIsUnclosed() throws Exception {
+        String opf = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+                + "<package xmlns:dc=\"http://purl.org/dc/elements/1.1/\">\n"
+                + "  <dc:subject>Keep</dc:subject>\n"
+                + "</package>\n";
+        final File epub = writeEpubFixture(opf);
+
+        MetaData md = new MetaData();
+        md.genres = genres("mystery");
+        assertTrue(MetaWriter.write(epub, md));
+
+        String written = new String(readZip(epub).get("OEBPS/content.opf"), "UTF-8");
+        assertTrue(written.contains("<dc:subject>Keep</dc:subject>"));
+        assertFalse(written.contains("mystery"));
+        assertNoLeftovers(folder.getRoot());
+    }
+
+    @Test
+    public void epubWriteEmptyGenreListRemovesEveryDcSubject() throws Exception {
         String opfWithSubject = OPF_FULL.replace("    <dc:language>en</dc:language>\n",
                 "    <dc:language>en</dc:language>\n"
-              + "    <dc:subject>Keep</dc:subject>\n");
+              + "    <dc:subject>One</dc:subject>\n"
+              + "    <dc:subject>Two</dc:subject>\n");
         final File epub = writeEpubFixture(opfWithSubject);
 
         MetaData md = new MetaData();
@@ -527,12 +577,20 @@ public class MetaWriterTest {
         md.publisher = "Original Publisher";
         md.description = "An original story.";
         md.language = "en";
-        md.genre = "";
+        md.genres = new ArrayList<String>();
         assertTrue(MetaWriter.write(epub, md));
 
         String opf = new String(readZip(epub).get("OEBPS/content.opf"), "UTF-8");
-        assertFalse("empty genre clears the subject text", opf.contains("Keep"));
+        assertFalse(opf.contains("One"));
+        assertFalse(opf.contains("Two"));
+        assertFalse(opf.contains("<dc:subject>"));
         assertNoLeftovers(folder.getRoot());
+    }
+
+    private static ArrayList<String> genres(String... names) {
+        ArrayList<String> g = new ArrayList<String>();
+        for (int i = 0; i < names.length; i++) g.add(names[i]);
+        return g;
     }
 
     @Test

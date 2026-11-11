@@ -13,8 +13,10 @@ import com.example.mylibrary.util.CoverCache;
 
 import java.io.File;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 
 /**
@@ -26,7 +28,7 @@ public class BookDatabase extends SQLiteOpenHelper {
 
     private static final String TAG = "BookDatabase";
     private static final String DB_NAME = "library.db";
-    private static final int DB_VERSION = 6;
+    private static final int DB_VERSION = 7;
 
     /** How many books go into one batch commit (one SQLite transaction per group;
      *  see {@link #upsertBasicBatch} and {@link #updateMetadataBatch}): one commit
@@ -47,24 +49,65 @@ public class BookDatabase extends SQLiteOpenHelper {
      *  (SQLiteOpenHelper exposes no getContext()). */
     private final Context context;
 
-    private static final String CREATE =
-            "CREATE TABLE books ("
+  private static final String BOOKS_CREATE_V1 =
+          "CREATE TABLE books ("
+          + "_id INTEGER PRIMARY KEY AUTOINCREMENT, "
+          + "path TEXT UNIQUE NOT NULL, "
+          + "format TEXT, "
+          + "title TEXT, "
+          + "author TEXT, "
+          + "publisher TEXT, "
+          + "description TEXT, "
+          + "series TEXT, "
+          + "size_bytes INTEGER, "
+          + "exported INTEGER DEFAULT 0, "
+          + "last_read INTEGER"
+          + ")";
+
+    private static final String WORKS_CREATE =
+            "CREATE TABLE works ("
             + "_id INTEGER PRIMARY KEY AUTOINCREMENT, "
-            + "path TEXT UNIQUE NOT NULL, "
-            + "format TEXT, "
             + "title TEXT, "
             + "author TEXT, "
             + "publisher TEXT, "
             + "description TEXT, "
             + "series TEXT, "
+            + "user_edited INTEGER NOT NULL DEFAULT 0, "
+            + "last_read INTEGER, "
+            + "remote_id TEXT, "
+            + "revision INTEGER NOT NULL DEFAULT 0, "
+            + "deleted INTEGER NOT NULL DEFAULT 0"
+            + ")";
+
+    private static final String FILES_CREATE =
+            "CREATE TABLE files ("
+            + "_id INTEGER PRIMARY KEY AUTOINCREMENT, "
+            + "work_id INTEGER NOT NULL REFERENCES works(_id), "
+            + "format TEXT, "
+            + "path TEXT UNIQUE, "
+            + "remote_key TEXT, "
             + "size_bytes INTEGER, "
+            + "content_hash TEXT, "
             + "exported INTEGER DEFAULT 0, "
             + "meta_done INTEGER NOT NULL DEFAULT 0, "
-            + "user_edited INTEGER NOT NULL DEFAULT 0, "
             + "meta_failed INTEGER NOT NULL DEFAULT 0, "
-            + "last_read INTEGER, "
-            + "genre TEXT"
+            + "availability TEXT NOT NULL DEFAULT 'local'"
             + ")";
+
+    private static final String WORK_GENRES_CREATE =
+            "CREATE TABLE work_genres ("
+            + "work_id INTEGER NOT NULL REFERENCES works(_id), "
+            + "position INTEGER NOT NULL, "
+            + "name TEXT NOT NULL"
+            + ")";
+
+    private static final String LIST_SELECT =
+            "SELECT w._id AS _id, f.path AS path, f.format AS format, "
+            + "w.title, w.author, w.publisher, w.description, w.series, "
+            + "f.size_bytes, f.exported, f.meta_done, f.meta_failed, w.user_edited ";
+
+    private static final String LIST_FROM =
+            "FROM works w INNER JOIN files f ON f.work_id = w._id WHERE w.deleted = 0";
 
     public BookDatabase(Context context) {
         super(context, DB_NAME, null, DB_VERSION);
@@ -72,63 +115,66 @@ public class BookDatabase extends SQLiteOpenHelper {
     }
 
     @Override
+    public void onConfigure(SQLiteDatabase db) {
+        super.onConfigure(db);
+        db.setForeignKeyConstraintsEnabled(true);
+    }
+
+    @Override
     public void onCreate(SQLiteDatabase db) {
-        db.execSQL(CREATE);
-        createIndexes(db);
+        createV7Schema(db);
     }
 
     @Override
     public void onUpgrade(SQLiteDatabase db, int oldVersion, int newVersion) {
-        // In-place upgrade: the old implementation dropped the table, which would
-        // wipe last_read and user edits. ALTER TABLE ADD COLUMN is supported on
-        // Android 4.4 (API 19); each statement is idempotency-guarded.
-        if (oldVersion < 2) {
-            try {
-                db.execSQL("ALTER TABLE books ADD COLUMN meta_done INTEGER NOT NULL DEFAULT 0");
-            } catch (Exception ignored) { // column already present (partial upgrade)
+        if (oldVersion < 7) {
+            if (oldVersion < 1) {
+                db.execSQL(BOOKS_CREATE_V1);
+                oldVersion = 1;
             }
-            try {
-                db.execSQL("ALTER TABLE books ADD COLUMN user_edited INTEGER NOT NULL DEFAULT 0");
-            } catch (Exception ignored) {
+            if (oldVersion < 2) {
+                try {
+                    db.execSQL("ALTER TABLE books ADD COLUMN meta_done INTEGER NOT NULL DEFAULT 0");
+                } catch (Exception ignored) {
+                }
+                try {
+                    db.execSQL("ALTER TABLE books ADD COLUMN user_edited INTEGER NOT NULL DEFAULT 0");
+                } catch (Exception ignored) {
+                }
             }
-        }
-        if (oldVersion < 3) {
-            createIndexes(db);
-        }
-        if (oldVersion < 4) {
-            try {
-                db.execSQL("ALTER TABLE books ADD COLUMN meta_failed INTEGER NOT NULL DEFAULT 0");
-            } catch (Exception ignored) { // column already present (partial upgrade)
+            if (oldVersion < 3) {
+                createLegacyBooksIndexes(db);
             }
-        }
-        if (oldVersion < 5) {
-            // The v5 title index. createIndexes is idempotency-guarded, so it only
-            // creates what is missing (the older indexes already exist).
-            createIndexes(db);
-        }
-        if (oldVersion < 6) {
-            // The v6 genre column (the modal filter's genre selection): nullable —
-            // a book without a genre (or of a format that carries none) is NULL.
-            // Same idempotency guard as the meta_failed column of v4.
-            try {
-                db.execSQL("ALTER TABLE books ADD COLUMN genre TEXT");
-            } catch (Exception ignored) { // column already present (partial upgrade)
+            if (oldVersion < 4) {
+                try {
+                    db.execSQL("ALTER TABLE books ADD COLUMN meta_failed INTEGER NOT NULL DEFAULT 0");
+                } catch (Exception ignored) {
+                }
             }
+            if (oldVersion < 5) {
+                createLegacyBooksIndexes(db);
+            }
+            if (oldVersion < 6) {
+                try {
+                    db.execSQL("ALTER TABLE books ADD COLUMN genre TEXT");
+                } catch (Exception ignored) {
+                }
+            }
+            migrateBooksToV7(db);
         }
     }
 
-    /** Indexes for the hot query paths: the stage-2 queue
-     *  ({@link #needMeta()}, {@code WHERE meta_done = 0}), the "Recently read"
-     *  view ({@code WHERE last_read IS NOT NULL ORDER BY last_read DESC}) and the
-     *  catalog list (sorted by {@code title COLLATE NOCASE} — the main screen's
-     *  default order). Without them all three walk the whole table on a large
-     *  library. Non-unique on purpose (many books share a value); CREATE INDEX is
-     *  idempotency-guarded like the ALTER statements above, so a re-run of a
-     *  partial upgrade is safe. */
-    private static void createIndexes(SQLiteDatabase db) {
+    private static void createV7Schema(SQLiteDatabase db) {
+        db.execSQL(WORKS_CREATE);
+        db.execSQL(FILES_CREATE);
+        db.execSQL(WORK_GENRES_CREATE);
+        createV7Indexes(db);
+    }
+
+    private static void createLegacyBooksIndexes(SQLiteDatabase db) {
         try {
             db.execSQL("CREATE INDEX idx_books_meta_done ON books (meta_done)");
-        } catch (Exception ignored) { // index already present (partial upgrade)
+        } catch (Exception ignored) {
         }
         try {
             db.execSQL("CREATE INDEX idx_books_last_read ON books (last_read)");
@@ -140,78 +186,209 @@ public class BookDatabase extends SQLiteOpenHelper {
         }
     }
 
-    /**
-     * Opens a READ connection while holding {@link #WRITE_LOCK}. A fresh SQLite
-     * connection executes {@code PRAGMA user_version} on open, and that read collides
-     * (SQLITE_BUSY, "database is locked") when another connection of this same class
-     * is mid-batch-write (the enricher's {@link #updateMetadataBatch} group, the scan's
-     * {@link #upsertBasicBatch}): the static lock makes a fresh open wait for the group
-     * to finish instead of racing it. The callers of this helper run their whole
-     * one-shot read under the same lock; only the LIVE cursors handed out by
-     * {@link #cursorAll}/{@link #cursorRecent} outlive it (a cursor keeps using its
-     * handle freely after the lock is released).
-     */
+    private static void createV7Indexes(SQLiteDatabase db) {
+        try {
+            db.execSQL("CREATE UNIQUE INDEX idx_files_work_format ON files (work_id, format)");
+        } catch (Exception ignored) {
+        }
+        try {
+            db.execSQL("CREATE INDEX idx_files_work_id ON files (work_id)");
+        } catch (Exception ignored) {
+        }
+        try {
+            db.execSQL("CREATE INDEX idx_files_meta_done ON files (meta_done)");
+        } catch (Exception ignored) {
+        }
+        try {
+            db.execSQL("CREATE INDEX idx_works_last_read ON works (last_read)");
+        } catch (Exception ignored) {
+        }
+        try {
+            db.execSQL("CREATE INDEX idx_works_title_nocase ON works (title COLLATE NOCASE)");
+        } catch (Exception ignored) {
+        }
+        try {
+            db.execSQL("CREATE UNIQUE INDEX idx_work_genres_work_pos ON work_genres (work_id, position)");
+        } catch (Exception ignored) {
+        }
+        try {
+            db.execSQL("CREATE UNIQUE INDEX idx_work_genres_work_name ON work_genres (work_id, name)");
+        } catch (Exception ignored) {
+        }
+        try {
+            db.execSQL("CREATE INDEX idx_work_genres_name ON work_genres (name)");
+        } catch (Exception ignored) {
+        }
+    }
+
+    private static void migrateBooksToV7(SQLiteDatabase db) {
+        db.beginTransaction();
+        try {
+            createV7Schema(db);
+            Cursor c = db.rawQuery(
+                    "SELECT _id, path, format, title, author, publisher, description, series, "
+                    + "size_bytes, exported, meta_done, user_edited, meta_failed, last_read, genre "
+                    + "FROM books", null);
+            try {
+                while (c.moveToNext()) {
+                    long bookId = c.getLong(0);
+                    Cursor exists = db.rawQuery(
+                            "SELECT _id FROM works WHERE _id=?", new String[]{String.valueOf(bookId)});
+                    try {
+                        if (!exists.moveToFirst()) {
+                            ContentValues wv = new ContentValues();
+                            wv.put("_id", bookId);
+                            wv.put("title", c.getString(3));
+                            wv.put("author", c.getString(4));
+                            wv.put("publisher", c.getString(5));
+                            wv.put("description", c.getString(6));
+                            wv.put("series", c.getString(7));
+                            wv.put("user_edited", c.getInt(11));
+                            if (c.isNull(13)) {
+                                wv.putNull("last_read");
+                            } else {
+                                wv.put("last_read", c.getLong(13));
+                            }
+                            wv.putNull("remote_id");
+                            wv.put("revision", 0);
+                            wv.put("deleted", 0);
+                            db.insert("works", null, wv);
+                        }
+                    } finally {
+                        exists.close();
+                    }
+
+                    Cursor fileExists = db.rawQuery(
+                            "SELECT _id FROM files WHERE work_id=?",
+                            new String[]{String.valueOf(bookId)});
+                    try {
+                        if (!fileExists.moveToFirst()) {
+                            ContentValues fv = new ContentValues();
+                            fv.put("work_id", bookId);
+                            fv.put("format", c.getString(2));
+                            fv.put("path", c.getString(1));
+                            fv.putNull("remote_key");
+                            fv.put("size_bytes", c.getLong(8));
+                            fv.putNull("content_hash");
+                            fv.put("exported", c.getInt(9));
+                            fv.put("meta_done", c.getInt(10));
+                            fv.put("meta_failed", c.getInt(12));
+                            fv.put("availability", "local");
+                            db.insert("files", null, fv);
+                        }
+                    } finally {
+                        fileExists.close();
+                    }
+
+                    Cursor genreExists = db.rawQuery(
+                            "SELECT COUNT(*) FROM work_genres WHERE work_id=?",
+                            new String[]{String.valueOf(bookId)});
+                    try {
+                        genreExists.moveToFirst();
+                        if (genreExists.getInt(0) == 0) {
+                            String genre = c.getString(14);
+                            if (genre != null && genre.trim().length() > 0) {
+                                ArrayList<String> one = new ArrayList<String>();
+                                one.add(genre);
+                                replaceGenresOn(db, bookId, MetaData.normalizeGenres(one));
+                            }
+                        }
+                    } finally {
+                        genreExists.close();
+                    }
+                }
+            } finally {
+                c.close();
+            }
+            db.execSQL("DROP TABLE IF EXISTS books");
+            db.setTransactionSuccessful();
+        } finally {
+            db.endTransaction();
+        }
+    }
+
     private SQLiteDatabase readableDb() {
         synchronized (WRITE_LOCK) {
             return getReadableDatabase();
         }
     }
 
-    /** Inserts the book if new, or updates its metadata fields if it already exists.
-     *  The {@code last_read}, {@code meta_done} and {@code user_edited} columns are
-     *  never written here: an existing row keeps them as-is (so a stale in-memory
-     *  model can never clobber the enrichment state or the user-edited flag) and a
-     *  new row gets the schema defaults (both 0). The user-edited flag is set
-     *  explicitly via {@link #markUserEdited}. Returns the row id. */
     public long upsert(Book b) {
         synchronized (WRITE_LOCK) {
             SQLiteDatabase db = getWritableDatabase();
-            ContentValues cv = new ContentValues();
-            cv.put("path", b.path);
-            cv.put("format", b.format);
-            cv.put("title", b.title);
-            cv.put("author", b.author);
-            cv.put("publisher", b.publisher);
-            cv.put("description", b.description);
-            cv.put("series", b.series);
-            cv.put("genre", b.genre);
-            cv.put("size_bytes", b.sizeBytes);
-            cv.put("exported", b.exported ? 1 : 0);
-
-            Cursor c = db.rawQuery("SELECT _id FROM books WHERE path=?", new String[]{b.path});
-            long existing = -1;
+            db.beginTransaction();
             try {
-                if (c.moveToFirst()) existing = c.getLong(0);
+                long workId = upsertWorkAndFile(db, b, true);
+                db.setTransactionSuccessful();
+                b.id = workId;
+                return workId;
             } finally {
-                c.close();
+                db.endTransaction();
             }
-            if (existing >= 0) {
-                db.update("books", cv, "_id=?", new String[]{String.valueOf(existing)});
-                b.id = existing;
-            } else {
-                b.id = db.insert("books", null, cv);
-            }
-            return b.id;
         }
     }
 
-    /** Stage-1 (fast scan) upsert: inserts a skeleton row (file name title, no in-file
-     *  metadata yet) or, for an existing row, refreshes only {@code format} and
-     *  {@code size_bytes} — title/author/etc, the meta_done / user_edited flags and
-     *  last_read are all preserved, so a rescan never resets the enrichment state or
-     *  the catalog metadata. */
+    private static long upsertWorkAndFile(SQLiteDatabase db, Book b, boolean fullMetadata) {
+        long workId = -1;
+        long fileId = -1;
+        Cursor c = db.rawQuery("SELECT _id, work_id FROM files WHERE path=?",
+                new String[]{b.path});
+        try {
+            if (c.moveToFirst()) {
+                fileId = c.getLong(0);
+                workId = c.getLong(1);
+            }
+        } finally {
+            c.close();
+        }
+
+        ArrayList<String> genreList = b.genres == null
+                ? new ArrayList<String>() : b.genres;
+
+        if (workId >= 0) {
+            if (fullMetadata) {
+                ContentValues wv = new ContentValues();
+                wv.put("title", b.title);
+                wv.put("author", b.author);
+                wv.put("publisher", b.publisher);
+                wv.put("description", b.description);
+                wv.put("series", b.series);
+                db.update("works", wv, "_id=?", new String[]{String.valueOf(workId)});
+                replaceGenresOn(db, workId, MetaData.normalizeGenres(genreList));
+            }
+            ContentValues fv = new ContentValues();
+            fv.put("format", b.format);
+            fv.put("size_bytes", b.sizeBytes);
+            if (fullMetadata) fv.put("exported", b.exported ? 1 : 0);
+            db.update("files", fv, "_id=?", new String[]{String.valueOf(fileId)});
+        } else {
+            ContentValues wv = new ContentValues();
+            wv.put("title", b.title);
+            wv.put("author", b.author);
+            wv.put("publisher", b.publisher);
+            wv.put("description", b.description);
+            wv.put("series", b.series);
+            workId = db.insert("works", null, wv);
+            ContentValues fv = new ContentValues();
+            fv.put("work_id", workId);
+            fv.put("path", b.path);
+            fv.put("format", b.format);
+            fv.put("size_bytes", b.sizeBytes);
+            fv.put("exported", b.exported ? 1 : 0);
+            fv.put("availability", "local");
+            db.insert("files", null, fv);
+            replaceGenresOn(db, workId, MetaData.normalizeGenres(genreList));
+        }
+        b.id = workId;
+        return workId;
+    }
+
     public long upsertBasic(Book b) {
         synchronized (WRITE_LOCK) {
             return upsertBasicOn(getWritableDatabase(), b);
         }
     }
 
-    /** Stage-1 batch commit: applies the scanned skeleton rows in groups of
-     *  {@link #BATCH_SIZE} books per SQLite transaction instead of one autocommit
-     *  per row (one commit per group, not per book). A group is atomic — a row
-     *  that fails rolls the whole group back (none of it is persisted) and the
-     *  cause is logged; the unapplied rows are simply picked up again on the next
-     *  scan (the upserts are idempotent). */
     public void upsertBasicBatch(List<Book> books) {
         synchronized (WRITE_LOCK) {
             SQLiteDatabase db = getWritableDatabase();
@@ -222,9 +399,6 @@ public class BookDatabase extends SQLiteOpenHelper {
                     for (int j = i; j < to; j++) upsertBasicOn(db, books.get(j));
                     db.setTransactionSuccessful();
                 } catch (Exception e) {
-                    // endTransaction() (without setTransactionSuccessful) rolls the
-                    // whole group back; the scan is a full rescan, so the rows are
-                    // simply upserted again next time.
                     Log.w(TAG, "Scan batch " + (i + 1) + ".." + to + " rolled back", e);
                 } finally {
                     db.endTransaction();
@@ -234,50 +408,45 @@ public class BookDatabase extends SQLiteOpenHelper {
         }
     }
 
-    /** The stage-1 upsert itself (row lookup + insert/update), run against the
-     *  given database so it joins the caller's transaction when batched. */
     private static long upsertBasicOn(SQLiteDatabase db, Book b) {
-        Cursor c = db.rawQuery("SELECT _id FROM books WHERE path=?", new String[]{b.path});
-        long existing = -1;
+        long workId = -1;
+        Cursor c = db.rawQuery("SELECT _id, work_id FROM files WHERE path=?",
+                new String[]{b.path});
         try {
-            if (c.moveToFirst()) existing = c.getLong(0);
+            if (c.moveToFirst()) {
+                long fileId = c.getLong(0);
+                workId = c.getLong(1);
+                ContentValues cv = new ContentValues();
+                cv.put("format", b.format);
+                cv.put("size_bytes", b.sizeBytes);
+                db.update("files", cv, "_id=?", new String[]{String.valueOf(fileId)});
+                b.id = workId;
+                return workId;
+            }
         } finally {
             c.close();
         }
-        if (existing >= 0) {
-            ContentValues cv = new ContentValues();
-            cv.put("format", b.format);
-            cv.put("size_bytes", b.sizeBytes);
-            db.update("books", cv, "_id=?", new String[]{String.valueOf(existing)});
-            b.id = existing;
-        } else {
-            ContentValues cv = new ContentValues();
-            cv.put("path", b.path);
-            cv.put("format", b.format);
-            cv.put("title", b.title);
-            cv.put("size_bytes", b.sizeBytes);
-            b.id = db.insert("books", null, cv);
-        }
-        return b.id;
+
+        ContentValues wv = new ContentValues();
+        wv.put("title", b.title);
+        workId = db.insert("works", null, wv);
+        ContentValues fv = new ContentValues();
+        fv.put("work_id", workId);
+        fv.put("path", b.path);
+        fv.put("format", b.format);
+        fv.put("size_bytes", b.sizeBytes);
+        fv.put("availability", "local");
+        db.insert("files", null, fv);
+        b.id = workId;
+        return workId;
     }
 
-    /** Stage-2 (background enrichment) update. When the user has edited the catalog
-     *  (user_edited=1) only still-empty fields are filled, so user values are never
-     *  clobbered; otherwise the extracted values are written (a failed extraction
-     *  leaves the file-name title in place). Always marks the book as enriched and
-     *  clears the "un-enriched" flag ({@code meta_failed}, set by
-     *  {@link #markMetaFailed} when a parse overran the enricher's time budget);
-     *  last_read is never touched. */
     public void updateMetadata(long id, MetaData md, boolean fileReadable) {
         synchronized (WRITE_LOCK) {
             applyUpdate(getWritableDatabase(), id, md, fileReadable);
         }
     }
 
-    /** One pre-parsed stage-2 result for {@link #updateMetadataBatch}: the book's
-     *  row id and the metadata to persist for it. The parse itself happens OUTSIDE
-     *  the database (on the enricher's throwaway thread, under its own time
-     *  budget) — the batch only commits the finished results. */
     public static final class MetaUpdate {
         public final long id;
         public final MetaData meta;
@@ -290,12 +459,6 @@ public class BookDatabase extends SQLiteOpenHelper {
         }
     }
 
-    /** Stage-2 batch commit: applies a group of pre-parsed results in groups of
-     *  {@link #BATCH_SIZE} books per SQLite transaction instead of one autocommit
-     *  per book (the enricher's time budget goes into the file, not the database).
-     *  A group is atomic — a statement that fails rolls the whole group back
-     *  (none of it is persisted) and the cause is logged; the unapplied books keep
-     *  {@code meta_done = 0} and are retried on the next rescan. */
     public void updateMetadataBatch(List<MetaUpdate> updates) {
         synchronized (WRITE_LOCK) {
             SQLiteDatabase db = getWritableDatabase();
@@ -309,9 +472,6 @@ public class BookDatabase extends SQLiteOpenHelper {
                     }
                     db.setTransactionSuccessful();
                 } catch (Exception e) {
-                    // endTransaction() (without setTransactionSuccessful) rolls the
-                    // whole group back; the books stay in the stage-2 queue for the
-                    // next rescan.
                     Log.w(TAG, "Metadata batch " + (i + 1) + ".." + to + " rolled back", e);
                 } finally {
                     db.endTransaction();
@@ -321,81 +481,132 @@ public class BookDatabase extends SQLiteOpenHelper {
         }
     }
 
-    /** The stage-2 update itself (row lookup + user-edit merge + write), run
-     *  against the given database so it joins the caller's transaction when
-     *  batched. See {@link #updateMetadata} for the contract (user edits are never
-     *  clobbered, last_read is never touched). */
-    private static void applyUpdate(SQLiteDatabase db, long id, MetaData md,
-                                     boolean fileReadable) {
-        String[] cols = {"title", "author", "publisher", "description", "series",
-                "genre", "user_edited"};
-        Cursor cur = db.query("books", cols, "_id=?", new String[]{String.valueOf(id)},
+    private static void applyUpdate(SQLiteDatabase db, long workId, MetaData md,
+                                    boolean fileReadable) {
+        Cursor cur = db.query("works",
+                new String[]{"title", "author", "publisher", "description", "series", "user_edited"},
+                "_id=? AND deleted=0", new String[]{String.valueOf(workId)},
                 null, null, null);
         if (!cur.moveToFirst()) {
             cur.close();
-            return; // row deleted meanwhile
+            return;
         }
         boolean userEdited = cur.getInt(cur.getColumnIndexOrThrow("user_edited")) == 1;
-        // The current field values come from this same cursor (already fetched
-        // above), so "is this field blank?" is decided in Java — no extra
-        // per-field SELECT on the hottest path of stage 2.
         String curTitle = cur.getString(cur.getColumnIndexOrThrow("title"));
         String curAuthor = cur.getString(cur.getColumnIndexOrThrow("author"));
         String curPublisher = cur.getString(cur.getColumnIndexOrThrow("publisher"));
         String curDescription = cur.getString(cur.getColumnIndexOrThrow("description"));
         String curSeries = cur.getString(cur.getColumnIndexOrThrow("series"));
-        String curGenre = cur.getString(cur.getColumnIndexOrThrow("genre"));
         cur.close();
 
-        ContentValues cv = new ContentValues();
-        cv.put("meta_done", 1);
-        // A parse that completed (in time) is no longer "un-enriched".
-        cv.put("meta_failed", 0);
+        List<String> curGenres = readGenresForWork(db, workId);
+
+        ContentValues wv = new ContentValues();
         if (md != null && md.found && fileReadable) {
-            if (!userEdited || isBlank(curTitle)) cv.put("title", md.title);
-            if (!userEdited || isBlank(curAuthor)) cv.put("author", md.author);
-            if (!userEdited || isBlank(curPublisher)) cv.put("publisher", md.publisher);
-            if (!userEdited || isBlank(curDescription)) cv.put("description", md.description);
-            if (!userEdited || isBlank(curSeries)) cv.put("series", md.series);
-            // Same merge rule as the other fields: enrichment fills the genre only
-            // while it is blank (or overwrites it when the user never edited the
-            // row), so a user-edited value is never clobbered. Formats that carry
-            // no genre write NULL (the book simply has no genre).
-            if (!userEdited || isBlank(curGenre)) cv.put("genre", md.genre);
+            if (!userEdited || isBlank(curTitle)) wv.put("title", md.title);
+            if (!userEdited || isBlank(curAuthor)) wv.put("author", md.author);
+            if (!userEdited || isBlank(curPublisher)) wv.put("publisher", md.publisher);
+            if (!userEdited || isBlank(curDescription)) wv.put("description", md.description);
+            if (!userEdited || isBlank(curSeries)) wv.put("series", md.series);
         }
-        // cv always carries at least meta_done, so the update is unconditional.
-        db.update("books", cv, "_id=?", new String[]{String.valueOf(id)});
+        if (wv.size() > 0) {
+            db.update("works", wv, "_id=?", new String[]{String.valueOf(workId)});
+        }
+
+        ContentValues fv = new ContentValues();
+        fv.put("meta_done", 1);
+        fv.put("meta_failed", 0);
+        db.update("files", fv, "work_id=?", new String[]{String.valueOf(workId)});
+
+        if (md != null && md.found && fileReadable) {
+            boolean genresEmpty = curGenres.isEmpty();
+            if (!userEdited || genresEmpty) {
+                ArrayList<String> incoming;
+                if (md.genres != null) {
+                    incoming = MetaData.normalizeGenres(md.genres);
+                } else {
+                    incoming = new ArrayList<String>();
+                }
+                replaceGenresOn(db, workId, incoming);
+            }
+        }
     }
 
-    /** A field value is "blank" when it is NULL or empty/whitespace-only. */
     private static boolean isBlank(String value) {
         return value == null || value.trim().length() == 0;
     }
 
-    /** All books whose in-file metadata has not been extracted yet (the stage-2
-     *  queue). Books whose last parse overran the enricher's time budget
-     *  ({@code meta_failed = 1}, the "un-enriched" ones) are ordered last, so every
-     *  rescan works through the normal books first and only retries the slow ones
-     *  at the end of the pass. */
+    private static List<String> readGenresForWork(SQLiteDatabase db, long workId) {
+        List<String> names = new ArrayList<String>();
+        Cursor g = db.rawQuery(
+                "SELECT name FROM work_genres WHERE work_id=? ORDER BY position",
+                new String[]{String.valueOf(workId)});
+        try {
+            while (g.moveToNext()) names.add(g.getString(0));
+        } finally {
+            g.close();
+        }
+        return names;
+    }
+
+    private static void replaceGenresOn(SQLiteDatabase db, long workId, List<String> names) {
+        db.delete("work_genres", "work_id=?", new String[]{String.valueOf(workId)});
+        for (int i = 0; i < names.size(); i++) {
+            ContentValues cv = new ContentValues();
+            cv.put("work_id", workId);
+            cv.put("position", i);
+            cv.put("name", names.get(i));
+            db.insert("work_genres", null, cv);
+        }
+    }
+
+    private void attachGenres(SQLiteDatabase db, List<Book> books) {
+        if (books.isEmpty()) return;
+        StringBuilder q = new StringBuilder(
+                "SELECT work_id, name FROM work_genres ORDER BY work_id, position");
+        Cursor c = db.rawQuery(q.toString(), null);
+        Map<Long, ArrayList<String>> byWork = new HashMap<Long, ArrayList<String>>();
+        try {
+            while (c.moveToNext()) {
+                long wid = c.getLong(0);
+                ArrayList<String> list = byWork.get(wid);
+                if (list == null) {
+                    list = new ArrayList<String>();
+                    byWork.put(wid, list);
+                }
+                list.add(c.getString(1));
+            }
+        } finally {
+            c.close();
+        }
+        for (int i = 0; i < books.size(); i++) {
+            Book b = books.get(i);
+            ArrayList<String> g = byWork.get(b.id);
+            if (g != null) {
+                b.genres = g;
+            } else {
+                b.genres = new ArrayList<String>();
+            }
+        }
+    }
+
     public List<Book> needMeta() {
         synchronized (WRITE_LOCK) {
             List<Book> list = new ArrayList<Book>();
             SQLiteDatabase db = readableDb();
-            Cursor c = db.query("books", null, "meta_done=0", null, null, null,
-                    "meta_failed ASC, _id ASC");
+            String sql = LIST_SELECT + LIST_FROM + " AND f.meta_done=0 "
+                    + "ORDER BY f.meta_failed ASC, w._id ASC";
+            Cursor c = db.rawQuery(sql, null);
             try {
                 while (c.moveToNext()) list.add(fromCursor(c));
             } finally {
                 c.close();
             }
+            attachGenres(db, list);
             return list;
         }
     }
 
-    /** Same query as {@link #all(String)} but returning a live cursor (for the
-     *  ContentProvider / CursorAdapter). The single-value form: delegates to
-     *  the format-set overload ({@link #cursorAll(String[])}); a null/empty
-     *  value means no selection (all books), as before. */
     public Cursor cursorAll(String formatFilter) {
         if (formatFilter == null || formatFilter.length() == 0) {
             return cursorAll((String[]) null);
@@ -403,83 +614,52 @@ public class BookDatabase extends SQLiteOpenHelper {
         return cursorAll(new String[]{formatFilter});
     }
 
-    /** The format-set overload of the catalog cursor (the modal filter's
-     *  query): delegates to the format+genre overload with no genre
-     *  restriction. */
     public Cursor cursorAll(String[] formatFilter) {
         return cursorAll(formatFilter, null);
     }
 
-    /** The combined catalog cursor (the modal filter's query, the plan's
-     *  step 3): a non-null, non-empty array per dimension becomes
-     *  {@code format IN (?,?,…)} and {@code genre IS NOT NULL AND genre
-     *  IN (?,?,…)} — one placeholder per id; null or an empty array means
-     *  "no restriction" for that dimension, and both null gives the plain
-     *  {@code SELECT * FROM books} over the whole catalog. The row order is
-     *  the same as the single-value overload — title COLLATE NOCASE. */
     public Cursor cursorAll(String[] formatFilter, String[] genreFilter) {
         synchronized (WRITE_LOCK) {
             SQLiteDatabase db = readableDb();
-            StringBuilder selection = new StringBuilder();
+            StringBuilder sql = new StringBuilder(LIST_SELECT);
+            sql.append(LIST_FROM);
             List<String> args = new ArrayList<String>();
             if (formatFilter != null && formatFilter.length > 0) {
-                appendInClause(selection, "format", formatFilter, args);
+                sql.append(" AND f.format IN (");
+                for (int i = 0; i < formatFilter.length; i++) {
+                    if (i > 0) sql.append(",");
+                    sql.append("?");
+                    args.add(formatFilter[i]);
+                }
+                sql.append(")");
             }
             if (genreFilter != null && genreFilter.length > 0) {
-                if (selection.length() > 0) selection.append(" AND ");
-                // The IS NOT NULL makes the intent explicit for readers of the
-                // generated query (IN never matches NULL anyway): a book only
-                // reaches the genre filter if it actually has a genre.
-                appendInClause(selection, "genre IS NOT NULL AND genre",
-                        genreFilter, args);
+                sql.append(" AND EXISTS (SELECT 1 FROM work_genres g WHERE g.work_id = w._id AND g.name IN (");
+                for (int i = 0; i < genreFilter.length; i++) {
+                    if (i > 0) sql.append(",");
+                    sql.append("?");
+                    args.add(genreFilter[i]);
+                }
+                sql.append("))");
             }
-            if (selection.length() == 0) {
-                return db.query("books", null, null, null, null, null,
-                        "title COLLATE NOCASE ASC");
-            }
-            return db.query("books", null, selection.toString(),
-                    args.toArray(new String[0]), null, null,
-                    "title COLLATE NOCASE ASC");
+            sql.append(" ORDER BY w.title COLLATE NOCASE ASC");
+            return db.rawQuery(sql.toString(),
+                    args.isEmpty() ? null : args.toArray(new String[0]));
         }
     }
 
-    /** Appends {@code <column> IN (?,…)} (one placeholder per id) to the
-     *  selection and the ids to the args. */
-    private static void appendInClause(StringBuilder selection, String column,
-            String[] ids, List<String> args) {
-        selection.append(column).append(" IN (");
-        for (int i = 0; i < ids.length; i++) {
-            if (i > 0) selection.append(",");
-            selection.append("?");
-            args.add(ids[i]);
-        }
-        selection.append(")");
-    }
-
-    /** The distinct non-null genres of the catalog in genre order — the
-     *  dynamic reference of the filter dialog's "Genres" tab (the plan's
-     *  step 6): genres are formed from the enriched books, never from a
-     *  hardcoded list, so the reference grows with the content. */
     public List<String> distinctGenres() {
         synchronized (WRITE_LOCK) {
             List<String> genres = new ArrayList<String>();
-            // Own connection, opened on THIS thread. The helper's cached
-            // connection belongs to whichever thread opened it (the stage-2
-            // worker, usually). Robolectric's legacy shadow keeps native
-            // connection pointers per thread and throws "Illegal connection
-            // pointer" when the main thread reuses that object — which is
-            // exactly this call: a previous screen's onCancelled refreshes
-            // the open Genres tab while the next screen starts a pass.
-            // A short-lived connection sees committed rows: the write lock
-            // above waits out any batch the worker is in.
             SQLiteDatabase helperDb = getWritableDatabase();
             SQLiteDatabase db = SQLiteDatabase.openDatabase(
                     helperDb.getPath(), null, SQLiteDatabase.OPEN_READONLY);
             Cursor c = null;
             try {
                 c = db.rawQuery(
-                        "SELECT DISTINCT genre FROM books WHERE genre IS NOT NULL ORDER BY genre",
-                        null);
+                        "SELECT DISTINCT g.name FROM work_genres g "
+                        + "INNER JOIN works w ON w._id = g.work_id WHERE w.deleted = 0 "
+                        + "ORDER BY g.name", null);
                 while (c.moveToNext()) genres.add(c.getString(0));
             } finally {
                 if (c != null) c.close();
@@ -489,21 +669,20 @@ public class BookDatabase extends SQLiteOpenHelper {
         }
     }
 
-    /** Same query as {@link #recent(int)} but returning a live cursor. */
     public Cursor cursorRecent(int limit) {
         synchronized (WRITE_LOCK) {
             if (limit <= 0) limit = 200;
             SQLiteDatabase db = readableDb();
-            return db.query("books", null, "last_read IS NOT NULL", null, null, null,
-                    "last_read DESC", String.valueOf(limit));
+            String sql = LIST_SELECT + LIST_FROM + " AND w.last_read IS NOT NULL "
+                    + "ORDER BY w.last_read DESC LIMIT " + limit;
+            return db.rawQuery(sql, null);
         }
     }
 
-    /** Returns a fresh row id for a path that already exists (for updating other fields). */
     public long getIdForPath(String path) {
         synchronized (WRITE_LOCK) {
             SQLiteDatabase db = readableDb();
-            Cursor c = db.rawQuery("SELECT _id FROM books WHERE path=?", new String[]{path});
+            Cursor c = db.rawQuery("SELECT work_id FROM files WHERE path=?", new String[]{path});
             try {
                 if (c.moveToFirst()) return c.getLong(0);
                 return -1;
@@ -513,41 +692,42 @@ public class BookDatabase extends SQLiteOpenHelper {
         }
     }
 
-    /** Returns all books, optionally filtered by a format id, ordered by title. */
     public List<Book> all(String formatFilter) {
         synchronized (WRITE_LOCK) {
             List<Book> list = new ArrayList<Book>();
             SQLiteDatabase db = readableDb();
             Cursor c;
             if (formatFilter == null || formatFilter.length() == 0) {
-                c = db.query("books", null, null, null, null, null,
-                        "title COLLATE NOCASE ASC");
+                c = db.rawQuery(LIST_SELECT + LIST_FROM + " ORDER BY w.title COLLATE NOCASE ASC", null);
             } else {
-                c = db.query("books", null, "format=?", new String[]{formatFilter},
-                        null, null, "title COLLATE NOCASE ASC");
+                c = db.rawQuery(LIST_SELECT + LIST_FROM
+                        + " AND f.format=? ORDER BY w.title COLLATE NOCASE ASC",
+                        new String[]{formatFilter});
             }
             try {
                 while (c.moveToNext()) list.add(fromCursor(c));
             } finally {
                 c.close();
             }
+            attachGenres(db, list);
             return list;
         }
     }
 
-    /** Returns the most recently read books (the "Recently read" tab). */
     public List<Book> recent(int limit) {
         synchronized (WRITE_LOCK) {
             if (limit <= 0) limit = 200;
             List<Book> list = new ArrayList<Book>();
             SQLiteDatabase db = readableDb();
-            Cursor c = db.query("books", null, "last_read IS NOT NULL", null, null, null,
-                    "last_read DESC", String.valueOf(limit));
+            String sql = LIST_SELECT + LIST_FROM + " AND w.last_read IS NOT NULL "
+                    + "ORDER BY w.last_read DESC LIMIT " + limit;
+            Cursor c = db.rawQuery(sql, null);
             try {
                 while (c.moveToNext()) list.add(fromCursor(c));
             } finally {
                 c.close();
             }
+            attachGenres(db, list);
             return list;
         }
     }
@@ -555,56 +735,59 @@ public class BookDatabase extends SQLiteOpenHelper {
     public Book getById(long id) {
         synchronized (WRITE_LOCK) {
             SQLiteDatabase db = readableDb();
-            Cursor c = db.query("books", null, "_id=?", new String[]{String.valueOf(id)},
-                    null, null, null);
+            String sql = LIST_SELECT + LIST_FROM + " AND w._id=?";
+            Cursor c = db.rawQuery(sql, new String[]{String.valueOf(id)});
             try {
-                if (c.moveToFirst()) return fromCursor(c);
-                return null;
+                if (!c.moveToFirst()) return null;
+                Book b = fromCursor(c);
+                attachGenres(db, listOf(b));
+                return b;
             } finally {
                 c.close();
             }
         }
     }
 
-    /** Marks the row as needing stage-2 enrichment again. Used after the underlying
-     *  file was overwritten (an import with the same name), so the old in-file
-     *  metadata is re-extracted instead of being trusted. Also clears the
-     *  "un-enriched" flag: the row now points at new file contents, so the old
-     *  "this file was too slow to parse" verdict no longer applies. */
+    private static List<Book> listOf(Book b) {
+        List<Book> list = new ArrayList<Book>();
+        list.add(b);
+        return list;
+    }
+
     public void markMetaPending(long id) {
         synchronized (WRITE_LOCK) {
             SQLiteDatabase db = getWritableDatabase();
-            ContentValues cv = new ContentValues();
-            cv.put("meta_done", 0);
-            cv.put("meta_failed", 0);
-            cv.put("user_edited", 0);
-            db.update("books", cv, "_id=?", new String[]{String.valueOf(id)});
+            db.beginTransaction();
+            try {
+                ContentValues fv = new ContentValues();
+                fv.put("meta_done", 0);
+                fv.put("meta_failed", 0);
+                db.update("files", fv, "work_id=?", new String[]{String.valueOf(id)});
+                ContentValues wv = new ContentValues();
+                wv.put("user_edited", 0);
+                db.update("works", wv, "_id=?", new String[]{String.valueOf(id)});
+                db.setTransactionSuccessful();
+            } finally {
+                db.endTransaction();
+            }
         }
     }
 
-    /** Marks the row as "un-enriched": its last parsing attempt overran the
-     *  enricher's time budget (see {@code MetaEnricher}), which gave up instead of
-     *  blocking the whole queue. The book stays in the stage-2 queue
-     *  ({@code meta_done} is left at 0, so it is retried on every rescan) and the
-     *  {@code meta_failed} flag makes {@link #needMeta()} take it last. */
     public void markMetaFailed(long id) {
         synchronized (WRITE_LOCK) {
             SQLiteDatabase db = getWritableDatabase();
             ContentValues cv = new ContentValues();
             cv.put("meta_failed", 1);
-            db.update("books", cv, "_id=?", new String[]{String.valueOf(id)});
+            db.update("files", cv, "work_id=?", new String[]{String.valueOf(id)});
         }
     }
 
-    /** Marks the row as user-edited (the enricher will then only fill still-blank
-     *  fields and never clobber the user's values). Monotonic by design: once 1,
-     *  it never goes back to 0. */
     public void markUserEdited(long id) {
         synchronized (WRITE_LOCK) {
             SQLiteDatabase db = getWritableDatabase();
             ContentValues cv = new ContentValues();
             cv.put("user_edited", 1);
-            db.update("books", cv, "_id=?", new String[]{String.valueOf(id)});
+            db.update("works", cv, "_id=?", new String[]{String.valueOf(id)});
         }
     }
 
@@ -613,28 +796,47 @@ public class BookDatabase extends SQLiteOpenHelper {
             SQLiteDatabase db = getWritableDatabase();
             ContentValues cv = new ContentValues();
             cv.put("last_read", System.currentTimeMillis());
-            db.update("books", cv, "_id=?", new String[]{String.valueOf(id)});
+            db.update("works", cv, "_id=?", new String[]{String.valueOf(id)});
         }
     }
 
     public void deleteByPath(String path) {
+        long workId = -1;
         synchronized (WRITE_LOCK) {
             SQLiteDatabase db = getWritableDatabase();
-            db.delete("books", "path=?", new String[]{path});
+            Cursor c = db.rawQuery("SELECT _id, work_id FROM files WHERE path=?",
+                    new String[]{path});
+            try {
+                if (!c.moveToFirst()) return;
+                long fileId = c.getLong(0);
+                workId = c.getLong(1);
+                db.delete("files", "_id=?", new String[]{String.valueOf(fileId)});
+                Cursor remaining = db.rawQuery(
+                        "SELECT COUNT(*) FROM files WHERE work_id=?",
+                        new String[]{String.valueOf(workId)});
+                try {
+                    remaining.moveToFirst();
+                    if (remaining.getInt(0) == 0) {
+                        db.delete("work_genres", "work_id=?", new String[]{String.valueOf(workId)});
+                        db.delete("works", "_id=?", new String[]{String.valueOf(workId)});
+                    }
+                } finally {
+                    remaining.close();
+                }
+            } finally {
+                c.close();
+            }
         }
-        // Drop the book's cached cover too, so removal never leaves an orphan
-        // "covers/<hash>.img" file on disk.
         CoverCache.delete(context, path);
     }
 
-    /** Removes missing books below one successfully scanned root. */
     public void removeMissingUnderRoot(String root, Set<String> foundPaths) {
         String normalizedRoot = new File(root).getAbsolutePath();
         Set<String> found = new HashSet<String>();
         for (String path : foundPaths) found.add(new File(path).getAbsolutePath());
         List<String> missing = new ArrayList<String>();
         synchronized (WRITE_LOCK) {
-            Cursor c = getReadableDatabase().query("books", new String[]{"path"},
+            Cursor c = getReadableDatabase().query("files", new String[]{"path"},
                     null, null, null, null, null);
             try {
                 while (c.moveToNext()) {
@@ -661,13 +863,13 @@ public class BookDatabase extends SQLiteOpenHelper {
     public void clear() {
         synchronized (WRITE_LOCK) {
             SQLiteDatabase db = getWritableDatabase();
-            db.delete("books", null, null);
+            db.delete("work_genres", null, null);
+            db.delete("files", null, null);
+            db.delete("works", null, null);
         }
-        // The whole catalog is gone — wipe the whole cover cache with it.
         CoverCache.clear(context);
     }
 
-    /** Maps a books-table cursor row to a {@link Book} (also used by the UI adapter). */
     public static Book fromCursor(Cursor c) {
         Book b = new Book();
         b.id = c.getLong(c.getColumnIndexOrThrow("_id"));
@@ -678,7 +880,6 @@ public class BookDatabase extends SQLiteOpenHelper {
         b.publisher = c.getString(c.getColumnIndexOrThrow("publisher"));
         b.description = c.getString(c.getColumnIndexOrThrow("description"));
         b.series = c.getString(c.getColumnIndexOrThrow("series"));
-        b.genre = c.getString(c.getColumnIndexOrThrow("genre"));
         b.sizeBytes = c.getLong(c.getColumnIndexOrThrow("size_bytes"));
         b.exported = c.getInt(c.getColumnIndexOrThrow("exported")) == 1;
         b.metaDone = c.getInt(c.getColumnIndexOrThrow("meta_done")) == 1;
