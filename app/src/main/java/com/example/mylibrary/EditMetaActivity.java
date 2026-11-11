@@ -8,6 +8,7 @@ import android.os.Bundle;
 import android.view.View;
 import android.widget.Button;
 import android.widget.EditText;
+import android.widget.LinearLayout;
 import android.widget.TextView;
 import android.widget.Toast;
 
@@ -19,6 +20,7 @@ import com.example.mylibrary.model.Book;
 
 import java.io.File;
 import java.lang.ref.WeakReference;
+import java.util.ArrayList;
 
 /**
  * Lets the user edit the metadata of a book.
@@ -35,7 +37,8 @@ public class EditMetaActivity extends Activity {
     private BookDatabase db;
     private Book book;
 
-    private EditText etTitle, etAuthor, etPublisher, etGenre, etDescription;
+    private EditText etTitle, etAuthor, etPublisher, etDescription;
+    private LinearLayout genreContainer;
     private TextView hint;
 
     @Override
@@ -43,8 +46,6 @@ public class EditMetaActivity extends Activity {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_edit_meta);
 
-        // The app context, not the Activity's: the database is process-wide state,
-        // and the in-flight save task holds it — it must not pin the Activity.
         db = new BookDatabase(getApplicationContext());
         book = getIntent().getParcelableExtra(EXTRA_BOOK);
         if (book == null) {
@@ -56,14 +57,21 @@ public class EditMetaActivity extends Activity {
         etTitle = (EditText) findViewById(R.id.edit_title);
         etAuthor = (EditText) findViewById(R.id.edit_author);
         etPublisher = (EditText) findViewById(R.id.edit_publisher);
-        etGenre = (EditText) findViewById(R.id.edit_genre);
         etDescription = (EditText) findViewById(R.id.edit_description);
+        genreContainer = (LinearLayout) findViewById(R.id.edit_genres);
 
         etTitle.setText(book.title == null ? "" : book.title);
         etAuthor.setText(book.author == null ? "" : book.author);
         etPublisher.setText(book.publisher == null ? "" : book.publisher);
-        etGenre.setText(book.genre == null ? "" : book.genre);
         etDescription.setText(book.description == null ? "" : book.description);
+
+        if (book.genres != null && !book.genres.isEmpty()) {
+            for (int i = 0; i < book.genres.size(); i++) {
+                addGenreField(book.genres.get(i));
+            }
+        } else {
+            addGenreField("");
+        }
 
         String format = book.format == null ? "" : book.format.toUpperCase();
         boolean inlineEditable = "EPUB".equals(format) || "FB2".equals(format);
@@ -73,6 +81,9 @@ public class EditMetaActivity extends Activity {
             hint.setText("Format: " + format + "  —  Edits are stored in the app library only.");
         }
 
+        ((Button) findViewById(R.id.btn_add_genre)).setOnClickListener(new View.OnClickListener() {
+            @Override public void onClick(View v) { addGenreField(""); }
+        });
         ((Button) findViewById(R.id.btn_save)).setOnClickListener(new View.OnClickListener() {
             @Override public void onClick(View v) { save(); }
         });
@@ -81,12 +92,34 @@ public class EditMetaActivity extends Activity {
         });
     }
 
+    private void addGenreField(String value) {
+        EditText et = new EditText(this);
+        et.setLayoutParams(new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT));
+        et.setInputType(android.text.InputType.TYPE_CLASS_TEXT);
+        et.setText(value == null ? "" : value);
+        genreContainer.addView(et);
+    }
+
+    private ArrayList<String> readGenresFromForm() {
+        ArrayList<String> raw = new ArrayList<String>();
+        for (int i = 0; i < genreContainer.getChildCount(); i++) {
+            View child = genreContainer.getChildAt(i);
+            if (child instanceof EditText) {
+                String t = ((EditText) child).getText().toString().trim();
+                if (t.length() > 0) raw.add(t);
+            }
+        }
+        return MetaData.normalizeGenres(raw);
+    }
+
     private void save() {
         final String title = etTitle.getText().toString().trim();
         final String author = etAuthor.getText().toString().trim();
         final String publisher = etPublisher.getText().toString().trim();
-        final String genre = etGenre.getText().toString().trim();
         final String description = etDescription.getText().toString().trim();
+        final ArrayList<String> genres = readGenresFromForm();
 
         final boolean inline = "EPUB".equals(book.format) || "FB2".equals(book.format);
         final File file = new File(book.path);
@@ -94,14 +127,9 @@ public class EditMetaActivity extends Activity {
 
         final ProgressDialog pd = ProgressDialog.show(this, null, "Saving metadata…", true, false);
         new SaveTask(this, target, file, inline,
-                title, author, publisher, genre, description, pd).execute();
+                title, author, publisher, genres, description, pd).execute();
     }
 
-    /** The metadata save task. A STATIC nested class on purpose: an anonymous inner
-     *  class would carry a synthetic strong reference to the Activity (javac emits
-     *  it for every anonymous class inside an instance method, used or not), and
-     *  the file write can outlive the screen. Holds the app context for the work
-     *  and the Activity and the progress dialog weakly for the UI follow-up. */
     private static final class SaveTask extends AsyncTask<Void, Void, Boolean> {
         private final Context appContext;
         private final BookDatabase db;
@@ -111,23 +139,23 @@ public class EditMetaActivity extends Activity {
         private final String title;
         private final String author;
         private final String publisher;
-        private final String genre;
+        private final ArrayList<String> genres;
         private final String description;
         private final WeakReference<ProgressDialog> dialog;
         private final WeakReference<EditMetaActivity> self;
 
         SaveTask(EditMetaActivity host, Book target, File file, boolean inline,
-                 String title, String author, String publisher, String genre,
+                 String title, String author, String publisher, ArrayList<String> genres,
                  String description, ProgressDialog pd) {
             this.appContext = host.getApplicationContext();
-            this.db = host.db; // safe: it holds the app context
+            this.db = host.db;
             this.target = target;
             this.file = file;
             this.inline = inline;
             this.title = title;
             this.author = author;
             this.publisher = publisher;
-            this.genre = genre;
+            this.genres = genres;
             this.description = description;
             this.dialog = new WeakReference<ProgressDialog>(pd);
             this.self = new WeakReference<EditMetaActivity>(host);
@@ -140,30 +168,22 @@ public class EditMetaActivity extends Activity {
                 md.title = title;
                 md.author = author;
                 md.publisher = publisher;
-                md.genre = genre;
+                md.genres = genres;
                 md.description = description;
                 ok = MetaWriter.write(file, md);
             }
-            // Always persist to the catalog database.
             Book updated = db.getById(target.id);
             if (updated == null) {
-                // The row vanished meanwhile (e.g. removed from another screen) —
-                // do NOT resurrect it with a stale in-memory copy.
                 return ok;
             }
             updated.title = title;
             updated.author = author;
             updated.publisher = publisher;
-            updated.genre = genre.length() == 0 ? null : genre;
+            updated.genres = genres;
             updated.description = description;
             updated.exported = ok && inline;
-            // Persist the fields, then mark the row user-edited so the background
-            // enricher never clobbers these values with the file's original
-            // metadata. (upsert() itself never touches user_edited/meta_done.)
             db.upsert(updated);
             db.markUserEdited(updated.id);
-            // The list is cursor-driven: announce the new metadata so the catalog
-            // views (list + recently read) re-query without a reload.
             BookProvider.notifyChangeAll(appContext);
             return ok;
         }

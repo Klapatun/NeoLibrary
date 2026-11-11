@@ -7,6 +7,8 @@ import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.InputStream;
 import java.io.OutputStream;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Locale;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -67,9 +69,7 @@ public final class MetaWriter {
         opf = setDcElement(opf, "publisher", md.publisher);
         opf = setDcElement(opf, "description", md.description);
         opf = setDcElement(opf, "language", md.language);
-        // Null means the caller did not edit the genre: leave dc:subject alone.
-        // An empty string is an explicit clear and goes through setDcElement.
-        if (md.genre != null) opf = setDcElement(opf, "subject", md.genre);
+        if (md.genres != null) opf = writeDcSubjects(opf, md.genres);
 
         // Write rebuilt archive to a temp file, then move over the original.
         File tmp = new File(file.getParentFile(), file.getName() + ".tmp");
@@ -240,9 +240,7 @@ public final class MetaWriter {
         // publisher
         if (md.publisher != null) xml = replaceElementContent(xml, "publisher", md.publisher);
         if (md.language != null) xml = replaceElementContent(xml, "lang", md.language);
-        // Same null-vs-empty contract as EPUB: null leaves every <genre> alone,
-        // empty removes the first one, a value replaces the first or inserts it.
-        if (md.genre != null) xml = writeFb2Genre(xml, md.genre);
+        if (md.genres != null) xml = writeFb2Genres(xml, md.genres);
 
         File tmp = new File(file.getParentFile(), file.getName() + ".tmp");
         writeTextFile(tmp, xml);
@@ -264,17 +262,77 @@ public final class MetaWriter {
         }
     }
 
-    /**
-     * Writes the catalog genre into the FB2 description. The catalog stores one
-     * genre — the first {@code <genre>} the extractor reads — so only that element
-     * is replaced. An empty value removes it. Later sibling {@code <genre>}
-     * elements are left in place. A missing element is inserted before
-     * {@code </title-info>} when that parent exists.
-     */
-    private static String writeFb2Genre(String xml, String genre) {
-        if (genre.length() == 0) return removeFirstElement(xml, "genre");
-        if (hasExactElement(xml, "genre")) return replaceElementContent(xml, "genre", genre);
-        return insertElementBefore(xml, "title-info", "genre", genre);
+    /** Writes the full genre list into FB2 title-info (null leaves the file alone). */
+    private static String writeFb2Genres(String xml, List<String> genres) {
+        xml = removeEveryExactElement(xml, "genre");
+        if (genres.isEmpty()) return xml;
+        String lower = xml.toLowerCase(Locale.US);
+        int close = lower.indexOf("</title-info>");
+        if (close < 0) return xml;
+        StringBuilder block = new StringBuilder();
+        for (int i = 0; i < genres.size(); i++) {
+            String g = genres.get(i);
+            if (g == null) continue;
+            block.append("<genre>").append(escapeXml(g)).append("</genre>");
+        }
+        return xml.substring(0, close) + block.toString() + xml.substring(close);
+    }
+
+    /** Replaces every {@code dc:subject} in the OPF metadata block. */
+    private static String writeDcSubjects(String opf, List<String> genres) {
+        opf = removeEveryDcSubject(opf);
+        if (genres.isEmpty()) return opf;
+        String lower = opf.toLowerCase(Locale.US);
+        int close = lower.indexOf("</metadata>");
+        String closeTag = "</metadata>";
+        if (close < 0) {
+            close = lower.indexOf("</opf:metadata>");
+            closeTag = "</opf:metadata>";
+        }
+        if (close < 0) return opf;
+        String indent = subjectInsertIndent(opf, close);
+        StringBuilder block = new StringBuilder();
+        for (int i = 0; i < genres.size(); i++) {
+            String g = genres.get(i);
+            if (g == null) continue;
+            block.append(indent).append("<dc:subject>")
+                    .append(escapeXml(g)).append("</dc:subject>\n");
+        }
+        return opf.substring(0, close) + block.toString() + opf.substring(close);
+    }
+
+  private static String subjectInsertIndent(String opf, int closeIndex) {
+        int lineStart = opf.lastIndexOf('\n', closeIndex);
+        if (lineStart < 0) return "    ";
+        String line = opf.substring(lineStart + 1, closeIndex);
+        int nonWs = 0;
+        while (nonWs < line.length()) {
+            char ch = line.charAt(nonWs);
+            if (ch != ' ' && ch != '\t') break;
+            nonWs++;
+        }
+        if (nonWs > 0) return line.substring(0, nonWs);
+        return "    ";
+    }
+
+    private static String removeEveryDcSubject(String xml) {
+        Pattern element = Pattern.compile("(?is)<dc:subject(?:\\s[^>]*)?>.*?</dc:subject>");
+        Matcher m = element.matcher(xml);
+        StringBuffer sb = new StringBuffer();
+        while (m.find()) m.appendReplacement(sb, "");
+        m.appendTail(sb);
+        return sb.toString();
+    }
+
+    /** Removes every element whose name is exactly {@code tag}. */
+    private static String removeEveryExactElement(String xml, String tag) {
+        Pattern element = Pattern.compile("(?is)<" + Pattern.quote(tag) + "(?:\\s[^>]*)?>.*?</"
+                + Pattern.quote(tag) + ">");
+        Matcher m = element.matcher(xml);
+        StringBuffer sb = new StringBuffer();
+        while (m.find()) m.appendReplacement(sb, "");
+        m.appendTail(sb);
+        return sb.toString();
     }
 
     /** True when {@code xml} contains an element whose name is exactly {@code tag}. */

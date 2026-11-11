@@ -275,7 +275,8 @@ public class MainActivityTest {
         // Simulate the worker having been cut off mid-work: make one row need
         // enrichment again.
         Book first = db.all(null).get(0);
-        db.getWritableDatabase().execSQL("UPDATE books SET meta_done = 0 WHERE _id = " + first.id);
+        db.getWritableDatabase().execSQL(
+                "UPDATE files SET meta_done = 0 WHERE work_id = " + first.id);
         assertFalse("precondition: one book is pending again", db.needMeta().isEmpty());
 
         // Simulate a rotation: save the instance state, destroy the activity, and
@@ -1608,7 +1609,7 @@ public class MainActivityTest {
 
         // The markRead side effect must have hit the catalog.
         android.database.Cursor c = db.getReadableDatabase().rawQuery(
-                "SELECT last_read FROM books WHERE _id=?",
+                "SELECT last_read FROM works WHERE _id=?",
                 new String[]{String.valueOf(target.id)});
         assertTrue("row must exist", c.moveToFirst());
         assertTrue("last_read must be set", c.getLong(0) > 0);
@@ -1639,7 +1640,7 @@ public class MainActivityTest {
         assertNull("no intent may be started", shadowOf(a).getNextStartedActivity());
 
         android.database.Cursor c = db.getReadableDatabase().rawQuery(
-                "SELECT last_read FROM books WHERE _id=?",
+                "SELECT last_read FROM works WHERE _id=?",
                 new String[]{String.valueOf(target.id)});
         assertTrue("row must exist", c.moveToFirst());
         assertEquals("last_read must stay 0", 0L, c.getLong(0));

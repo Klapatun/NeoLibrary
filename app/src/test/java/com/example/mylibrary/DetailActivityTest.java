@@ -146,7 +146,7 @@ public class DetailActivityTest {
 
         // The mark-as-read side effect must have hit the catalog.
         android.database.Cursor c = db.getReadableDatabase().rawQuery(
-                "SELECT last_read FROM books WHERE _id=?", new String[]{String.valueOf(bookId)});
+                "SELECT last_read FROM works WHERE _id=?", new String[]{String.valueOf(bookId)});
         assertTrue("row must exist", c.moveToFirst());
         assertTrue("last_read must be set", c.getLong(0) > 0);
     }

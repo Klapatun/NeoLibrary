@@ -16,6 +16,7 @@ import org.robolectric.annotation.Config;
 import com.example.mylibrary.testutil.TestFixtures;
 
 import java.io.File;
+import java.util.ArrayList;
 import java.util.Map;
 
 /**
@@ -110,7 +111,7 @@ public class MetaExtractorTest {
         assertEquals("Original Publisher", md.publisher);
         assertEquals("An original story.", md.description);
         assertEquals("en", md.language);
-        assertEquals("prose", md.genre);
+        assertGenres("prose", md.genres);
     }
 
     @Test
@@ -149,8 +150,86 @@ public class MetaExtractorTest {
         assertEquals("Original Publisher", md.publisher);
         assertEquals("An original story.", md.description);
         assertEquals("en", md.language);
-        assertEquals("prose", md.genre);
+        assertGenres("prose", md.genres);
     }
+
+  @Test
+  public void fb2ExtractsGenresBeforeTitleInfoInOrder() throws Exception {
+    String xml = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+            + "<FictionBook xmlns=\"http://www.gribuser.ru/xml/fictionbook/2.0\">\n"
+            + "  <description>\n"
+            + "    <title-info>\n"
+            + "      <genre>sf</genre>\n"
+            + "      <genre>prose</genre>\n"
+            + "      <title>T</title>\n"
+            + "    </title-info>\n"
+            + "    <src-title-info>\n"
+            + "      <genre>poetry</genre>\n"
+            + "    </src-title-info>\n"
+            + "  </description>\n"
+            + "</FictionBook>\n";
+    TestFixtures.writeText(fb2, xml);
+    MetaData md = MetaExtractor.extract(fb2);
+    assertGenres("sf", "prose", md.genres);
+  }
+
+  @Test
+  public void fb2ExtractWithoutTitleInfoCloseKeepsGenresUntilDescription() throws Exception {
+    String xml = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+            + "<FictionBook xmlns=\"http://www.gribuser.ru/xml/fictionbook/2.0\">\n"
+            + "  <description>\n"
+            + "    <title-info>\n"
+            + "      <genre>sf</genre>\n"
+            + "      <genre>prose</genre>\n"
+            + "    <title>T</title>\n"
+            + "    <publish-info><publisher>P</publisher></publish-info>\n"
+            + "  </description>\n"
+            + "</FictionBook>\n";
+    TestFixtures.writeText(fb2, xml);
+    MetaData md = MetaExtractor.extract(fb2);
+    assertGenres("sf", "prose", md.genres);
+  }
+
+  @Test
+  public void epubExtractsEveryDcSubjectInOrder() throws Exception {
+    String opf = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+            + "<package xmlns=\"http://www.idpf.org/2009/opf\" version=\"2.0\""
+            + " xmlns:dc=\"http://purl.org/dc/elements/1.1/\">\n"
+            + "  <metadata>\n"
+            + "    <dc:title>Original Title</dc:title>\n"
+            + "    <dc:creator>Original Author</dc:creator>\n"
+            + "    <dc:subject>Mystery</dc:subject>\n"
+            + "    <dc:subject>prose</dc:subject>\n"
+            + "  </metadata>\n"
+            + "</package>\n";
+    epubWith(opf);
+    MetaData md = MetaExtractor.extract(epub);
+    assertTrue(md.found);
+    assertEquals("Original Title", md.title);
+    assertGenres("mystery", "prose", md.genres);
+  }
+
+  @Test
+  public void normalizeGenresFoldsCaseAndKeepsYo() {
+    ArrayList<String> in = new ArrayList<String>();
+    in.add("Фэнтези");
+    in.add("фэнтези");
+    in.add("Ёлка");
+    in.add("елка");
+    ArrayList<String> out = MetaData.normalizeGenres(in);
+    assertEquals(3, out.size());
+    assertEquals("фэнтези", out.get(0));
+    assertEquals("ёлка", out.get(1));
+    assertEquals("елка", out.get(2));
+  }
+
+  @Test
+  public void epubWithoutSubjectHasEmptyGenreList() throws Exception {
+    epubWith(TestFixtures.OPF_FULL);
+    MetaData md = MetaExtractor.extract(epub);
+    assertNotNull(md.genres);
+    assertTrue(md.genres.isEmpty());
+  }
 
     @Test
     public void fb2ZipFindsFb2InSubfolderAndIgnoresOtherEntries() throws Exception {
@@ -279,4 +358,20 @@ public class MetaExtractorTest {
         assertNotNull(md);
         assertFalse(md.found);
     }
+
+  private static void assertGenres(String first, ArrayList<String> actual) {
+    assertGenres(new String[]{first}, actual);
+  }
+
+  private static void assertGenres(String a, String b, ArrayList<String> actual) {
+    assertGenres(new String[]{a, b}, actual);
+  }
+
+  private static void assertGenres(String[] expected, ArrayList<String> actual) {
+    assertNotNull(actual);
+    assertEquals(expected.length, actual.size());
+    for (int i = 0; i < expected.length; i++) {
+      assertEquals(expected[i], actual.get(i));
+    }
+  }
 }

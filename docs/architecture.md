@@ -244,9 +244,9 @@ Intent — это же механизм, с помощью которого пр
 - **`Cursor`** — «курсор» по результату SELECT: итератор по строкам.
   [Cursor](https://developer.android.com/reference/android/database/Cursor).
 
-Каталог приложения — одна таблица `books` в файле `library.db`
-(схема — [раздел 7.1](#71-таблица-books-и-её-флаги)). Все записи (INSERT/UPDATE/DELETE)
-идут через `BookDatabase` — и только через него.
+Каталог приложения — таблицы `works`, `files` и `work_genres` в `library.db`
+(схема — [раздел 7.1](#71-схема-каталога-works--files--work_genres)). Все записи
+(INSERT/UPDATE/DELETE) идут через `BookDatabase` — и только через него.
 
 ### 2.9 ContentProvider, ContentResolver, ContentObserver
 
@@ -425,7 +425,7 @@ URI (`ContentObserver`, см.
 | `PagedListView` / `PagedGridView` | UI | подклассы `ListView`/`GridView`: горизонтальный свайп листа страницу (влево — дальше, вправо — назад); детект в `dispatchTouchEvent`, перехват «свайпа в полёте» в `onInterceptTouchEvent` (API 19: иначе свайп внутри строки завершился бы кликом). |
 | `PageSwipeTracker` | UI | учёт жеста свайпа (package-private): свайп = при отпускании |dx| ≥ 3×touchSlop и |dx| ≥ 2×|dy|; второй палец отменяет; сам события не потребляет (observe-only). |
 | `Book` | модель | `Parcelable`-модель книги; флаги `metaDone`/`metaFailed`/`userEdited`. |
-| `db/BookDatabase` | хранилище | SQLite-каталог (`DB_VERSION = 5`); `upsert`/`upsertBasic`/`updateMetadata` **не трогают** `last_read`/`user_edited`/`meta_failed`; **batch-коммиты** (`upsertBasicBatch`/`updateMetadataBatch`, транзакция на группу по `BATCH_SIZE = 5`); `needMeta()` — очередь этапа 2 (`meta_failed` последними); `markMetaPending`/`markMetaFailed`/`markUserEdited`/`markRead`; `clear()` (каталог + весь кэш обложек); статический `WRITE_LOCK`, одноразовые чтения — `readableDb()` под тем же локом. |
+| `db/BookDatabase` | хранилище | SQLite-каталог (`DB_VERSION = 7`, `works`/`files`/`work_genres`); `upsert`/`upsertBasic`/`updateMetadata` **не трогают** `last_read`/`user_edited`/`meta_failed`; **batch-коммиты** (`upsertBasicBatch`/`updateMetadataBatch`, транзакция на группу по `BATCH_SIZE = 5`); `needMeta()` — очередь этапа 2 (`meta_failed` последними); `markMetaPending`/`markMetaFailed`/`markUserEdited`/`markRead`; `clear()` (каталог + весь кэш обложек); статический `WRITE_LOCK`, одноразовые чтения — `readableDb()` под тем же локом. |
 | `db/BookProvider` | хранилище | read-only `ContentProvider` — канал `ContentObserver` для `CursorLoader` (URI: все / недавние / `format=?`). |
 | `scan/Formats` | логика | канонические id 15 форматов + карта расширений (в т.ч. `.fb2.zip` как «сложное» расширение) + **tier стоимости обогащения** `enrichmentPriority()` (0 = EPUB/FB2, 1 = FB2ZIP, 2 = MOBI, 3 = остальные). **Единственный источник правды** для скана, фильтра, бейджа и порядка очереди этапа 2. |
 | `scan/LibraryScanner` | логика | этап 1: рекурсивный обход накопителей (включая вторичные SD); `scanSingle()` для импорта. |
@@ -558,7 +558,7 @@ MainActivity → kebab строки/плитки → «Edit metadata»
     │
     │  MetaExtractor: читает из файла
     ▼
-[В каталоге]  SQLite library.db (таблица books)   (все 15 форматов)
+[В каталоге]  SQLite library.db (works/files/work_genres)   (все 15 форматов)
     │  + CoverCache (обложки на диске)
     │
     │  CursorLoader / BookProvider (read-only)
@@ -778,49 +778,38 @@ I/O-ошибка), следует правилу проекта «не заци�
 
 ## 7. Данные: модель и БД
 
-### 7.1 Таблица `books` и её флаги
+### 7.1 Схема каталога: `works` + `files` + `work_genres`
 
-Каталог — **одна таблица** `books` в `library.db` (схема создаётся в
-`BookDatabase.onCreate`, версия БД — `DB_VERSION = 5`, миграции — через
-`ALTER TABLE ADD COLUMN` и idempotency-guard'ованные `CREATE INDEX` —
-[ALTER TABLE (SQLite)](https://www.sqlite.org/lang_altertable.html):
-v2 — `meta_done`/`user_edited`, v4 — `meta_failed`, v5 — индекс по title).
+Каталог в `library.db` (**`DB_VERSION = 7`**): произведение (`works`), издание
+(`files`) и список жанров (`work_genres`). Миграция v6→v7 переносит старую
+таблицу `books` и колонку `genre`, затем дропает `books`. Локальный скан по-прежнему
+создаёт **одно произведение на один новый путь** (одна строка `files`).
 
 ```
-books
-├── _id          INTEGER PRIMARY KEY AUTOINCREMENT
-├── path         TEXT UNIQUE NOT NULL   -- логический ключ книги (путь к файлу)
-├── format       TEXT                   -- канонический id из Formats.ALL
-├── title        TEXT                   -- заголовок (сначала — из имени файла)
-├── author       TEXT
-├── publisher    TEXT
-├── description  TEXT
-├── series       TEXT
-├── size_bytes   INTEGER
-├── exported     INTEGER (0/1)          -- файл был перезаписан (EPUB/FB2)
-├── meta_done    INTEGER (0/1)          -- этап 2 извлёк метаданные
-├── meta_failed  INTEGER (0/1)          -- последний парсинг перелетел бюджет
-│                                        -- 2 минут («не обогащена»: остаётся
-│                                        -- в очереди, берётся последней)
-├── user_edited  INTEGER (0/1)          -- пользователь правил поля
-└── last_read    INTEGER (epoch ms)     -- NULL = «не читали»
+works                          files
+├── _id (PK)                   ├── _id (PK)
+├── title, author, …           ├── work_id → works._id
+├── user_edited                ├── path UNIQUE (ключ издания на диске)
+├── last_read                  ├── format, size_bytes, exported
+├── remote_id, revision        ├── meta_done, meta_failed
+└── deleted                    └── availability, remote_key, content_hash
+
+work_genres
+├── work_id → works._id
+├── position (порядок)
+└── name (жанр, Locale.ROOT lower case)
 ```
 
-Индексы (для «горячих» запросов) —
-[`CREATE INDEX (SQLite)](https://www.sqlite.org/lang_createindex.html)`:
+Курсор списка (`cursorAll` / `cursorRecent`) — `JOIN` `works`+`files`; `_id` в
+курсоре = **`works._id`**. Жанры в курсор **не** входят (дочитываются в `getById`).
+Фильтр жанра в UI по-прежнему строится строкой `genre IS NOT NULL AND genre IN`,
+а в SQL это `EXISTS` по `work_genres`.
 
-- `idx_books_meta_done` — очередь этапа 2 (`WHERE meta_done = 0`);
-- `idx_books_last_read` — «недавно прочитанные»
-  (`WHERE last_read IS NOT NULL ORDER BY last_read DESC`);
-- `idx_books_title_nocase` — список каталога
-  (`ORDER BY title COLLATE NOCASE` — порядковый по умолчанию на главном
-  экране; добавлен в v5).
+Индексы: `idx_files_meta_done`, `idx_works_last_read`, `idx_works_title_nocase`,
+`idx_files_work_format` (UNIQUE work+format), индексы по `work_genres`.
 
-Все индексы не-уникальные (многие книги разделяют значения) и создаются
-идемпотентно, поэтому повторный прогон «половинчатой» миграции безопасен.
-
-**Четыре «защищённых» столбца** — `meta_done`, `meta_failed`, `user_edited`,
-`last_read` — **никогда** не записываются в `upsert()` / `upsertBasic()`.
+**Защищённые поля:** `last_read` и `user_edited` — в `works`; `meta_done` /
+`meta_failed` — в `files`. Они **не** пишутся из `upsert()` / `upsertBasic()`.
 Их меняют только специальные методы: `markMetaPending` (сбрасывает
 `meta_done` и `meta_failed`, когда файл перезаписан импортом под тем же
 именем), `markMetaFailed` (парсинг перелетел бюджет), `markUserEdited`,
