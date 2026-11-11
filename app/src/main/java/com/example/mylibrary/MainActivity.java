@@ -709,6 +709,14 @@ public class MainActivity extends Activity
         // selection (the plan's step 8); otherwise on Formats (already
         // selected by the first addTab).
         tabHost.setCurrentTab(draft.selectedGenres.isEmpty() ? 0 : 1);
+        // addTab() hides a page only when the current tab changes. The Genres
+        // page is added while Formats is already current, so it stays VISIBLE
+        // and its "Select all" row is drawn on top of the Formats one.
+        if (tabHost.getCurrentTab() == 0) {
+            genreTab.page.setVisibility(View.GONE);
+        } else {
+            formatsTab.page.setVisibility(View.GONE);
+        }
 
         new AlertDialog.Builder(this)
                 .setTitle(R.string.filter_dialog_title)

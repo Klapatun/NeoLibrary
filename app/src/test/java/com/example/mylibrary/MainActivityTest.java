@@ -1240,6 +1240,24 @@ public class MainActivityTest {
     // PLAN2: Select All / Deselect All checkbox in the filter dialog
     // ------------------------------------------------------------------
 
+    /** The inactive filter tab must not stay visible: TabHost hides a page only
+     *  when leaving it, so the Genres page (added second) would otherwise sit
+     *  on top of Formats and draw a second "Select all" over the first. */
+    @Test
+    public void filterDialogHidesTheTabThatIsNotCurrent() throws Exception {
+        MainActivity a = launchMain();
+        a.findViewById(R.id.btn_filter).performClick();
+        android.app.Dialog d = ShadowDialog.getLatestDialog();
+        assertNotNull(d);
+
+        View formats = d.findViewById(R.id.formats_tab);
+        View genres = d.findViewById(R.id.genres_tab);
+        assertNotNull(formats);
+        assertNotNull(genres);
+        assertEquals(View.VISIBLE, formats.getVisibility());
+        assertEquals(View.GONE, genres.getVisibility());
+    }
+
     /** The filter dialog's "Select all" checkbox toggles all format checkboxes.
      *  On empty state it shows "Select all" (unchecked). Checking it selects all
      *  formats and changes its label to "Deselect all". Unchecking deselects all
