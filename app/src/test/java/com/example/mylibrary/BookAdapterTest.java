@@ -64,7 +64,7 @@ public class BookAdapterTest {
         private static final String[] COLUMNS = {
                 "_id", "path", "format", "title", "author", "publisher", "description",
                 "series", "size_bytes", "exported", "meta_done", "meta_failed",
-                "user_edited"
+                "user_edited", "genre"
         };
         private final Book[] rows;
         private int pos = -1;
@@ -122,6 +122,7 @@ public class BookAdapterTest {
                 case 10: return b.metaDone ? "1" : "0";
                 case 11: return b.metaFailed ? "1" : "0";
                 case 12: return b.userEdited ? "1" : "0";
+                case 13: return b.genre;
                 default: return null;
             }
         }

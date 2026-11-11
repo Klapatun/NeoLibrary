@@ -638,6 +638,11 @@ public class MainActivity extends Activity
                 formatsTab.checked.put(i, true);
             }
         }
+        // The constructor's rebuild ran BEFORE this fill: push the restored
+        // state into the list now (the checkmarks of the materialized rows,
+        // the select-all/clear row) — without this a re-opened dialog would
+        // show every box unticked even though the draft carries the selection.
+        formatsTab.rebuildVisible();
 
         // The genre reference is DYNAMIC: the catalog's distinct non-null
         // genres, read here on open and again whenever an enrichment pass
@@ -650,6 +655,9 @@ public class MainActivity extends Activity
                 genreTab.checked.put(i, true);
             }
         }
+        // Same re-push as the formats tab (see there): the draft's genre
+        // selection must be visible on the rows the moment the tab opens.
+        genreTab.rebuildVisible();
         // Locked while the worker runs; the enrichment callbacks keep it in
         // sync while the dialog is open (see openFilterGenresTab).
         genreTab.setLoading(enriching);
@@ -678,7 +686,12 @@ public class MainActivity extends Activity
         tabLayout.addView(tabContent, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, 0, 1.0f));
 
-        final TabHost tabHost = new TabHost(this);
+        // (context, null) on purpose, NOT the single-arg constructor: the label
+        // indicator is inflated from an internal layout id that the attrs
+        // constructor resolves from the theme (tab_indicator_holo); the single-arg
+        // one leaves it 0, and the first addTab() would inflate resource #0x0
+        // and crash the dialog (Resources$NotFoundException).
+        final TabHost tabHost = new TabHost(this, null);
         tabHost.addView(tabLayout, new FrameLayout.LayoutParams(
                 FrameLayout.LayoutParams.MATCH_PARENT,
                 FrameLayout.LayoutParams.MATCH_PARENT));

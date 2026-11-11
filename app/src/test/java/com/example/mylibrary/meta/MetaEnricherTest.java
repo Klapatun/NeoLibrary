@@ -229,6 +229,7 @@ public class MetaEnricherTest {
         MetaEnricher.start(app, db, new MetaEnricher.OnProgress() {
             @Override public void onProgress(int done, int total) { /* counted below */ }
             @Override public void onFinished() { /* the drain is what we wait on */ }
+            @Override public void onCancelled() { /* not expected here */ }
         });
 
         ShadowLooper looper = shadowOf(Looper.getMainLooper());
@@ -368,6 +369,7 @@ public class MetaEnricherTest {
             final MetaEnricher.OnProgress listener = new MetaEnricher.OnProgress() {
                 @Override public void onProgress(int done, int total) { /* below */ }
                 @Override public void onFinished() { workerDone.set(true); }
+                @Override public void onCancelled() { /* not expected here */ }
             };
             MetaEnricher.start(app, db, listener);
 
@@ -464,6 +466,7 @@ public class MetaEnricherTest {
             final MetaEnricher.OnProgress listener = new MetaEnricher.OnProgress() {
                 @Override public void onProgress(int done, int total) { }
                 @Override public void onFinished() { workerDone.set(true); }
+                @Override public void onCancelled() { /* not expected here */ }
             };
             MetaEnricher.start(app, db, listener);
             assertTrue("the first parse must start", entered.await(5, java.util.concurrent.TimeUnit.SECONDS));
@@ -558,6 +561,7 @@ public class MetaEnricherTest {
             final MetaEnricher.OnProgress listener = new MetaEnricher.OnProgress() {
                 @Override public void onProgress(int done, int total) { /* below */ }
                 @Override public void onFinished() { workerDone.set(true); }
+                @Override public void onCancelled() { /* not expected here */ }
             };
             MetaEnricher.start(app, db, listener);
 
@@ -639,6 +643,7 @@ public class MetaEnricherTest {
             MetaEnricher.start(app, db, new MetaEnricher.OnProgress() {
                 @Override public void onProgress(int done, int total) { /* below */ }
                 @Override public void onFinished() { /* below */ }
+                @Override public void onCancelled() { /* not expected here */ }
             });
 
             // Both books end up done (the throwing one by the error path), so the
@@ -772,6 +777,7 @@ public class MetaEnricherTest {
             final MetaEnricher.OnProgress listener = new MetaEnricher.OnProgress() {
                 @Override public void onProgress(int done, int total) { /* below */ }
                 @Override public void onFinished() { workerDone.set(true); }
+                @Override public void onCancelled() { /* not expected here */ }
             };
             MetaEnricher.start(app, db, listener);
 

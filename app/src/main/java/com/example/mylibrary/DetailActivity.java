@@ -111,13 +111,16 @@ public class DetailActivity extends Activity {
                 .show();
     }
 
-    /** Refreshes the on-screen title, author and the "other" block from a book. */
+    /** Refreshes the on-screen title, author and the "other" block from a book.
+     *  Genre is always shown: the parsed value, or an em dash when metadata
+     *  parsing found none. */
     private void showBook(Book b) {
         ((TextView) findViewById(R.id.detail_title)).setText(nz(b.title));
         ((TextView) findViewById(R.id.detail_author)).setText(nz(b.author));
 
         StringBuilder other = new StringBuilder();
         if (b.format != null) other.append("Format: ").append(b.format).append("\n");
+        other.append("Genre: ").append(nz(b.genre)).append("\n");
         if (b.publisher != null && b.publisher.length() > 0)
             other.append("Publisher: ").append(b.publisher).append("\n");
         other.append("Size: ").append(humanSize(b.sizeBytes)).append("\n");
