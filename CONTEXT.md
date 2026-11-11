@@ -2,8 +2,8 @@
 
 Use this file to get up to speed on the **Neo Library** project in one read. For the
 full detail see `README.md` (architecture, workflows, invariants, build). UI
-layout/gesture numbers and the icon toolchain live in the `develop` skill
-(`.agents/skills/develop/SKILL.md` §6–7) — this file keeps only the pointers.
+layout/gesture numbers and the icon toolchain live next to the `develop` skill
+(`.agents/skills/develop/references/ui.md` and `references/icons.md`) — this file keeps only the pointers.
 
 ## What it is
 
@@ -38,7 +38,7 @@ Every book's metadata is stored in **two places**:
 
 | Class | Role |
 |---|---|
-| `MainActivity` | catalog: 3-stage load (fast scan → display → background enrich), browse, the filter modal opened by the funnel header icon (`ic_filter`/`ic_filter_active`, empty selection = All) — framework **`TabHost`** (API 19, no ViewPager) with two `FilterTab` pages: **Formats** (static `Formats.ALL` vocabulary) and **Genres** (dynamic vocabulary — `db.distinctGenres()` on open; **locked while the stage-2 worker runs**: checkboxes untouchable, search/select-all/clear disabled, "Enriching metadata…" hint; unlocked with a fresh reference on `onFinished()`/`onCancelled()`); draft semantics (OK commits both tabs + resets `recentView`, Cancel discards, re-open lands on Genres if the draft has genres); "Recently read" — checkable item in the kebab menu (popup composition: `develop` skill §7), SAF import; list is cursor-driven (framework `LoaderManager` + `CursorLoader`) |
+| `MainActivity` | catalog: 3-stage load (fast scan → display → background enrich), browse, the filter modal opened by the funnel header icon (`ic_filter`/`ic_filter_active`, empty selection = All) — framework **`TabHost`** (API 19, no ViewPager) with two `FilterTab` pages: **Formats** (static `Formats.ALL` vocabulary) and **Genres** (dynamic vocabulary — `db.distinctGenres()` on open; **locked while the stage-2 worker runs**: checkboxes untouchable, search/select-all/clear disabled, "Enriching metadata…" hint; unlocked with a fresh reference on `onFinished()`/`onCancelled()`); draft semantics (OK commits both tabs + resets `recentView`, Cancel discards, re-open lands on Genres if the draft has genres); "Recently read" — checkable item in the kebab menu (popup composition: `develop` skill `references/icons.md`), SAF import; list is cursor-driven (framework `LoaderManager` + `CursorLoader`) |
 | `FilterState` | the single "state → query" conversion point for the catalog: `selectedFormats` (canonical `Formats.ALL` values) + `selectedGenres` (dynamic reference, first-added order — genres have no canonical list) + `recentView` (wins over both in the query: `RECENT_URI`, no selection); `querySelection()`/`queryArgs()` → the provider grammar (`format IN (…)`, `genre IS NOT NULL AND genre IN (…)`, both AND-ed, formats first), `formatFilterArgs()`/`genreFilterArgs()` for the direct `BookDatabase.cursorAll(String[], String[])` path (initial cursor / rescan / remove rebinds bypass the provider); session-only: `save()`/`restore()` via the instance state (survives rotation, not the app closing), `copy()` = the dialog's draft, `isActive()` drives the funnel dot |
 | `DetailActivity` | book details and open in Neo Reader; the "other" block always shows genre (the parsed value, or an em dash when metadata parsing found none); fast-path enrichment of a not-yet-enriched book on open refreshes that block |
 | `EditMetaActivity` | metadata form → writes file (EPUB/FB2) + always updates catalog (`userEdited = true`) |
@@ -54,13 +54,13 @@ Every book's metadata is stored in **two places**:
 | `meta/CoverExtractor` | cover bytes: EPUB (`content.opf`→manifest), FB2 (`coverpage`→`<binary>`), FB2ZIP (inner `<binary>`, else loose image entry like `cover.jpg`), MOBI (EXTH record 201, JPEG trimmed at EOI) |
 | `util/CoverCache` | durable file cache of cover **bytes** (`getExternalFilesDir("covers")/<hash>.img`, atomic `.tmp`→rename); warmed by the enricher |
 | `util/CoverLoader` | async cover bitmap: `CoverCache` first, in-file extraction second, LruCache; hidden badge on success |
-| `BookAdapter` | `CursorAdapter`; list + grid/tile view modes (grid loads covers); `getItem()` maps the cursor row to a `Book`; optional **client-side pagination** — `setPagination()` windows the whole cursor (the adapter keeps the full cursor, so every catalog rebind works unchanged) and serves one page; `changeCursor` walks the page back to the last existing one **before** the swap so the dataset callbacks (the screen's pager bar) see the clamped page. Layout numbers (px tiles, page sizes, swipe) — `develop` skill §6 |
+| `BookAdapter` | `CursorAdapter`; list + grid/tile view modes (grid loads covers); `getItem()` maps the cursor row to a `Book`; optional **client-side pagination** — `setPagination()` windows the whole cursor (the adapter keeps the full cursor, so every catalog rebind works unchanged) and serves one page; `changeCursor` walks the page back to the last existing one **before** the swap so the dataset callbacks (the screen's pager bar) see the clamped page. Layout numbers (px tiles, page sizes, swipe) — `develop` skill `references/ui.md` |
 | `util/Openers` | MIME map + `ACTION_VIEW` intent (`Uri.fromFile`) |
 
 ### UI: view modes / pagination / swipe — pointer
 
-The full layout/gesture detail moved to the `develop` skill §6
-(`.agents/skills/develop/SKILL.md`): the list/tile toggle (`setViewMode`, `library_prefs`
+The full layout/gesture detail lives in `.agents/skills/develop/references/ui.md`:
+the list/tile toggle (`setViewMode`, `library_prefs`
 key `view_mode`, tiles as the default view), the grid px sizing for the ONYX Boox
 Volta 3 (242px tiles, `auto_fit`, paddings, 242×328 cover, 155px `bg_circle_red`
 initial placeholder), pagination (kebab `main_menu_pagination`, `pagination_bar`,
@@ -130,7 +130,7 @@ accent-coloured element, `#E74C3C`). The runtime PNGs in
 them via `tools\generate-icons.ps1` and **committed**, so the Android build stays
 100% offline — the tool runs only when an icon is redesigned. Toolchain detail
 (the dependency-free `SvgToPng` rasterizer, why OS WIC is off the table, the 96→32
-supersampling) — `develop` skill §7.
+supersampling) — `.agents/skills/develop/references/icons.md`.
 
 ## Build / run
 

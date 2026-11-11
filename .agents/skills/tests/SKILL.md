@@ -1,6 +1,6 @@
 ---
 name: tests
-description: Тестирование Neo Library (Android API 19, JUnit 4 + Robolectric 4.12.2, sdk=19): запуск полного сьюта и одиночных тестов, конвенции написания тестов, TestFixtures, ожидание фоновой работы, известные флейки (голод фоновых тредов) и подводные камни Robolectric; роль тестировщика в test-first конвейере (написание тестов для задачи по плану аналитика ДО кода, проверка сьюта после разработчика и рефакторинга). Использовать при любом запуске/отладке/дописывании тестов этого проекта и при работе роли тестировщика в конвейере.
+description: "Пишет и проверяет юнит-тесты Neo Library (JUnit 4, Robolectric, sdk 19): тесты по разделу «Тесты» плана до кода, затем полный сьют после разработчика или рефакторинга. Использовать, когда пользователь просит написать тесты или проверить сьют в роли тестировщика. Продакшн-код не менять. Реализацию фичи и рефакторинг по [REFAC] этот скилл не делает."
 ---
 
 # Скил: тестирование Neo Library
@@ -164,25 +164,11 @@ public class MyTest {
 - **Регрессионные тесты пишутся по практике проекта**: сначала RED на
   дефектном поведении, затем фикс, затем GREEN (примеры — ISSUES.md §9.3, §10.3, §10.4).
 
-### Фикстуры: `com.example.mylibrary.testutil.TestFixtures`
+### Фикстуры
 
-Всё, что нужно для создания «книг», уже есть — не выдумывать свои генераторы:
-
-- `writeText(f, s)`, `writeBytes(f, b)`, `readAll(f)` — обычные файлы;
-- `writeZip(f, Map<String,byte[]>)`, `readZip(f)` — zip-архивы (порядок записей сохраняется);
-- EPUB: `writeEpub(f, opf)` (container + OPF + глава + `images/cover.jpg`),
-  `writeEpub3CoverCase(f, opf)`, `buildOpf(t,c,p,d,lang)` (свои метаданные, без обложки),
-  константы `OPF_FULL`, `OPF_CREATOR_ONLY`, `OPF_WITH_COVER` (EPUB2 cover), `OPF3_WITH_COVER` (EPUB3 cover);
-- FB2: `FB2_FULL`, `FB2_NO_TITLE`, `buildFb2(...)` (свои метаданные; автор = first + last,
-  склеиваются пробелом), `buildFb2WithCover(base64)` (coverpage → `<binary>`);
-- MOBI: `writeMobi(f, title, author, publisher, desc, lang, coverJpeg, firstImageIndex, coverOffset)` —
-  структурно валидный PalmDB/MOBI (MOBI-хедер 232 байта, EXTH 100/101/103/524/201,
-  cover = JPEG + 4 байта padding **после** EOI — правильный экстрактор обязан отрезать;
-  `coverOffset = -1` — книга без обложки, 201-запись не пишется);
-- `coverBytes()` — детерминированные псевдо-JPEG байты (256 Б).
-
-MOBI-cover «JPEG» в тестах может быть минимальным: `{0xFF,0xD8,0xFF,0xD9}`
-(SOI..EOI) — парсеру этого достаточно.
+Каталог `com.example.mylibrary.testutil.TestFixtures` —
+[references/fixtures.md](references/fixtures.md). Читать, когда тест собирает
+EPUB, FB2, MOBI, zip или обложку. Свои генераторы не заводить.
 
 ### Ожидание фоновой работы (стандартный паттерн)
 
@@ -243,59 +229,24 @@ in finally) — это устоявшаяся практика проекта (I
   visibility не индикатор режима вида; ассерты по режиму делать ПОСЛЕ
   появления строк (adapter count > 0) или проверять `getAdapter() != null`.
 
-## 5. Подводные камни Robolectric 4.12.2 @ sdk 19
+## 5. Подводные камни Robolectric
 
-Собранные в ISSUES.md (§8.4, §10.3, §11.4, §13.1) — проверять в первую очередь
-при отладке падающего UI-теста:
+Девять ловушек 4.12.2 @ sdk 19 — [references/robolectric.md](references/robolectric.md).
+Читать при отладке падающего UI-теста, не при обычном прогоне сьюта.
 
-1. `ShadowActivity.getNextStartedActivity()` **деструктивна** (списывает интент
-   из очереди): читать один раз, дальше — сохранённый объект.
-2. `ShadowDialog.clickOn(viewId)` принимает **id вью** (`android.R.id.button1`/
-   `button2`), а НЕ `AlertDialog.BUTTON_*` (по ним — NPE).
-3. В PAUSED-лоопере запуск интента откладывается: после клика по диалогу
-   обязательно `shadowOf(Looper.getMainLooper()).idle()`, и только потом
-   `getNextStartedActivity()`.
-4. API 19: у `Dialog`/`AlertDialog` НЕТ публичных геттеров title/message.
-   Title — `shadowOf(dialog).getTitle()`; message —
-   `dialog.getWindow().getDecorView().findViewById(android.R.id.message)`.
-5. `changeCursor` на НЕ-NULL курсор шлёт `onChanged` (`notifyDataSetChanged`),
-   НЕ `onInvalidated` (onInvalidated — только при `changeCursor(null)`).
-6. Сравнение `ConstantState` одного PNG, прошедшего через разные инфляционные
-   пути (тема), в Robolectric не проходит — для иконок сравнивать доминантный
-   непрозрачный цвет картинки (PNG почти монохромные).
-7. Жесты: сырые `MotionEvent` DOWN→MOVE→UP через `dispatchTouchEvent`,
-   **между событиями — `idle()` main-looper'а** (имитация кадров реального
-   инпута), иначе posted-обработчики press-состояния не успеют до UP.
-8. `OnTouchListener` на `AbsListView`/`GridView` **никогда** не срабатывает для
-   жеста, начатого на строке (view group шлёт событие child'у, кликабельная
-   строка поглощает). Если тест жмёт listener'ом по списку — проверять, не
-   мёртвый ли это код.
-9. Фейк-курсор SAF-импорта: у Robolectric-`BaseCursor` `register*Observer`/
-   `getInt`/`getLong` могут бить `UnsupportedOperationException` — обход
-   описан в `MainActivityTest` (обслуживать при апгрейде Robolectric).
+## 6. Что закреплять тестами
 
-## 6. Что закреплять тестами (инварианты проекта)
+Новый тест бьёт граничные случаи своей задачи. Полный список инвариантов —
+`CONTEXT.md`, раздел «Invariants (don't break)». Уже прибитые тесты не ломать
+и не дублировать:
 
-Каждая новая фича/фикс должна приносить тест на свои граничные случаи.
-Ключевые инварианты (CONTEXT.md) — тесты на них уже есть и не должны ломаться:
-
-- minSdk 19, Holo, без AndroidX и сторонних runtime-зависимостей
-  (в тестах — `@Config(sdk = 19)`; в проде — lint `NewApi = error` в `app/lint.xml`);
-- `BookDatabase.upsert`/`upsertBasic`/`updateMetadata` **не затирают `last_read`**
-  (`BookDatabaseTest.upsertPreservesLastReadAcrossRescans`);
-- enricher **не затирает** `user_edited`-значения, но заполняет пустые поля
-  (`MetaEnricherTest.enrichOneNeverClobbersUserEditsButFillsEmptyFields`);
-- `Formats.ALL` — single source of truth: каждый канонический id достижим по
-  расширению, ни одно расширение не ведёт в чужеродный id; состав `Formats.ALL`
-  менять только вместе с `FormatsTest`;
-- один висящий/медленный файл не зацикливает очередь: 2-минутный per-file
-  бюджет, overrun → `meta_failed=1` (остаётся в очереди, ретраится последней),
-  очередь при этом дренируется (`MetaEnricherTest` — два теста про бюджет,
-  один про throwing-parse containment: бьющий парс помечает done БЕЗ флага);
-- порядок очереди stage 2: EPUB/FB2 → FB2ZIP → MOBI → остальное,
-  `meta_failed` — самые последние (`startWorksTheQueueFromTheCheapestFormatsUp`);
-- файл книги никогда не остаётся полудописанным (`.tmp`→swap→`.bak` —
-  `MetaWriterTest`).
+- `last_read` — `BookDatabaseTest.upsertPreservesLastReadAcrossRescans`
+- `user_edited` — `MetaEnricherTest.enrichOneNeverClobbersUserEditsButFillsEmptyFields`
+- состав `Formats.ALL` — только вместе с `FormatsTest`
+- бюджет 2 минуты и бьющий парс — тесты `MetaEnricherTest` про бюджет и throwing-parse
+- порядок очереди — `startWorksTheQueueFromTheCheapestFormatsUp`
+- `.tmp`→swap→`.bak` — `MetaWriterTest`
+- sdk в тестах — `@Config(sdk = 19)`
 
 ## 7. Чек-лист после изменений в тестах (или в коде, который они покрывают)
 
