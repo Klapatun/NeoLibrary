@@ -463,14 +463,27 @@ public class BookDatabase extends SQLiteOpenHelper {
     public List<String> distinctGenres() {
         synchronized (WRITE_LOCK) {
             List<String> genres = new ArrayList<String>();
-            SQLiteDatabase db = readableDb();
-            Cursor c = db.rawQuery(
-                    "SELECT DISTINCT genre FROM books WHERE genre IS NOT NULL ORDER BY genre",
-                    null);
+            // Own connection, opened on THIS thread. The helper's cached
+            // connection belongs to whichever thread opened it (the stage-2
+            // worker, usually). Robolectric's legacy shadow keeps native
+            // connection pointers per thread and throws "Illegal connection
+            // pointer" when the main thread reuses that object — which is
+            // exactly this call: a previous screen's onCancelled refreshes
+            // the open Genres tab while the next screen starts a pass.
+            // A short-lived connection sees committed rows: the write lock
+            // above waits out any batch the worker is in.
+            SQLiteDatabase helperDb = getWritableDatabase();
+            SQLiteDatabase db = SQLiteDatabase.openDatabase(
+                    helperDb.getPath(), null, SQLiteDatabase.OPEN_READONLY);
+            Cursor c = null;
             try {
+                c = db.rawQuery(
+                        "SELECT DISTINCT genre FROM books WHERE genre IS NOT NULL ORDER BY genre",
+                        null);
                 while (c.moveToNext()) genres.add(c.getString(0));
             } finally {
-                c.close();
+                if (c != null) c.close();
+                db.close();
             }
             return genres;
         }

@@ -177,7 +177,10 @@ public class MainActivity extends Activity
      *  size once the new height is laid out); an open filter dialog's "Genres"
      *  tab is unlocked with a fresh reference. */
     private void onEnrichmentStopped() {
-        if (isFinishing()) return;
+        // isDestroyed covers cancel() from onDestroy: performDestroy sets the
+        // flag before onDestroy, and refreshing a dialog of a dead screen is
+        // what races the enricher's connection (see BookDatabase.distinctGenres).
+        if (isFinishing() || isDestroyed()) return;
         enriching = false;
         enrichBar.setVisibility(View.GONE);
         // An open filter dialog's "Genres" tab unlocks now — the reference is
