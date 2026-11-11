@@ -187,6 +187,26 @@ public class EditMetaActivityTest {
     }
 
     @Test
+    public void editorFillsGenresFromCatalogWhenTheParcelListIsEmpty() throws Exception {
+        File file = new File(folder.getRoot(), "book.txt");
+        TestFixtures.writeText(file, "hello\n");
+        ArrayList<String> genres = new ArrayList<String>();
+        genres.add("prose");
+        genres.add("mystery");
+        long id = addBookToCatalog(file, "TXT", "T", "A", genres);
+
+        Book parcel = db.getById(id);
+        parcel.genres = new ArrayList<String>();
+        Intent i = new Intent();
+        i.putExtra(EditMetaActivity.EXTRA_BOOK, parcel);
+        EditMetaActivity a = Robolectric.buildActivity(EditMetaActivity.class, i).setup().get();
+
+        assertEquals(2, genreFieldCount(a));
+        assertEquals("prose", genreFieldAt(a, 0).getText().toString());
+        assertEquals("mystery", genreFieldAt(a, 1).getText().toString());
+    }
+
+    @Test
     public void epubEditWritesBothTheFileAndTheCatalog() throws Exception {
         File epub = new File(folder.getRoot(), "book.epub");
         TestFixtures.writeEpub(epub, TestFixtures.OPF_FULL);

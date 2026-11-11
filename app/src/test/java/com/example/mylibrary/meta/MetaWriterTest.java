@@ -465,6 +465,29 @@ public class MetaWriterTest {
     }
 
     @Test
+    public void fb2WriteKeepsGenresWhenTitleInfoIsUnclosed() throws Exception {
+        File fb2 = folder.newFile("unclosed.fb2");
+        String source = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+                + "<FictionBook>\n"
+                + "  <description>\n"
+                + "    <title-info>\n"
+                + "      <genre>prose</genre>\n"
+                + "  </description>\n"
+                + "</FictionBook>\n";
+        FileOutputStream out = new FileOutputStream(fb2);
+        try { out.write(text(source)); } finally { out.close(); }
+
+        MetaData md = new MetaData();
+        md.genres = genres("sf");
+        assertTrue(MetaWriter.write(fb2, md));
+        String xml = new String(readAll(fb2), "UTF-8");
+
+        assertTrue(xml.contains("<genre>prose</genre>"));
+        assertFalse(xml.contains("<genre>sf</genre>"));
+        assertNoLeftovers(folder.getRoot());
+    }
+
+    @Test
     public void fb2WriteEscapesGenreText() throws Exception {
         final File fb2 = writeFb2Fixture();
 
@@ -519,6 +542,24 @@ public class MetaWriterTest {
         String opf = new String(readZip(epub).get("OEBPS/content.opf"), "UTF-8");
         assertTrue("an omitted genre must not rewrite dc:subject", opf.contains("<dc:subject>Keep</dc:subject>"));
         assertTrue(opf.contains("<dc:title>New Title</dc:title>"));
+        assertNoLeftovers(folder.getRoot());
+    }
+
+    @Test
+    public void epubWriteKeepsDcSubjectWhenMetadataIsUnclosed() throws Exception {
+        String opf = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+                + "<package xmlns:dc=\"http://purl.org/dc/elements/1.1/\">\n"
+                + "  <dc:subject>Keep</dc:subject>\n"
+                + "</package>\n";
+        final File epub = writeEpubFixture(opf);
+
+        MetaData md = new MetaData();
+        md.genres = genres("mystery");
+        assertTrue(MetaWriter.write(epub, md));
+
+        String written = new String(readZip(epub).get("OEBPS/content.opf"), "UTF-8");
+        assertTrue(written.contains("<dc:subject>Keep</dc:subject>"));
+        assertFalse(written.contains("mystery"));
         assertNoLeftovers(folder.getRoot());
     }
 

@@ -52,6 +52,12 @@ public class EditMetaActivity extends Activity {
             finish();
             return;
         }
+        // The list cursor does not carry work_genres. The parcel is the row the
+        // user opened (path and format stay); the genre list comes from the catalog.
+        Book stored = db.getById(book.id);
+        if (stored != null && stored.genres != null) {
+            book.genres = stored.genres;
+        }
 
         hint = (TextView) findViewById(R.id.edit_format_hint);
         etTitle = (EditText) findViewById(R.id.edit_title);

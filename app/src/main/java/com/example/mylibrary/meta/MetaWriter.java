@@ -262,12 +262,18 @@ public final class MetaWriter {
         }
     }
 
-    /** Writes the full genre list into FB2 title-info (null leaves the file alone). */
+    /**
+     * Writes the full genre list into FB2 title-info.
+     * An empty list removes every exact {@code genre} element. A non-empty list
+     * leaves the file unchanged when there is no {@code </title-info>} to insert before.
+     */
     private static String writeFb2Genres(String xml, List<String> genres) {
+        if (!genres.isEmpty() && xml.toLowerCase(Locale.US).indexOf("</title-info>") < 0) {
+            return xml;
+        }
         xml = removeEveryExactElement(xml, "genre");
         if (genres.isEmpty()) return xml;
-        String lower = xml.toLowerCase(Locale.US);
-        int close = lower.indexOf("</title-info>");
+        int close = xml.toLowerCase(Locale.US).indexOf("</title-info>");
         if (close < 0) return xml;
         StringBuilder block = new StringBuilder();
         for (int i = 0; i < genres.size(); i++) {
@@ -278,17 +284,23 @@ public final class MetaWriter {
         return xml.substring(0, close) + block.toString() + xml.substring(close);
     }
 
-    /** Replaces every {@code dc:subject} in the OPF metadata block. */
+    /**
+     * Replaces every {@code dc:subject} in the OPF metadata block.
+     * An empty list removes every subject. A non-empty list leaves them unchanged
+     * when neither {@code </metadata>} nor {@code </opf:metadata>} is present.
+     */
     private static String writeDcSubjects(String opf, List<String> genres) {
+        String lowerProbe = opf.toLowerCase(Locale.US);
+        if (!genres.isEmpty()
+                && lowerProbe.indexOf("</metadata>") < 0
+                && lowerProbe.indexOf("</opf:metadata>") < 0) {
+            return opf;
+        }
         opf = removeEveryDcSubject(opf);
         if (genres.isEmpty()) return opf;
         String lower = opf.toLowerCase(Locale.US);
         int close = lower.indexOf("</metadata>");
-        String closeTag = "</metadata>";
-        if (close < 0) {
-            close = lower.indexOf("</opf:metadata>");
-            closeTag = "</opf:metadata>";
-        }
+        if (close < 0) close = lower.indexOf("</opf:metadata>");
         if (close < 0) return opf;
         String indent = subjectInsertIndent(opf, close);
         StringBuilder block = new StringBuilder();
