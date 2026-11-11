@@ -1,5 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
+    <!-- The filter dialog's two tab content views (the TabHost in
+         MainActivity.showFilterDialog, the framework TabHost — no ViewPager). -->
+    <item name="formats_tab" type="id" />
+    <item name="genres_tab" type="id" />
     <!-- Tag id used by CoverLoader to track which book a cover ImageView belongs to. -->
     <item name="cover_tag" type="id" />
     <item name="cover_showing" type="id" />

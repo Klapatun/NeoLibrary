@@ -67,6 +67,9 @@ public final class MetaWriter {
         opf = setDcElement(opf, "publisher", md.publisher);
         opf = setDcElement(opf, "description", md.description);
         opf = setDcElement(opf, "language", md.language);
+        // Null means the caller did not edit the genre: leave dc:subject alone.
+        // An empty string is an explicit clear and goes through setDcElement.
+        if (md.genre != null) opf = setDcElement(opf, "subject", md.genre);
 
         // Write rebuilt archive to a temp file, then move over the original.
         File tmp = new File(file.getParentFile(), file.getName() + ".tmp");
@@ -237,6 +240,9 @@ public final class MetaWriter {
         // publisher
         if (md.publisher != null) xml = replaceElementContent(xml, "publisher", md.publisher);
         if (md.language != null) xml = replaceElementContent(xml, "lang", md.language);
+        // Same null-vs-empty contract as EPUB: null leaves every <genre> alone,
+        // empty removes the first one, a value replaces the first or inserts it.
+        if (md.genre != null) xml = writeFb2Genre(xml, md.genre);
 
         File tmp = new File(file.getParentFile(), file.getName() + ".tmp");
         writeTextFile(tmp, xml);
@@ -256,6 +262,43 @@ public final class MetaWriter {
             tmp.delete();
             return false;
         }
+    }
+
+    /**
+     * Writes the catalog genre into the FB2 description. The catalog stores one
+     * genre — the first {@code <genre>} the extractor reads — so only that element
+     * is replaced. An empty value removes it. Later sibling {@code <genre>}
+     * elements are left in place. A missing element is inserted before
+     * {@code </title-info>} when that parent exists.
+     */
+    private static String writeFb2Genre(String xml, String genre) {
+        if (genre.length() == 0) return removeFirstElement(xml, "genre");
+        if (hasExactElement(xml, "genre")) return replaceElementContent(xml, "genre", genre);
+        return insertElementBefore(xml, "title-info", "genre", genre);
+    }
+
+    /** True when {@code xml} contains an element whose name is exactly {@code tag}. */
+    private static boolean hasExactElement(String xml, String tag) {
+        Pattern open = Pattern.compile("(?is)<" + Pattern.quote(tag) + "(?:\\s[^>]*)?>");
+        return open.matcher(xml).find();
+    }
+
+    /** Drops the first {@code <tag>...</tag>} element. No-op when it is absent. */
+    private static String removeFirstElement(String xml, String tag) {
+        Pattern element = Pattern.compile("(?is)<" + Pattern.quote(tag) + "(?:\\s[^>]*)?>.*?</"
+                + Pattern.quote(tag) + ">");
+        Matcher m = element.matcher(xml);
+        if (!m.find()) return xml;
+        return xml.substring(0, m.start()) + xml.substring(m.end());
+    }
+
+    /** Inserts {@code <tag>value</tag>} immediately before {@code </parent>}. */
+    private static String insertElementBefore(String xml, String parent, String tag, String value) {
+        String lower = xml.toLowerCase(Locale.US);
+        int close = lower.indexOf("</" + parent + ">");
+        if (close < 0) return xml;
+        String element = "<" + tag + ">" + escapeXml(value) + "</" + tag + ">";
+        return xml.substring(0, close) + element + xml.substring(close);
     }
 
     /** Replaces content of the first {@code <tag>...</tag>} occurrence, escaping value. */

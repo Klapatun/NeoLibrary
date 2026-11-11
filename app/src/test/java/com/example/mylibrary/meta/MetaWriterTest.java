@@ -402,6 +402,140 @@ public class MetaWriterTest {
     }
 
     @Test
+    public void fb2WriteReplacesTheFirstGenre() throws Exception {
+        final File fb2 = writeFb2Fixture();
+
+        MetaData md = new MetaData();
+        md.title = "Original Title";
+        md.genre = "sf_history";
+        assertTrue(MetaWriter.write(fb2, md));
+        String xml = new String(readAll(fb2), "UTF-8");
+
+        assertTrue(xml.contains("<genre>sf_history</genre>"));
+        assertFalse(xml.contains("<genre>prose</genre>"));
+        assertTrue(xml.contains("<title-info>"));
+        assertTrue(xml.contains("</title-info>"));
+        assertWellFormedXml(xml);
+        assertNoLeftovers(folder.getRoot());
+    }
+
+    @Test
+    public void fb2WriteInsertsGenreWhenMissing() throws Exception {
+        File fb2 = folder.newFile("nogenre.fb2");
+        String source = FB2_FIXTURE.replace("      <genre>prose</genre>\n", "");
+        FileOutputStream out = new FileOutputStream(fb2);
+        try { out.write(text(source)); } finally { out.close(); }
+
+        MetaData md = new MetaData();
+        md.genre = "prose";
+        assertTrue(MetaWriter.write(fb2, md));
+        String xml = new String(readAll(fb2), "UTF-8");
+
+        int genreAt = xml.indexOf("<genre>prose</genre>");
+        int titleInfoClose = xml.indexOf("</title-info>");
+        assertTrue("genre element must be inserted", genreAt >= 0);
+        assertTrue("the inserted genre sits before </title-info>", genreAt < titleInfoClose);
+        assertEquals("exactly one genre element", genreAt, xml.lastIndexOf("<genre>prose</genre>"));
+        assertWellFormedXml(xml);
+        assertNoLeftovers(folder.getRoot());
+    }
+
+    @Test
+    public void fb2WriteEmptyGenreRemovesTheFirstGenreElement() throws Exception {
+        File fb2 = folder.newFile("twogenre.fb2");
+        String source = FB2_FIXTURE.replace("<genre>prose</genre>",
+                "<genre>prose</genre>\n      <genre>poetry</genre>");
+        FileOutputStream out = new FileOutputStream(fb2);
+        try { out.write(text(source)); } finally { out.close(); }
+
+        MetaData md = new MetaData();
+        md.genre = "";
+        assertTrue(MetaWriter.write(fb2, md));
+        String xml = new String(readAll(fb2), "UTF-8");
+
+        assertFalse("the first genre is removed", xml.contains("<genre>prose</genre>"));
+        assertTrue("later genres stay", xml.contains("<genre>poetry</genre>"));
+        assertWellFormedXml(xml);
+        assertNoLeftovers(folder.getRoot());
+    }
+
+    @Test
+    public void fb2WriteEscapesGenreText() throws Exception {
+        final File fb2 = writeFb2Fixture();
+
+        MetaData md = new MetaData();
+        md.genre = "A & B <C>";
+        assertTrue(MetaWriter.write(fb2, md));
+        String xml = new String(readAll(fb2), "UTF-8");
+
+        assertTrue(xml.contains("<genre>A &amp; B &lt;C&gt;</genre>"));
+        assertWellFormedXml(xml);
+        assertNoLeftovers(folder.getRoot());
+    }
+
+    @Test
+    public void epubWriteSetsDcSubject() throws Exception {
+        final File epub = writeEpubFixture(OPF_FULL);
+
+        MetaData md = new MetaData();
+        md.title = "Original Title";
+        md.author = "Original Author";
+        md.publisher = "Original Publisher";
+        md.description = "An original story.";
+        md.language = "en";
+        md.genre = "Mystery";
+        assertTrue(MetaWriter.write(epub, md));
+
+        String opf = new String(readZip(epub).get("OEBPS/content.opf"), "UTF-8");
+        assertTrue(opf.contains("<dc:subject>Mystery</dc:subject>"));
+        assertTrue(opf.contains("<dc:title>Original Title</dc:title>"));
+        assertTrue(opf.contains("<dc:creator>Original Author</dc:creator>"));
+        assertTrue(opf.contains("<dc:publisher>Original Publisher</dc:publisher>"));
+        assertTrue(opf.contains("<dc:description>An original story.</dc:description>"));
+        assertTrue(opf.contains("<dc:language>en</dc:language>"));
+        assertWellFormedXml(opf);
+        assertNoLeftovers(folder.getRoot());
+    }
+
+    @Test
+    public void epubWriteLeavesDcSubjectUntouchedWhenGenreIsNull() throws Exception {
+        String opfWithSubject = OPF_FULL.replace("    <dc:language>en</dc:language>\n",
+                "    <dc:language>en</dc:language>\n"
+              + "    <dc:subject>Keep</dc:subject>\n");
+        final File epub = writeEpubFixture(opfWithSubject);
+
+        MetaData md = new MetaData();
+        md.title = "New Title";
+        assertTrue(MetaWriter.write(epub, md));
+
+        String opf = new String(readZip(epub).get("OEBPS/content.opf"), "UTF-8");
+        assertTrue("an omitted genre must not rewrite dc:subject", opf.contains("<dc:subject>Keep</dc:subject>"));
+        assertTrue(opf.contains("<dc:title>New Title</dc:title>"));
+        assertNoLeftovers(folder.getRoot());
+    }
+
+    @Test
+    public void epubWriteEmptyGenreClearsDcSubject() throws Exception {
+        String opfWithSubject = OPF_FULL.replace("    <dc:language>en</dc:language>\n",
+                "    <dc:language>en</dc:language>\n"
+              + "    <dc:subject>Keep</dc:subject>\n");
+        final File epub = writeEpubFixture(opfWithSubject);
+
+        MetaData md = new MetaData();
+        md.title = "Original Title";
+        md.author = "Original Author";
+        md.publisher = "Original Publisher";
+        md.description = "An original story.";
+        md.language = "en";
+        md.genre = "";
+        assertTrue(MetaWriter.write(epub, md));
+
+        String opf = new String(readZip(epub).get("OEBPS/content.opf"), "UTF-8");
+        assertFalse("empty genre clears the subject text", opf.contains("Keep"));
+        assertNoLeftovers(folder.getRoot());
+    }
+
+    @Test
     public void writeOnUnsupportedFormatReturnsFalseAndLeavesFileIntact() throws Exception {
         File pdf = folder.newFile("book.pdf");
         byte[] content = "%PDF-1.4 fake binary".getBytes("UTF-8");

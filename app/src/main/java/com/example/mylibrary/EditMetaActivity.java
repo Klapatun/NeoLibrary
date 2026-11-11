@@ -35,7 +35,7 @@ public class EditMetaActivity extends Activity {
     private BookDatabase db;
     private Book book;
 
-    private EditText etTitle, etAuthor, etPublisher, etDescription;
+    private EditText etTitle, etAuthor, etPublisher, etGenre, etDescription;
     private TextView hint;
 
     @Override
@@ -56,11 +56,13 @@ public class EditMetaActivity extends Activity {
         etTitle = (EditText) findViewById(R.id.edit_title);
         etAuthor = (EditText) findViewById(R.id.edit_author);
         etPublisher = (EditText) findViewById(R.id.edit_publisher);
+        etGenre = (EditText) findViewById(R.id.edit_genre);
         etDescription = (EditText) findViewById(R.id.edit_description);
 
         etTitle.setText(book.title == null ? "" : book.title);
         etAuthor.setText(book.author == null ? "" : book.author);
         etPublisher.setText(book.publisher == null ? "" : book.publisher);
+        etGenre.setText(book.genre == null ? "" : book.genre);
         etDescription.setText(book.description == null ? "" : book.description);
 
         String format = book.format == null ? "" : book.format.toUpperCase();
@@ -83,6 +85,7 @@ public class EditMetaActivity extends Activity {
         final String title = etTitle.getText().toString().trim();
         final String author = etAuthor.getText().toString().trim();
         final String publisher = etPublisher.getText().toString().trim();
+        final String genre = etGenre.getText().toString().trim();
         final String description = etDescription.getText().toString().trim();
 
         final boolean inline = "EPUB".equals(book.format) || "FB2".equals(book.format);
@@ -91,7 +94,7 @@ public class EditMetaActivity extends Activity {
 
         final ProgressDialog pd = ProgressDialog.show(this, null, "Saving metadata…", true, false);
         new SaveTask(this, target, file, inline,
-                title, author, publisher, description, pd).execute();
+                title, author, publisher, genre, description, pd).execute();
     }
 
     /** The metadata save task. A STATIC nested class on purpose: an anonymous inner
@@ -108,13 +111,14 @@ public class EditMetaActivity extends Activity {
         private final String title;
         private final String author;
         private final String publisher;
+        private final String genre;
         private final String description;
         private final WeakReference<ProgressDialog> dialog;
         private final WeakReference<EditMetaActivity> self;
 
         SaveTask(EditMetaActivity host, Book target, File file, boolean inline,
-                 String title, String author, String publisher, String description,
-                 ProgressDialog pd) {
+                 String title, String author, String publisher, String genre,
+                 String description, ProgressDialog pd) {
             this.appContext = host.getApplicationContext();
             this.db = host.db; // safe: it holds the app context
             this.target = target;
@@ -123,6 +127,7 @@ public class EditMetaActivity extends Activity {
             this.title = title;
             this.author = author;
             this.publisher = publisher;
+            this.genre = genre;
             this.description = description;
             this.dialog = new WeakReference<ProgressDialog>(pd);
             this.self = new WeakReference<EditMetaActivity>(host);
@@ -135,6 +140,7 @@ public class EditMetaActivity extends Activity {
                 md.title = title;
                 md.author = author;
                 md.publisher = publisher;
+                md.genre = genre;
                 md.description = description;
                 ok = MetaWriter.write(file, md);
             }
@@ -148,6 +154,7 @@ public class EditMetaActivity extends Activity {
             updated.title = title;
             updated.author = author;
             updated.publisher = publisher;
+            updated.genre = genre.length() == 0 ? null : genre;
             updated.description = description;
             updated.exported = ok && inline;
             // Persist the fields, then mark the row user-edited so the background

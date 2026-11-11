@@ -155,6 +155,7 @@ public class MetaEnricherScaleTest {
         final MetaEnricher.OnProgress listener = new MetaEnricher.OnProgress() {
             @Override public void onProgress(int done, int total) { /* the drain is what we wait on */ }
             @Override public void onFinished() { workerDone.set(true); }
+            @Override public void onCancelled() { /* not expected here */ }
         };
         MetaEnricher.start(app, db, listener);
 

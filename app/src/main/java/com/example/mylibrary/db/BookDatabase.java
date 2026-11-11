@@ -26,7 +26,7 @@ public class BookDatabase extends SQLiteOpenHelper {
 
     private static final String TAG = "BookDatabase";
     private static final String DB_NAME = "library.db";
-    private static final int DB_VERSION = 5;
+    private static final int DB_VERSION = 6;
 
     /** How many books go into one batch commit (one SQLite transaction per group;
      *  see {@link #upsertBasicBatch} and {@link #updateMetadataBatch}): one commit
@@ -62,7 +62,8 @@ public class BookDatabase extends SQLiteOpenHelper {
             + "meta_done INTEGER NOT NULL DEFAULT 0, "
             + "user_edited INTEGER NOT NULL DEFAULT 0, "
             + "meta_failed INTEGER NOT NULL DEFAULT 0, "
-            + "last_read INTEGER"
+            + "last_read INTEGER, "
+            + "genre TEXT"
             + ")";
 
     public BookDatabase(Context context) {
@@ -104,6 +105,15 @@ public class BookDatabase extends SQLiteOpenHelper {
             // The v5 title index. createIndexes is idempotency-guarded, so it only
             // creates what is missing (the older indexes already exist).
             createIndexes(db);
+        }
+        if (oldVersion < 6) {
+            // The v6 genre column (the modal filter's genre selection): nullable —
+            // a book without a genre (or of a format that carries none) is NULL.
+            // Same idempotency guard as the meta_failed column of v4.
+            try {
+                db.execSQL("ALTER TABLE books ADD COLUMN genre TEXT");
+            } catch (Exception ignored) { // column already present (partial upgrade)
+            }
         }
     }
 
@@ -164,6 +174,7 @@ public class BookDatabase extends SQLiteOpenHelper {
             cv.put("publisher", b.publisher);
             cv.put("description", b.description);
             cv.put("series", b.series);
+            cv.put("genre", b.genre);
             cv.put("size_bytes", b.sizeBytes);
             cv.put("exported", b.exported ? 1 : 0);
 
@@ -317,7 +328,7 @@ public class BookDatabase extends SQLiteOpenHelper {
     private static void applyUpdate(SQLiteDatabase db, long id, MetaData md,
                                      boolean fileReadable) {
         String[] cols = {"title", "author", "publisher", "description", "series",
-                "user_edited"};
+                "genre", "user_edited"};
         Cursor cur = db.query("books", cols, "_id=?", new String[]{String.valueOf(id)},
                 null, null, null);
         if (!cur.moveToFirst()) {
@@ -333,6 +344,7 @@ public class BookDatabase extends SQLiteOpenHelper {
         String curPublisher = cur.getString(cur.getColumnIndexOrThrow("publisher"));
         String curDescription = cur.getString(cur.getColumnIndexOrThrow("description"));
         String curSeries = cur.getString(cur.getColumnIndexOrThrow("series"));
+        String curGenre = cur.getString(cur.getColumnIndexOrThrow("genre"));
         cur.close();
 
         ContentValues cv = new ContentValues();
@@ -345,6 +357,11 @@ public class BookDatabase extends SQLiteOpenHelper {
             if (!userEdited || isBlank(curPublisher)) cv.put("publisher", md.publisher);
             if (!userEdited || isBlank(curDescription)) cv.put("description", md.description);
             if (!userEdited || isBlank(curSeries)) cv.put("series", md.series);
+            // Same merge rule as the other fields: enrichment fills the genre only
+            // while it is blank (or overwrites it when the user never edited the
+            // row), so a user-edited value is never clobbered. Formats that carry
+            // no genre write NULL (the book simply has no genre).
+            if (!userEdited || isBlank(curGenre)) cv.put("genre", md.genre);
         }
         // cv always carries at least meta_done, so the update is unconditional.
         db.update("books", cv, "_id=?", new String[]{String.valueOf(id)});
@@ -386,26 +403,89 @@ public class BookDatabase extends SQLiteOpenHelper {
         return cursorAll(new String[]{formatFilter});
     }
 
-    /** The format-SET overload of the catalog cursor (the modal filter's
-     *  query, the plan's step 2): a non-null, non-empty array becomes
-     *  {@code format IN (?,?,…)} — one placeholder per id; null or an empty
-     *  array means no selection (all books). The row order is the same as the
-     *  single-value overload — title COLLATE NOCASE. */
+    /** The format-set overload of the catalog cursor (the modal filter's
+     *  query): delegates to the format+genre overload with no genre
+     *  restriction. */
     public Cursor cursorAll(String[] formatFilter) {
+        return cursorAll(formatFilter, null);
+    }
+
+    /** The combined catalog cursor (the modal filter's query, the plan's
+     *  step 3): a non-null, non-empty array per dimension becomes
+     *  {@code format IN (?,?,…)} and {@code genre IS NOT NULL AND genre
+     *  IN (?,?,…)} — one placeholder per id; null or an empty array means
+     *  "no restriction" for that dimension, and both null gives the plain
+     *  {@code SELECT * FROM books} over the whole catalog. The row order is
+     *  the same as the single-value overload — title COLLATE NOCASE. */
+    public Cursor cursorAll(String[] formatFilter, String[] genreFilter) {
         synchronized (WRITE_LOCK) {
             SQLiteDatabase db = readableDb();
-            if (formatFilter == null || formatFilter.length == 0) {
+            StringBuilder selection = new StringBuilder();
+            List<String> args = new ArrayList<String>();
+            if (formatFilter != null && formatFilter.length > 0) {
+                appendInClause(selection, "format", formatFilter, args);
+            }
+            if (genreFilter != null && genreFilter.length > 0) {
+                if (selection.length() > 0) selection.append(" AND ");
+                // The IS NOT NULL makes the intent explicit for readers of the
+                // generated query (IN never matches NULL anyway): a book only
+                // reaches the genre filter if it actually has a genre.
+                appendInClause(selection, "genre IS NOT NULL AND genre",
+                        genreFilter, args);
+            }
+            if (selection.length() == 0) {
                 return db.query("books", null, null, null, null, null,
                         "title COLLATE NOCASE ASC");
             }
-            StringBuilder in = new StringBuilder("format IN (");
-            for (int i = 0; i < formatFilter.length; i++) {
-                if (i > 0) in.append(",");
-                in.append("?");
+            return db.query("books", null, selection.toString(),
+                    args.toArray(new String[0]), null, null,
+                    "title COLLATE NOCASE ASC");
+        }
+    }
+
+    /** Appends {@code <column> IN (?,…)} (one placeholder per id) to the
+     *  selection and the ids to the args. */
+    private static void appendInClause(StringBuilder selection, String column,
+            String[] ids, List<String> args) {
+        selection.append(column).append(" IN (");
+        for (int i = 0; i < ids.length; i++) {
+            if (i > 0) selection.append(",");
+            selection.append("?");
+            args.add(ids[i]);
+        }
+        selection.append(")");
+    }
+
+    /** The distinct non-null genres of the catalog in genre order — the
+     *  dynamic reference of the filter dialog's "Genres" tab (the plan's
+     *  step 6): genres are formed from the enriched books, never from a
+     *  hardcoded list, so the reference grows with the content. */
+    public List<String> distinctGenres() {
+        synchronized (WRITE_LOCK) {
+            List<String> genres = new ArrayList<String>();
+            // Own connection, opened on THIS thread. The helper's cached
+            // connection belongs to whichever thread opened it (the stage-2
+            // worker, usually). Robolectric's legacy shadow keeps native
+            // connection pointers per thread and throws "Illegal connection
+            // pointer" when the main thread reuses that object — which is
+            // exactly this call: a previous screen's onCancelled refreshes
+            // the open Genres tab while the next screen starts a pass.
+            // A short-lived connection sees committed rows: the write lock
+            // above waits out any batch the worker is in.
+            SQLiteDatabase helperDb = getWritableDatabase();
+            SQLiteDatabase db = SQLiteDatabase.openDatabase(
+                    helperDb.getPath(), null, SQLiteDatabase.OPEN_READONLY);
+            Cursor c = null;
+            try {
+                c = db.rawQuery(
+                        "SELECT DISTINCT genre FROM books WHERE genre IS NOT NULL ORDER BY genre",
+                        null);
+                while (c.moveToNext()) genres.add(c.getString(0));
+            } finally {
+                if (c != null) c.close();
+                db.close();
             }
-            in.append(")");
-            return db.query("books", null, in.toString(), formatFilter,
-                    null, null, "title COLLATE NOCASE ASC");
+            return genres;
         }
     }
 
@@ -598,6 +678,7 @@ public class BookDatabase extends SQLiteOpenHelper {
         b.publisher = c.getString(c.getColumnIndexOrThrow("publisher"));
         b.description = c.getString(c.getColumnIndexOrThrow("description"));
         b.series = c.getString(c.getColumnIndexOrThrow("series"));
+        b.genre = c.getString(c.getColumnIndexOrThrow("genre"));
         b.sizeBytes = c.getLong(c.getColumnIndexOrThrow("size_bytes"));
         b.exported = c.getInt(c.getColumnIndexOrThrow("exported")) == 1;
         b.metaDone = c.getInt(c.getColumnIndexOrThrow("meta_done")) == 1;

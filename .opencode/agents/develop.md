@@ -200,7 +200,7 @@ permissions:
   - action: shell
     resource: "git push*"
     effect: allow
-  # Генератор иконок (SVG → PNG), см. скил develop §7
+  # Генератор иконок (SVG → PNG), см. скил develop references/icons.md
   - action: shell
     resource: "*generate-icons*"
     effect: allow

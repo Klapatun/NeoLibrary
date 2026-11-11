@@ -77,7 +77,9 @@ public final class MetaEnricher {
 
     private static final String TAG = "MetaEnricher";
 
-    /** Progress callback; every method is invoked on the main thread.
+    /** Progress callback; every method is invoked on the main thread (the
+     *  {@code onCancelled()} of a cancel that the screen itself issues is the
+     *  same — its cancel() comes from the UI thread).
      *  <b>Never implement this with a long-lived Activity</b>: the worker (and its
      *  posted callbacks) only hold the listener WEAKLY, so it must be an inner class
      *  of the screen that started the pass (or a dedicated, short-lived object) —
@@ -86,9 +88,18 @@ public final class MetaEnricher {
         /** Called after each (throttled) batch. {@code done} books out of {@code total}. */
         void onProgress(int done, int total);
 
-        /** Called when the whole queue is exhausted. NOT called after a cancel:
-         *  by then the screen that started the pass is gone and its callback dead. */
+        /** Called when the whole queue is exhausted. NOT called after a cancel —
+         *  that has its own callback, {@link #onCancelled()}. */
         void onFinished();
+
+        /** Called when a RUNNING pass is stopped by {@link #cancel()} — the
+         *  cancel-side counterpart of {@link #onFinished()}: the screen (and an
+         *  open filter dialog, which must unlock its "Genres" tab) learns the
+         *  enrichment has stopped and the reference is no longer growing. Only a
+         *  pass that was actually running gets the callback; a no-op cancel (no
+         *  worker) is not a cancellation event. NOT called for a pass that never
+         *  started. */
+        void onCancelled();
     }
 
     private static final int BATCH_NOTIFY_EVERY = 5;
@@ -310,6 +321,16 @@ public final class MetaEnricher {
 
     private static volatile AsyncTask<Void, Void, Void> worker;
 
+    /** The listener of the pass that is CURRENTLY running (weak — the same
+     *  lifetime rule as the worker's own reference: a gone screen must not be
+     *  pinned). The worker's own reference is a local of {@link #start} and
+     *  unreachable from the static cancel, so this one lives process-wide for
+     *  {@link #cancel()} to notify the listener its pass was cancelled
+     *  ({@link OnProgress#onCancelled}). Reassigned (not mutated) on every
+     *  start, so it always wraps the CURRENT pass's listener. */
+    private static volatile WeakReference<OnProgress> currentListener =
+            new WeakReference<OnProgress>(null);
+
     private MetaEnricher() {}
 
     /**
@@ -318,6 +339,9 @@ public final class MetaEnricher {
      * restarts the stage.
      */
     public static void start(Context app, BookDatabase db, OnProgress listener) {
+        // cancel() may fire the PREVIOUS pass's onCancelled() on its (weak)
+        // listener right here, before the new pass is registered below — that
+        // is correct: the old pass really did stop.
         cancel();
         final Context appContext = app.getApplicationContext();
         final Handler main = new Handler(Looper.getMainLooper());
@@ -326,8 +350,8 @@ public final class MetaEnricher {
         // can run on for minutes) and its posted callbacks must NOT hold the listener
         // strongly — a dead screen's Activity would be pinned. It is referenced
         // weakly and re-resolved at each use; a gone screen is simply skipped.
-        final WeakReference<OnProgress> listenerRef =
-                new WeakReference<OnProgress>(listener);
+        currentListener = new WeakReference<OnProgress>(listener);
+        final WeakReference<OnProgress> listenerRef = currentListener;
         worker = new AsyncTask<Void, Void, Void>() {
             @Override
             protected Void doInBackground(Void... v) {
@@ -428,11 +452,23 @@ public final class MetaEnricher {
         }
     }
 
-    /** Stops the running worker (idempotent). Call from the UI lifecycle (onDestroy). */
+    /** Stops the running worker (idempotent). Call from the UI lifecycle (onDestroy).
+     *  A cancellation of a RUNNING pass notifies the listener through
+     *  {@link OnProgress#onCancelled()} (the weak reference is re-resolved at fire
+     *  time, so a gone screen is simply skipped): onFinished() is contractually not
+     *  sent after a cancel, so this is the only reliable way for an open filter
+     *  dialog to learn the enrichment stopped (and can unlock its "Genres" tab).
+     *  A no-op cancel (no worker running) is NOT a cancellation event — it does
+     *  not notify, so a fresh start()'s internal cancel() can never clear the
+     *  screen's "enriching" state that the new pass is about to set. */
     public static void cancel() {
-        AsyncTask<Void, Void, Void> w = worker;
+        final AsyncTask<Void, Void, Void> w = worker;
         if (w != null) w.cancel(false);
         worker = null;
+        if (w != null) {
+            OnProgress l = currentListener.get();
+            if (l != null) l.onCancelled();
+        }
     }
 
     // ------------------------------------------------------------------
