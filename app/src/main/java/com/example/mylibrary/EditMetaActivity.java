@@ -18,21 +18,57 @@ import com.example.mylibrary.meta.MetaData;
 import com.example.mylibrary.meta.MetaWriter;
 import com.example.mylibrary.model.Book;
 
+import java.io.BufferedInputStream;
+import java.io.BufferedOutputStream;
 import java.io.File;
+import java.io.FileInputStream;
+import java.io.FileOutputStream;
+import java.io.InputStream;
+import java.io.OutputStream;
 import java.lang.ref.WeakReference;
 import java.util.ArrayList;
 
 /**
  * Lets the user edit the metadata of a book.
  *
- * <p>For EPUB and FB2 the edits are written back into the file itself (so they are
- * visible to Neo Reader and any other app). For every other format the edits are
- * persisted in our SQLite catalog only, since their metadata structures are not
- * safely rewritable here.</p>
+ * <p>For EPUB and FB2, a create-and-delete probe decides where the edit lands.
+ * If the file's directory accepts the probe, the edits are written into that
+ * file. If it does not, the book is copied into the app's books directory, the
+ * copy is written, and the existing catalog row points at the copy. For every
+ * other format the edits are persisted in our SQLite catalog only.</p>
  */
 public class EditMetaActivity extends Activity {
 
     public static final String EXTRA_BOOK = "extra_book";
+
+    /** Non-null skips the real directory probe. Production code never assigns this. */
+    static Boolean directoryWritableForTest;
+
+    static boolean directoryAcceptsNewFile(File dir) {
+        if (directoryWritableForTest != null) return directoryWritableForTest.booleanValue();
+        if (dir == null || !dir.isDirectory()) return false;
+        File probe = new File(dir, ".neowrite-" + System.currentTimeMillis());
+        OutputStream out = null;
+        boolean ok = false;
+        try {
+            out = new BufferedOutputStream(new FileOutputStream(probe));
+            out.write(0);
+            out.close();
+            out = null;
+            ok = probe.delete();
+        } catch (Exception e) {
+            ok = false;
+        } finally {
+            if (out != null) {
+                try {
+                    out.close();
+                } catch (Exception ignored) {
+                }
+            }
+            if (probe.exists() && !probe.delete()) ok = false;
+        }
+        return ok;
+    }
 
     private BookDatabase db;
     private Catalog catalog;
@@ -172,28 +208,98 @@ public class EditMetaActivity extends Activity {
         }
 
         @Override protected Boolean doInBackground(Void... v) {
-            boolean ok = true;
-            if (inline && file.exists()) {
-                MetaData md = new MetaData();
-                md.title = title;
-                md.author = author;
-                md.publisher = publisher;
-                md.genres = genres;
-                md.description = description;
-                ok = MetaWriter.write(file, md);
-            }
-            Book updated = db.getById(target.id);
-            if (updated == null) {
+            if (inline && file.exists()
+                    && directoryAcceptsNewFile(file.getParentFile())) {
+                boolean ok = MetaWriter.write(file, formMeta());
+                Book updated = db.getById(target.id);
+                if (updated == null) return ok;
+                applyForm(updated);
+                updated.exported = ok && inline;
+                catalog.saveUserEdit(updated);
                 return ok;
             }
+            if (!(inline && file.exists())) {
+                return saveCatalog(true);
+            }
+            Book updated = db.getById(target.id);
+            if (updated == null) return false;
+
+            File copy = copyIntoAppBooks(updated.id);
+            boolean wrote = false;
+            if (copy != null) {
+                try {
+                    wrote = MetaWriter.write(copy, formMeta());
+                } catch (Exception e) {
+                    wrote = false;
+                }
+            }
+            if (!wrote) {
+                deleteCopyArtifacts(copy);
+                applyForm(updated);
+                updated.exported = false;
+                catalog.saveUserEdit(updated);
+                return false;
+            }
+            applyForm(updated);
+            updated.exported = true;
+            updated.sizeBytes = copy.length();
+            if (catalog.saveUserEditAtNewPath(updated, copy.getAbsolutePath())) {
+                return true;
+            }
+            deleteCopyArtifacts(copy);
+            if (db.getIdForPath(updated.path) == target.id) {
+                catalog.saveUserEdit(updated);
+            }
+            return false;
+        }
+
+        private boolean saveCatalog(boolean ok) {
+            Book updated = db.getById(target.id);
+            if (updated == null) return ok;
+            applyForm(updated);
+            updated.exported = ok && inline;
+            catalog.saveUserEdit(updated);
+            return ok;
+        }
+
+        private MetaData formMeta() {
+            MetaData md = new MetaData();
+            md.title = title;
+            md.author = author;
+            md.publisher = publisher;
+            md.genres = genres;
+            md.description = description;
+            return md;
+        }
+
+        private void applyForm(Book updated) {
             updated.title = title;
             updated.author = author;
             updated.publisher = publisher;
             updated.genres = genres;
             updated.description = description;
-            updated.exported = ok && inline;
-            catalog.saveUserEdit(updated);
-            return ok;
+        }
+
+        /** Copy into app storage, or null when the copy must not be attempted. */
+        private File copyIntoAppBooks(long workId) {
+            File dir = appContext.getExternalFilesDir("books");
+            if (dir == null) return null;
+            if (!dir.isDirectory() && !dir.mkdirs()) return null;
+            if (!dir.isDirectory()) return null;
+
+            File dest = new File(dir, file.getName());
+            if (nameTaken(dest, workId)) {
+                dest = new File(dir, suffixedName(file.getName(), workId));
+                if (nameTaken(dest, workId)) return null;
+            }
+            if (dest.getAbsolutePath().equals(file.getAbsolutePath())) return null;
+            return copyAtomically(file, dest);
+        }
+
+        private boolean nameTaken(File candidate, long workId) {
+            if (candidate.exists()) return true;
+            long other = db.getIdForPath(candidate.getAbsolutePath());
+            return other != -1 && other != workId;
         }
 
         @Override protected void onPostExecute(Boolean ok) {
@@ -211,5 +317,84 @@ public class EditMetaActivity extends Activity {
             a.setResult(RESULT_OK);
             a.finish();
         }
+    }
+
+    private static String suffixedName(String name, long workId) {
+        int dot = name.lastIndexOf('.');
+        String stem;
+        String ext;
+        if (dot >= 0) {
+            stem = name.substring(0, dot);
+            ext = name.substring(dot);
+        } else {
+            stem = name;
+            ext = "";
+        }
+        return stem + "-" + workId + ext;
+    }
+
+    private static File copyAtomically(File source, File finalFile) {
+        File parent = finalFile.getParentFile();
+        if (parent == null) return null;
+        File copying = new File(parent, finalFile.getName() + ".copying");
+        InputStream in = null;
+        OutputStream out = null;
+        boolean renamed = false;
+        try {
+            in = new BufferedInputStream(new FileInputStream(source));
+            out = new BufferedOutputStream(new FileOutputStream(copying));
+            byte[] buf = new byte[8192];
+            int n;
+            while ((n = in.read(buf)) > 0) out.write(buf, 0, n);
+            in.close();
+            in = null;
+            out.close();
+            out = null;
+            renamed = copying.renameTo(finalFile);
+            if (!renamed) {
+                streamCopy(copying, finalFile);
+                copying.delete();
+            }
+            if (!finalFile.isFile()) return null;
+            return finalFile;
+        } catch (Exception e) {
+            if (!renamed && finalFile.exists()) finalFile.delete();
+            return null;
+        } finally {
+            if (in != null) {
+                try {
+                    in.close();
+                } catch (Exception ignored) {
+                }
+            }
+            if (out != null) {
+                try {
+                    out.close();
+                } catch (Exception ignored) {
+                }
+            }
+            if (copying.isFile()) copying.delete();
+        }
+    }
+
+    private static void streamCopy(File from, File to) throws Exception {
+        InputStream in = new BufferedInputStream(new FileInputStream(from));
+        OutputStream out = new BufferedOutputStream(new FileOutputStream(to));
+        byte[] buf = new byte[8192];
+        int n;
+        while ((n = in.read(buf)) > 0) out.write(buf, 0, n);
+        in.close();
+        out.close();
+    }
+
+    private static void deleteCopyArtifacts(File copy) {
+        if (copy == null) return;
+        File parent = copy.getParentFile();
+        String name = copy.getName();
+        copy.delete();
+        if (parent == null) return;
+        new File(parent, name + ".tmp").delete();
+        new File(parent, name + ".bak").delete();
+        new File(parent, name + ".copying").delete();
     }
 }

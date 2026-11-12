@@ -105,9 +105,17 @@ pagination is on, a horizontal swipe also turns pages.
   download and does not put one on a queue. Fast path: a book still not enriched (opened
   before stage 2 reached it) is enriched on open, off the UI thread, and the detail
   screen refreshes itself.
-- **Edit** → `EditMetaActivity`: if EPUB/FB2 → `MetaWriter.write(file,md)` (full genre
-  list — EPUB `dc:subject`, FB2 `<genre>`); always → `Catalog.saveUserEdit()`
-  (the enricher will never overwrite those fields). Genres live in `work_genres` (normalized).
+- **Edit** → `EditMetaActivity`: for EPUB/FB2, if the file's directory accepts a
+  create-and-delete probe, `MetaWriter.write` on that file (full genre list: EPUB
+  `dc:subject`, FB2 `<genre>`). If the probe fails, the book is copied into
+  `getExternalFilesDir("books")`, the original stays in place, `MetaWriter.write`
+  runs on the copy, and the same catalog transaction changes this work's
+  `files.path` to the copy and stores the previous absolute path in
+  `files.adopted_from`. No new work row is inserted. `last_read` is unchanged.
+  A failed copy does not change the path and does not leave a partial file.
+  Catalog edits always go through `Catalog` (`saveUserEdit` or
+  `saveUserEditAtNewPath`). The enricher does not clobber these fields. Genres
+  live in `work_genres` (normalization unchanged).
 - **Import** → `ACTION_OPEN_DOCUMENT` (SAF) → validate → copy to `getExternalFilesDir("books")`
   → `scanSingle()` → `Catalog.importFile()` → `MetaEnricher.enrichOne()` on the same
   background thread (each step announces via the facade).
@@ -118,7 +126,8 @@ pagination is on, a horizontal swipe also turns pages.
 - **No AndroidX / no extra deps**.
 - Manifest: **no `package` attribute**, every `<activity>` has `android:exported`,
   `namespace com.example.mylibrary` in `app/build.gradle`.
-- Never leave a book file half-written (always `.tmp`→swap→`.bak`).
+- Never leave a book file half-written (private copy: `.copying`→rename, then
+  MetaWriter `.tmp`→swap→`.bak`; a failed copy leaves no partial file).
 - `BookDatabase.upsert` must preserve `last_read`.
 - `Formats.ALL` is the single source of truth for scanning/filter/badge. The genre
   reference has NO canonical list — it is formed dynamically from the enriched books
