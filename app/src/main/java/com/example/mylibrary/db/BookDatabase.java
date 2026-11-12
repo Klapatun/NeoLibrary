@@ -29,7 +29,7 @@ public class BookDatabase extends SQLiteOpenHelper {
 
     private static final String TAG = "BookDatabase";
     private static final String DB_NAME = "library.db";
-    private static final int DB_VERSION = 8;
+    private static final int DB_VERSION = 9;
 
     /** How many books go into one batch commit (one SQLite transaction per group;
      *  see {@link #upsertBasicBatch} and {@link #updateMetadataBatch}): one commit
@@ -169,6 +169,18 @@ public class BookDatabase extends SQLiteOpenHelper {
                 db.execSQL("ALTER TABLE files ADD COLUMN adopted_from TEXT");
             } catch (Exception ignored) {
             }
+        }
+        if (oldVersion < 9) {
+            // No new column: send EPUB/FB2/FB2ZIP with no genres and no user edit
+            // back through enrichment so genres from the file reach the catalog.
+            db.execSQL("UPDATE files SET meta_done=0, meta_failed=0"
+                    + " WHERE format IN ('EPUB', 'FB2', 'FB2ZIP')"
+                    + " AND work_id IN ("
+                    + " SELECT w._id FROM works w"
+                    + " WHERE w.deleted=0 AND w.user_edited=0"
+                    + " AND NOT EXISTS ("
+                    + " SELECT 1 FROM work_genres g WHERE g.work_id = w._id"
+                    + " ))");
         }
     }
 
@@ -635,12 +647,20 @@ public class BookDatabase extends SQLiteOpenHelper {
         List<String> curGenres = readGenresForWork(db, workId);
 
         ContentValues wv = new ContentValues();
-        if (md != null && md.found && fileReadable) {
-            if (!userEdited || isBlank(curTitle)) wv.put("title", md.title);
-            if (!userEdited || isBlank(curAuthor)) wv.put("author", md.author);
-            if (!userEdited || isBlank(curPublisher)) wv.put("publisher", md.publisher);
-            if (!userEdited || isBlank(curDescription)) wv.put("description", md.description);
-            if (!userEdited || isBlank(curSeries)) wv.put("series", md.series);
+        if (fileReadable && md != null) {
+            if (md.found && (!userEdited || isBlank(curTitle))) wv.put("title", md.title);
+            if (md.author != null && (!userEdited || isBlank(curAuthor))) {
+                wv.put("author", md.author);
+            }
+            if (md.publisher != null && (!userEdited || isBlank(curPublisher))) {
+                wv.put("publisher", md.publisher);
+            }
+            if (md.description != null && (!userEdited || isBlank(curDescription))) {
+                wv.put("description", md.description);
+            }
+            if (md.series != null && (!userEdited || isBlank(curSeries))) {
+                wv.put("series", md.series);
+            }
         }
         if (wv.size() > 0) {
             db.update("works", wv, "_id=?", new String[]{String.valueOf(workId)});
@@ -651,16 +671,10 @@ public class BookDatabase extends SQLiteOpenHelper {
         fv.put("meta_failed", 0);
         db.update("files", fv, "work_id=?", new String[]{String.valueOf(workId)});
 
-        if (md != null && md.found && fileReadable) {
+        if (fileReadable && md != null && md.genres != null) {
             boolean genresEmpty = curGenres.isEmpty();
             if (!userEdited || genresEmpty) {
-                ArrayList<String> incoming;
-                if (md.genres != null) {
-                    incoming = MetaData.normalizeGenres(md.genres);
-                } else {
-                    incoming = new ArrayList<String>();
-                }
-                replaceGenresOn(db, workId, incoming);
+                replaceGenresOn(db, workId, MetaData.normalizeGenres(md.genres));
             }
         }
     }
