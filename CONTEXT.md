@@ -44,7 +44,7 @@ Every book's metadata is stored in **two places**:
 | `EditMetaActivity` | metadata form (title, author, publisher, dynamic genre fields + "Add genre", description) → writes file (EPUB/FB2) + always updates catalog (`userEdited = true`); genres normalized to `Locale.ROOT` lower case on save; empty fields drop out of the list |
 | `Book` | Parcelable model (`genres` — ordered list from `work_genres`, empty list = no genre; cursor rows leave it empty until `getById`; plus `metaDone`, `metaFailed`, `userEdited` flags) |
 | `db/Catalog` | the **only** write entry for the catalog from screens and `MetaEnricher`. One-shot doors (`saveScanBatch`, `removeMissing`, `importFile`, `saveUserEdit`, `markRead`, `deleteByPath`, `clear`, `applyEnrichmentBatch`, `applyEnrichmentOne`, `markMetaFailed`) end in `BookProvider.notifyChangeAll` (list + recently read). The stage-2 loop writes through `persistEnrichmentBatch` / `persistMetaFailed` (no notify) and announces with throttled `announceChangeAll` (both URIs, no write). Reads stay on `BookDatabase` |
-| `db/BookDatabase` | SQLite catalog (**DB v7**: `works` + `files` + `work_genres`; cursor `_id` = work id, local scan still 1 file = 1 work; server columns exist but are not written yet); **`upsert`/`upsertBasic`/`updateMetadata` preserve `last_read`** (`updateMetadata` replaces the genre list with the same merge rule as `series` when `user_edited` allows); `cursorAll` genre filter = EXISTS on `work_genres`; `distinctGenres()` reads `work_genres` in name order; `needMeta()` = stage-2 queue on `files.meta_done` (un-enriched last); static write lock — **not** called directly from Activity/`MetaEnricher` for writes |
+| `db/BookDatabase` | SQLite catalog (**DB v7**: `works` + `files` + `work_genres`; cursor `_id` = work id, local scan still 1 file = 1 work; server columns exist but are not written yet); the locator reads an edition with `getFileEdition` / `listFileEditions` (id, path, availability, remote_key, format) and does not write those columns; **`upsert`/`upsertBasic`/`updateMetadata` preserve `last_read`** (`updateMetadata` replaces the genre list with the same merge rule as `series` when `user_edited` allows); `cursorAll` genre filter = EXISTS on `work_genres`; `distinctGenres()` reads `work_genres` in name order; `needMeta()` = stage-2 queue on `files.meta_done` (un-enriched last); static write lock — **not** called directly from Activity/`MetaEnricher` for writes |
 | `db/BookProvider` | read-only `ContentProvider` — the `ContentObserver` channel for the `CursorLoader` (all / recent / `format IN (?,…)` / `genre IS NOT NULL AND genre IN (?,…)` / both combined — the combined selection args are split on the format-count boundary: `FilterState.queryArgs()` = formats in `Formats.ALL` order, then genres in first-added order) |
 | `scan/Formats` | canonical formats + ext→id map (handles `.fb2.zip`) |
 | `scan/LibraryScanner` | stage-1 fast scan (skeleton books, no in-file meta) + `scanSingle()` |
@@ -56,7 +56,8 @@ Every book's metadata is stored in **two places**:
 | `util/CoverCache` | durable file cache of cover **bytes** (`getExternalFilesDir("covers")/<hash>.img`, atomic `.tmp`→rename); warmed by the enricher |
 | `util/CoverLoader` | async cover bitmap: `CoverCache` first, in-file extraction second, LruCache; hidden badge on success |
 | `BookAdapter` | `CursorAdapter`; list + grid/tile view modes (grid loads covers); `getItem()` maps the cursor row to a `Book`; optional **client-side pagination** — `setPagination()` windows the whole cursor (the adapter keeps the full cursor, so every catalog rebind works unchanged) and serves one page; `changeCursor` walks the page back to the last existing one **before** the swap so the dataset callbacks (the screen's pager bar) see the clamped page. Layout numbers (px tiles, page sizes, swipe) — `develop` skill `references/ui.md` |
-| `util/Openers` | MIME map + `ACTION_VIEW` intent (`Uri.fromFile`) |
+| `util/FileLocator` | before open: `locateFile` (one `files` row) or `locateWork` (a work). Reads path, availability, remote_key, format and `File.exists()`. `LocateResult` status is an int: `READY` 0, `ABSENT` 1, `DOWNLOADING` 2, `FAILED` 3. `downloading` wins even when a file is already on disk. `locateWork` prefers an edition that is `local` and still on disk; otherwise the smallest `files._id`. Does not write the DB, does not queue or start a download |
+| `util/Openers` | MIME map + `ACTION_VIEW` intent (`Uri.fromFile`). Screens call it only after the locator returns `READY` |
 
 ### UI: view modes / pagination / swipe — pointer
 
@@ -93,8 +94,13 @@ pagination is on, a horizontal swipe also turns pages.
   (`Catalog.persistMetaFailed`, `meta_done` stays 0) and the worker moves on to the
   next file. On every rescan the un-enriched books are retried but taken last
   (`needMeta()` orders `meta_failed` last).
-- **Open** → `DetailActivity` / list confirmation → `Openers.openFile()` →
-  `ACTION_VIEW` → `Catalog.markRead()`. Fast path: a book still not enriched (opened
+- **Open** → `DetailActivity` / list confirmation → `FileLocator.locateWork()`
+  first. Only `READY` continues to `Openers.openFile()` → `ACTION_VIEW` →
+  `Catalog.markRead()` (last_read is set only after the viewer actually launches).
+  `ABSENT` shows the same "File not found" toast as a missing file. `DOWNLOADING`
+  and `FAILED` show a short toast and stop. Those three do not call `Openers` and
+  do not set last_read. There is no Download button: this screen does not start a
+  download and does not put one on a queue. Fast path: a book still not enriched (opened
   before stage 2 reached it) is enriched on open, off the UI thread, and the detail
   screen refreshes itself.
 - **Edit** → `EditMetaActivity`: if EPUB/FB2 → `MetaWriter.write(file,md)` (full genre
