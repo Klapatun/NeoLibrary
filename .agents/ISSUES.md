@@ -24,8 +24,9 @@
 Обновление 2026-11-12: 16.1 закрыт и вынесен (ветка
 `feature/feature_work-file-catalog`, схема v7 `works` / `files` /
 `work_genres`, список жанров). Merge в `master` — `cb3c426`. 16.2
-реализован на `feature/catalog-facade` и в `master` ещё не влит. 16.3–16.5
-не согласованы. Планы 16.4 и 16.5 заблокированы проверкой сети в самом
+реализован на `feature/catalog-facade` и в `master` ещё не влит. 16.3
+закрыт на `feature/file-locator` (`e412815`), в `master` ещё не влит.
+16.4–16.5 не согласованы. Планы 16.4 и 16.5 заблокированы проверкой сети в самом
 файле плана. 7.2 закрыт этим фасадом и вынесен из раздела 7.
 
 ### 16.2 Фасад записи каталога — [x] (высокий) · закрыт 2026-11-12
@@ -33,10 +34,10 @@
 - **Суть:** Activity и `MetaEnricher` пишут в каталог только через `Catalog`. Одиночные двери заканчиваются `notifyChangeAll`. Цикл обогащения пишет через `persistEnrichmentBatch` / `persistMetaFailed` и объявляет оба URI через `announceChangeAll` (троттлинг 300 мс сохранён). Чтения остаются на `BookDatabase`. Сеть не нужна.
 - **Согласование:** код по уточнённому плану. В `master` не влит. 2026-11-12 прогнаны `CatalogTest` и `MetaEnricherTest.startThrottlesTheBatchNotifiesButKeepsTheFinalOne` — зелёные. Полный сьют и lint этой правкой не гонялись.
 
-### 16.3 Локатор файла перед открытием — [ ] (высокий)
+### 16.3 Локатор файла перед открытием — [x] (высокий) · закрыт 2026-11-12
 - **План:** `.agents/plans/feature_file-locator/PLAN.md` (ветка `feature/file-locator`).
-- **Суть:** перед `Openers` ответить, есть ли байты издания (`READY` / `ABSENT` / `DOWNLOADING` / `FAILED`). Скачивание не начинается. Сеть не нужна. Ждёт merge 16.2.
-- **Согласование:** не согласован.
+- **Суть:** перед `Openers` ответить, есть ли байты издания (`READY` / `ABSENT` / `DOWNLOADING` / `FAILED`). Скачивание не начинается. Сеть не нужна.
+- **Согласование:** код на `feature/file-locator` (`e412815`). В `master` не влит. После шага 2 полный сьют 335/335; после правки fallback — `FileLocatorTest` и четыре UI-теста тостов, lint 0 errors.
 
 ### 16.4 Очередь работ и скачивание издания — [ ] (высокий)
 - **План:** `.agents/plans/feature_download-queue/PLAN.md` (ветка `feature/download-queue`).
