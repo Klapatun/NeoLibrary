@@ -68,6 +68,15 @@ public final class MetaWriter {
         if (opf == null) return false;
         String original = opf;
 
+        if (md.genres != null) {
+            if (md.genres.isEmpty()) {
+                opf = removeEveryDcSubject(opf);
+            } else {
+                String placed = placeEpubGenres(opf, md);
+                if (placed == null) return false;
+                opf = placed;
+            }
+        }
         opf = setDcElement(opf, "title", md.title);
         opf = setDcElement(opf, "creator", md.author);
         opf = setDcElement(opf, "publisher", md.publisher);
@@ -75,7 +84,6 @@ public final class MetaWriter {
         if (md.language != null && md.language.length() > 0) {
             opf = setDcElement(opf, "language", md.language);
         }
-        if (md.genres != null) opf = writeDcSubjects(opf, md.genres);
         if (opf.equals(original)) return true;
 
         byte[] encoded = XmlText.encode(opf, raw);
@@ -238,6 +246,15 @@ public final class MetaWriter {
         if (xml == null) return false;
         String original = xml;
 
+        if (md.genres != null) {
+            if (md.genres.isEmpty()) {
+                xml = removeEveryExactElement(xml, "genre");
+            } else {
+                String placed = placeFb2Genres(xml, md);
+                if (placed == null) return false;
+                xml = placed;
+            }
+        }
         if (md.title != null) xml = replaceTitle(xml, md.title);
         // author parts. If only the combined author string is supplied (as from the
         // edit form), split it heuristically: last word -> last-name, the rest ->
@@ -266,7 +283,6 @@ public final class MetaWriter {
         if (md.language != null && md.language.length() > 0) {
             xml = replaceElementContent(xml, "lang", md.language);
         }
-        if (md.genres != null) xml = writeFb2Genres(xml, md.genres);
         if (xml.equals(original)) return true;
 
         byte[] encoded = XmlText.encode(xml, raw);
@@ -292,69 +308,337 @@ public final class MetaWriter {
         }
     }
 
+    private static final int TAG_ABSENT = 0;
+    private static final int TAG_CLOSED = 1;
+    private static final int TAG_SELF = 2;
+    private static final int TAG_OPEN = 3;
+
     /**
-     * Writes the full genre list into FB2 title-info.
-     * An empty list removes every exact {@code genre} element. A non-empty list
-     * leaves the file unchanged when there is no {@code </title-info>} to insert before.
+     * Non-empty FB2 genres. Null when the list cannot be placed — the file
+     * must stay byte for byte as it was.
      */
-    private static String writeFb2Genres(String xml, List<String> genres) {
-        if (!genres.isEmpty() && xml.toLowerCase(Locale.US).indexOf("</title-info>") < 0) {
-            return xml;
+    private static String placeFb2Genres(String xml, MetaData md) {
+        int titleKind = classifyTag(xml, "title-info");
+        if (titleKind == TAG_CLOSED) {
+            int open = openMatchingFirstClose(xml, "title-info");
+            if (open < 0) return null;
+            return replaceChildrenInFirst(xml, "title-info", prefixOf(xml, open), "genre", md.genres);
         }
-        xml = removeEveryExactElement(xml, "genre");
-        if (genres.isEmpty()) return xml;
-        int close = xml.toLowerCase(Locale.US).indexOf("</title-info>");
-        if (close < 0) return xml;
-        StringBuilder block = new StringBuilder();
-        for (int i = 0; i < genres.size(); i++) {
-            String g = genres.get(i);
-            if (g == null) continue;
-            block.append("<genre>").append(escapeXml(g)).append("</genre>");
+        if (titleKind == TAG_SELF) {
+            int open = indexOfSelfClosing(xml, "title-info", 0);
+            if (open < 0) return null;
+            return expandSelfClosing(xml, open, elementBlock(prefixOf(xml, open), "genre", md.genres));
         }
-        return xml.substring(0, close) + block.toString() + xml.substring(close);
+        if (titleKind == TAG_OPEN) return null;
+
+        int descKind = classifyTag(xml, "description");
+        if (descKind == TAG_CLOSED) {
+            int open = openMatchingFirstClose(xml, "description");
+            if (open < 0) return null;
+            int gt = xml.indexOf('>', open);
+            if (gt < 0) return null;
+            return xml.substring(0, gt + 1) + buildTitleInfo(prefixOf(xml, open), md)
+                    + xml.substring(gt + 1);
+        }
+        if (descKind == TAG_SELF) {
+            int open = indexOfSelfClosing(xml, "description", 0);
+            if (open < 0) return null;
+            return expandSelfClosing(xml, open, buildTitleInfo(prefixOf(xml, open), md));
+        }
+        if (descKind == TAG_OPEN) return null;
+
+        int root = indexOfOpenTag(xml, "FictionBook", 0);
+        if (root < 0 || isSelfClosing(xml, root)) return null;
+        int gt = xml.indexOf('>', root);
+        if (gt < 0) return null;
+        if (indexOfOpenTag(xml, "body", gt + 1) < 0) return null;
+        String prefix = prefixOf(xml, root);
+        String block = "<" + prefix + "description>" + buildTitleInfo(prefix, md)
+                + "</" + prefix + "description>";
+        return xml.substring(0, gt + 1) + block + xml.substring(gt + 1);
     }
 
     /**
-     * Replaces every {@code dc:subject} in the OPF metadata block.
-     * An empty list removes every subject. A non-empty list leaves them unchanged
-     * when neither {@code </metadata>} nor {@code </opf:metadata>} is present.
+     * Non-empty EPUB subjects. Null when the list cannot be placed — the
+     * archive must stay byte for byte as it was.
      */
-    private static String writeDcSubjects(String opf, List<String> genres) {
-        String lowerProbe = opf.toLowerCase(Locale.US);
-        if (!genres.isEmpty()
-                && lowerProbe.indexOf("</metadata>") < 0
-                && lowerProbe.indexOf("</opf:metadata>") < 0) {
-            return opf;
+    private static String placeEpubGenres(String xml, MetaData md) {
+        int kind = classifyTag(xml, "metadata");
+        if (kind == TAG_CLOSED) {
+            int open = openMatchingFirstClose(xml, "metadata");
+            int close = indexOfCloseLocal(xml, "metadata", open < 0 ? 0 : open);
+            if (open < 0 || close < open) return null;
+            String dc = dcPrefixForClosed(xml, open, close);
+            return replaceChildrenInFirst(xml, "metadata", dc, "subject", md.genres);
         }
-        opf = removeEveryDcSubject(opf);
-        if (genres.isEmpty()) return opf;
-        String lower = opf.toLowerCase(Locale.US);
-        int close = lower.indexOf("</metadata>");
-        if (close < 0) close = lower.indexOf("</opf:metadata>");
-        if (close < 0) return opf;
-        String indent = subjectInsertIndent(opf, close);
-        StringBuilder block = new StringBuilder();
-        for (int i = 0; i < genres.size(); i++) {
-            String g = genres.get(i);
-            if (g == null) continue;
-            block.append(indent).append("<dc:subject>")
-                    .append(escapeXml(g)).append("</dc:subject>\n");
+        if (kind == TAG_SELF) {
+            int open = indexOfSelfClosing(xml, "metadata", 0);
+            if (open < 0) return null;
+            String dc = dcPrefixDeclared(xml.substring(0, open));
+            if (dc == null) dc = "dc:";
+            return expandSelfClosing(xml, open, elementBlock(dc, "subject", md.genres));
         }
-        return opf.substring(0, close) + block.toString() + opf.substring(close);
+        if (kind == TAG_OPEN) return null;
+
+        int pkg = indexOfOpenTag(xml, "package", 0);
+        if (pkg < 0 || isSelfClosing(xml, pkg)) return null;
+        int gt = xml.indexOf('>', pkg);
+        if (gt < 0) return null;
+        int manifest = indexOfOpenTag(xml, "manifest", gt + 1);
+        int spine = indexOfOpenTag(xml, "spine", gt + 1);
+        if (manifest < 0 && spine < 0) return null;
+        String metaPrefix = prefixOf(xml, pkg);
+        String dc = dcPrefixDeclared(xml.substring(0, gt + 1));
+        boolean declare = dc == null;
+        if (declare) dc = "dc:";
+        return xml.substring(0, gt + 1) + buildMetadata(metaPrefix, dc, declare, md)
+                + xml.substring(gt + 1);
     }
 
-  private static String subjectInsertIndent(String opf, int closeIndex) {
-        int lineStart = opf.lastIndexOf('\n', closeIndex);
-        if (lineStart < 0) return "    ";
-        String line = opf.substring(lineStart + 1, closeIndex);
-        int nonWs = 0;
-        while (nonWs < line.length()) {
-            char ch = line.charAt(nonWs);
-            if (ch != ' ' && ch != '\t') break;
-            nonWs++;
+    private static String buildTitleInfo(String prefix, MetaData md) {
+        StringBuilder sb = new StringBuilder();
+        sb.append("<").append(prefix).append("title-info>");
+        if (md.title != null && md.title.length() > 0) {
+            sb.append("<").append(prefix).append("book-title>")
+                    .append(escapeXml(md.title))
+                    .append("</").append(prefix).append("book-title>");
         }
-        if (nonWs > 0) return line.substring(0, nonWs);
-        return "    ";
+        if (md.author != null && md.author.trim().length() > 0) {
+            appendAuthor(sb, prefix, md.author.trim());
+        }
+        sb.append(elementBlock(prefix, "genre", md.genres));
+        sb.append("</").append(prefix).append("title-info>");
+        return sb.toString();
+    }
+
+    private static void appendAuthor(StringBuilder sb, String prefix, String author) {
+        String first = null;
+        String last;
+        int sp = author.lastIndexOf(' ');
+        if (sp > 0) {
+            first = author.substring(0, sp).trim();
+            last = author.substring(sp + 1).trim();
+        } else {
+            last = author;
+        }
+        sb.append("<").append(prefix).append("author>");
+        if (first != null && first.length() > 0) {
+            sb.append("<").append(prefix).append("first-name>")
+                    .append(escapeXml(first))
+                    .append("</").append(prefix).append("first-name>");
+        }
+        sb.append("<").append(prefix).append("last-name>")
+                .append(escapeXml(last))
+                .append("</").append(prefix).append("last-name>");
+        sb.append("</").append(prefix).append("author>");
+    }
+
+    private static String buildMetadata(String metaPrefix, String dcPrefix, boolean declareDc, MetaData md) {
+        StringBuilder sb = new StringBuilder();
+        sb.append("<").append(metaPrefix).append("metadata");
+        if (declareDc) sb.append(" xmlns:dc=\"http://purl.org/dc/elements/1.1/\"");
+        sb.append(">");
+        appendDc(sb, dcPrefix, "title", md.title);
+        appendDc(sb, dcPrefix, "creator", md.author);
+        appendDc(sb, dcPrefix, "publisher", md.publisher);
+        appendDc(sb, dcPrefix, "description", md.description);
+        sb.append(elementBlock(dcPrefix, "subject", md.genres));
+        sb.append("</").append(metaPrefix).append("metadata>");
+        return sb.toString();
+    }
+
+    private static void appendDc(StringBuilder sb, String prefix, String name, String value) {
+        if (value == null || value.length() == 0) return;
+        sb.append("<").append(prefix).append(name).append(">")
+                .append(escapeXml(value))
+                .append("</").append(prefix).append(name).append(">");
+    }
+
+    private static String replaceChildrenInFirst(String xml, String container, String childPrefix,
+                                                  String childLocal, List<String> values) {
+        int open = openMatchingFirstClose(xml, container);
+        int close = indexOfCloseLocal(xml, container, open < 0 ? 0 : open);
+        if (open < 0 || close < open) return null;
+        String inner = removeLocalElements(xml.substring(open, close), childLocal);
+        inner = inner + elementBlock(childPrefix, childLocal, values);
+        return xml.substring(0, open) + inner + xml.substring(close);
+    }
+
+    private static String elementBlock(String prefix, String local, List<String> values) {
+        StringBuilder sb = new StringBuilder();
+        if (values == null) return "";
+        for (int i = 0; i < values.size(); i++) {
+            String v = values.get(i);
+            if (v == null) continue;
+            sb.append("<").append(prefix).append(local).append(">")
+                    .append(escapeXml(v))
+                    .append("</").append(prefix).append(local).append(">");
+        }
+        return sb.toString();
+    }
+
+    private static String expandSelfClosing(String xml, int open, String inner) {
+        int gt = xml.indexOf('>', open);
+        if (gt <= open || xml.charAt(gt - 1) != '/') return null;
+        String head = xml.substring(open, gt - 1);
+        int end = head.length();
+        while (end > 0) {
+            char c = head.charAt(end - 1);
+            if (c != ' ' && c != '\t' && c != '\n' && c != '\r') break;
+            end--;
+        }
+        head = head.substring(0, end);
+        String rebuilt = head + ">" + inner + "</" + prefixOf(xml, open) + localOf(xml, open) + ">";
+        return xml.substring(0, open) + rebuilt + xml.substring(gt + 1);
+    }
+
+    private static int classifyTag(String xml, String local) {
+        if (indexOfCloseLocal(xml, local, 0) >= 0) return TAG_CLOSED;
+        if (indexOfSelfClosing(xml, local, 0) >= 0) return TAG_SELF;
+        if (indexOfOpenTag(xml, local, 0) >= 0) return TAG_OPEN;
+        return TAG_ABSENT;
+    }
+
+    private static int indexOfSelfClosing(String xml, String local, int from) {
+        int i = from;
+        while (true) {
+            int open = indexOfOpenTag(xml, local, i);
+            if (open < 0) return -1;
+            if (isSelfClosing(xml, open)) return open;
+            i = open + 1;
+        }
+    }
+
+    private static int openMatchingFirstClose(String xml, String local) {
+        int close = indexOfCloseLocal(xml, local, 0);
+        if (close < 0) return -1;
+        int open = -1;
+        int i = 0;
+        while (i < close) {
+            int next = indexOfOpenTag(xml, local, i);
+            if (next < 0 || next >= close) break;
+            if (!isSelfClosing(xml, next)) open = next;
+            i = next + 1;
+        }
+        return open;
+    }
+
+    private static int indexOfCloseLocal(String xml, String local, int from) {
+        String want = local.toLowerCase(Locale.US);
+        int i = from;
+        int len = xml.length();
+        while (i < len) {
+            int lt = xml.indexOf("</", i);
+            if (lt < 0 || lt + 2 >= len) return -1;
+            if (localNameAt(xml, lt + 2).toLowerCase(Locale.US).equals(want)) return lt;
+            i = lt + 2;
+        }
+        return -1;
+    }
+
+    private static String removeLocalElements(String xml, String local) {
+        String out = xml;
+        int guard = 0;
+        while (guard < 10000) {
+            guard++;
+            int open = indexOfOpenTag(out, local, 0);
+            if (open < 0) return out;
+            if (isSelfClosing(out, open)) {
+                int gt = out.indexOf('>', open);
+                if (gt < 0) return out;
+                out = out.substring(0, open) + out.substring(gt + 1);
+                continue;
+            }
+            int gt = out.indexOf('>', open);
+            if (gt < 0) return out;
+            int close = indexOfCloseLocal(out, local, gt + 1);
+            if (close < 0) return out;
+            int closeEnd = out.indexOf('>', close);
+            if (closeEnd < 0) return out;
+            out = out.substring(0, open) + out.substring(closeEnd + 1);
+        }
+        return out;
+    }
+
+    private static String dcPrefixForClosed(String xml, int open, int close) {
+        String inBlock = dcPrefixOfElements(xml.substring(open, close));
+        if (inBlock != null) return inBlock;
+        String declared = dcPrefixDeclared(xml.substring(0, open));
+        if (declared != null) return declared;
+        return "dc:";
+    }
+
+    private static String dcPrefixOfElements(String block) {
+        int i = 0;
+        int len = block.length();
+        while (i < len) {
+            int lt = block.indexOf('<', i);
+            if (lt < 0 || lt + 1 >= len) return null;
+            char next = block.charAt(lt + 1);
+            if (next == '/' || next == '?' || next == '!' || next == '>') {
+                i = lt + 1;
+                continue;
+            }
+            String prefix = prefixOf(block, lt);
+            if (prefix.length() > 0 && isDcLocal(localOf(block, lt))) return prefix;
+            i = lt + 1;
+        }
+        return null;
+    }
+
+    private static boolean isDcLocal(String local) {
+        String n = local.toLowerCase(Locale.US);
+        return n.equals("title") || n.equals("creator") || n.equals("subject")
+                || n.equals("description") || n.equals("publisher")
+                || n.equals("contributor") || n.equals("date") || n.equals("type")
+                || n.equals("format") || n.equals("identifier") || n.equals("source")
+                || n.equals("language") || n.equals("relation") || n.equals("coverage")
+                || n.equals("rights");
+    }
+
+    /** Prefix including the colon, from {@code xmlns:NAME="http://purl.org/dc/elements/1.1/"}. */
+    private static String dcPrefixDeclared(String scope) {
+        int from = 0;
+        String marker = "xmlns:";
+        while (from < scope.length()) {
+            int at = scope.toLowerCase(Locale.US).indexOf(marker, from);
+            if (at < 0) return null;
+            int nameStart = at + marker.length();
+            int i = nameStart;
+            while (i < scope.length() && isXmlNameChar(scope.charAt(i))) i++;
+            if (i == nameStart) {
+                from = nameStart;
+                continue;
+            }
+            int j = skipXmlSpace(scope, i);
+            if (j >= scope.length() || scope.charAt(j) != '=') {
+                from = i;
+                continue;
+            }
+            j = skipXmlSpace(scope, j + 1);
+            if (j >= scope.length()) return null;
+            char q = scope.charAt(j);
+            if (q != '"' && q != '\'') {
+                from = j + 1;
+                continue;
+            }
+            int valEnd = scope.indexOf(q, j + 1);
+            if (valEnd < 0) return null;
+            if (scope.substring(j + 1, valEnd).equals("http://purl.org/dc/elements/1.1/")) {
+                return scope.substring(nameStart, i) + ":";
+            }
+            from = valEnd + 1;
+        }
+        return null;
+    }
+
+    private static int skipXmlSpace(String s, int i) {
+        while (i < s.length()) {
+            char c = s.charAt(i);
+            if (c != ' ' && c != '\t' && c != '\n' && c != '\r') break;
+            i++;
+        }
+        return i;
     }
 
     private static String removeEveryDcSubject(String xml) {
@@ -504,7 +788,10 @@ public final class MetaWriter {
     }
 
     private static String localOf(String xml, int openLt) {
-        int nameStart = openLt + 1;
+        return localNameAt(xml, openLt + 1);
+    }
+
+    private static String localNameAt(String xml, int nameStart) {
         int end = nameEnd(xml, nameStart);
         int colon = -1;
         for (int i = nameStart; i < end; i++) {

@@ -52,7 +52,7 @@ Every book's metadata is stored in **two places**:
 | `meta/XmlText` | package-private FB2/OPF bytes: BOM, otherwise the prologue `encoding` attribute, otherwise UTF-8; a decode or encode failure returns null; the declaration is left as it is and the file is not converted to UTF-8 |
 | `meta/MetaExtractor` | read meta: EPUB/FB2/FB2ZIP (inner `.fb2` entry)/MOBI/TXT/HTML; FB2 and OPF bytes go through `XmlText`; FB2 all `<genre>` in `title-info` (or until `</description>` when unclosed), EPUB all `dc:subject` → normalized `md.genres` |
 | `meta/MobiParser` | shared MOBI/AZW binary reader (package-private): PalmDB record table + MOBI header + EXTH |
-| `meta/MetaWriter` | write meta EPUB/FB2 through `XmlText`, non-destructive (`.tmp`→swap→`.bak`); null `title`/`author`/`publisher`/`description` leaves that field untouched; EPUB all `dc:subject`, FB2 all `<genre>` in `title-info`; `md.genres == null` leaves file genres alone, empty list clears them |
+| `meta/MetaWriter` | write meta EPUB/FB2 through `XmlText`, non-destructive (`.tmp`→swap→`.bak`); null `title`/`author`/`publisher`/`description` leaves that field untouched; a non-empty genre list is placed in `title-info` / `metadata` and that block is created when it is missing; if there is nowhere to put it, `write` returns false and the file bytes stay the same; `md.genres == null` leaves file genres alone, empty list clears them |
 | `meta/CoverExtractor` | cover bytes: EPUB (`content.opf`→manifest), FB2 (`coverpage`→`<binary>`), FB2ZIP (inner `<binary>`, else loose image entry like `cover.jpg`), MOBI (EXTH record 201, JPEG trimmed at EOI) |
 | `util/CoverCache` | durable file cache of cover **bytes** (`getExternalFilesDir("covers")/<hash>.img`, atomic `.tmp`→rename); warmed by the enricher |
 | `util/CoverLoader` | async cover bitmap: `CoverCache` first, in-file extraction second, LruCache; hidden badge on success |
@@ -117,8 +117,10 @@ pagination is on, a horizontal swipe also turns pages.
   `files.adopted_from`. No new work row is inserted. `last_read` is unchanged.
   A failed copy does not change the path and does not leave a partial file.
   Catalog edits always go through `Catalog` (`saveUserEdit` or
-  `saveUserEditAtNewPath`). The enricher does not clobber these fields. Genres
-  live in `work_genres` (normalization unchanged).
+  `saveUserEditAtNewPath`). `write == false` still saves the catalog on the
+  current path in `SaveTask` and leaves the toast "Could not write into the
+  file"; that false does not start a second copy. The enricher does not clobber
+  these fields. Genres live in `work_genres` (normalization unchanged).
 - **Import** → `ACTION_OPEN_DOCUMENT` (SAF) → validate → copy to `getExternalFilesDir("books")`
   → `scanSingle()` → `Catalog.importFile()` → `MetaEnricher.enrichOne()` on the same
   background thread (each step announces via the facade).
