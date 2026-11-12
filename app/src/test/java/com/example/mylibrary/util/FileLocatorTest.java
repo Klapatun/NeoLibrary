@@ -2,6 +2,7 @@ package com.example.mylibrary.util;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNotNull;
+import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 
 import android.content.Context;
@@ -129,6 +130,7 @@ public class FileLocatorTest {
         LocateResult r = FileLocator.locateFile(db, fileId);
 
         assertEquals(LocateResult.DOWNLOADING, r.status);
+        assertNull(r.file);
     }
 
     @Test
@@ -141,6 +143,7 @@ public class FileLocatorTest {
         LocateResult r = FileLocator.locateFile(db, fileId);
 
         assertEquals(LocateResult.FAILED, r.status);
+        assertNull(r.file);
     }
 
     @Test
@@ -188,6 +191,41 @@ public class FileLocatorTest {
 
         assertEquals(LocateResult.ABSENT, expected.status);
         assertEquals(expected.status, byWork.status);
+        assertNull(byWork.file);
         assertTrue("smaller files._id must be used", secondId > firstId);
+    }
+
+    @Test
+    public void locateWorkSurfacesDownloadingWhenEarlierEditionIsAbsent() {
+        long workId = db.upsertBasic(book("/x/first-absent.epub", "EPUB", "Split"));
+        long firstId = soleFileId(workId);
+        clearPath(firstId);
+        setAvailability(firstId, "remote_only");
+
+        db.getWritableDatabase().execSQL(
+                "INSERT INTO files (work_id, format, path, availability) VALUES ("
+                        + workId + ", 'TXT', NULL, 'downloading')");
+
+        LocateResult r = FileLocator.locateWork(db, workId);
+
+        assertEquals(LocateResult.DOWNLOADING, r.status);
+        assertNull(r.file);
+    }
+
+    @Test
+    public void locateWorkSurfacesFailedWhenEarlierEditionIsAbsent() {
+        long workId = db.upsertBasic(book("/x/first-absent.epub", "EPUB", "Split failed"));
+        long firstId = soleFileId(workId);
+        clearPath(firstId);
+        setAvailability(firstId, "remote_only");
+
+        db.getWritableDatabase().execSQL(
+                "INSERT INTO files (work_id, format, path, availability) VALUES ("
+                        + workId + ", 'PDF', NULL, 'failed')");
+
+        LocateResult r = FileLocator.locateWork(db, workId);
+
+        assertEquals(LocateResult.FAILED, r.status);
+        assertNull(r.file);
     }
 }

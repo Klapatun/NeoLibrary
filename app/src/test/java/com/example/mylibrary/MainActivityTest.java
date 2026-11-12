@@ -1720,7 +1720,7 @@ public class MainActivityTest {
         shadowOf(d).clickOn(android.R.id.button1);
         shadowOf(Looper.getMainLooper()).idle();
 
-        assertNotNull("a toast must explain the download", ShadowToast.getTextOfLatestToast());
+        assertEquals(a.getString(R.string.file_downloading), ShadowToast.getTextOfLatestToast());
         assertNull("no intent may be started", shadowOf(a).getNextStartedActivity());
 
         android.database.Cursor c = db.getReadableDatabase().rawQuery(
@@ -1750,7 +1750,7 @@ public class MainActivityTest {
         shadowOf(d).clickOn(android.R.id.button1);
         shadowOf(Looper.getMainLooper()).idle();
 
-        assertNotNull("a toast must explain the failure", ShadowToast.getTextOfLatestToast());
+        assertEquals(a.getString(R.string.file_download_failed), ShadowToast.getTextOfLatestToast());
         assertNull("no intent may be started", shadowOf(a).getNextStartedActivity());
 
         android.database.Cursor c = db.getReadableDatabase().rawQuery(

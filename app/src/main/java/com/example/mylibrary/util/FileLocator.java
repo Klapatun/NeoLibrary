@@ -27,9 +27,11 @@ public final class FileLocator {
     /**
      * The edition a screen should open for this work. One edition is
      * {@link #locateFile}. Several: the first (by {@code files._id}) whose
-     * availability is {@code local} and whose file is still on disk; if none
-     * is, the same decision as {@link #locateFile} on the smallest
-     * {@code files._id}.
+     * availability is {@code local} and whose file is still on disk. If none
+     * is ready, a {@code downloading} edition wins over {@code failed}, and
+     * {@code failed} wins over {@code absent}, so a later download is not
+     * reported as a missing file. When every edition is absent, the result is
+     * the smallest {@code files._id}.
      */
     public static LocateResult locateWork(BookDatabase db, long workId) {
         List<BookDatabase.FileEdition> editions = db.listFileEditions(workId);
@@ -41,6 +43,15 @@ public final class FileLocator {
                 return new LocateResult(LocateResult.READY, onDisk);
             }
         }
+        LocateResult failed = null;
+        for (int i = 0; i < editions.size(); i++) {
+            LocateResult decided = decide(editions.get(i));
+            if (decided.status == LocateResult.DOWNLOADING) return decided;
+            if (failed == null && decided.status == LocateResult.FAILED) {
+                failed = decided;
+            }
+        }
+        if (failed != null) return failed;
         return decide(editions.get(0));
     }
 

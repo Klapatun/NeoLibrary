@@ -184,7 +184,7 @@ public class DetailActivityTest {
         ((Button) a.findViewById(R.id.btn_open)).performClick();
         shadowOf(Looper.getMainLooper()).idle();
 
-        assertNotNull("a toast must explain the download", ShadowToast.getTextOfLatestToast());
+        assertEquals(a.getString(R.string.file_downloading), ShadowToast.getTextOfLatestToast());
         assertNull("no viewer intent may be started", shadowOf(a).getNextStartedActivity());
 
         android.database.Cursor c = db.getReadableDatabase().rawQuery(
@@ -205,7 +205,7 @@ public class DetailActivityTest {
         ((Button) a.findViewById(R.id.btn_open)).performClick();
         shadowOf(Looper.getMainLooper()).idle();
 
-        assertNotNull("a toast must explain the failure", ShadowToast.getTextOfLatestToast());
+        assertEquals(a.getString(R.string.file_download_failed), ShadowToast.getTextOfLatestToast());
         assertNull("no viewer intent may be started", shadowOf(a).getNextStartedActivity());
 
         android.database.Cursor c = db.getReadableDatabase().rawQuery(
