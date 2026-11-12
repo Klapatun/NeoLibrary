@@ -12,7 +12,7 @@ import android.widget.TextView;
 import android.widget.Toast;
 
 import com.example.mylibrary.db.BookDatabase;
-import com.example.mylibrary.db.BookProvider;
+import com.example.mylibrary.db.Catalog;
 import com.example.mylibrary.meta.CoverExtractor;
 import com.example.mylibrary.meta.MetaEnricher;
 import com.example.mylibrary.model.Book;
@@ -34,6 +34,7 @@ public class DetailActivity extends Activity {
     public static final String EXTRA_BOOK_ID = "extra_book_id";
 
     private BookDatabase db;
+    private Catalog catalog;
     private Book book;
 
     @Override
@@ -44,6 +45,7 @@ public class DetailActivity extends Activity {
         // The app context, not the Activity's: the database is process-wide state,
         // and the in-flight enrichment task holds it — it must not pin the Activity.
         db = new BookDatabase(getApplicationContext());
+        catalog = new Catalog(getApplicationContext(), db);
         long id = getIntent().getLongExtra(EXTRA_BOOK_ID, -1);
         book = db.getById(id);
         if (book == null) {
@@ -88,10 +90,7 @@ public class DetailActivity extends Activity {
         // (markRead, notify) stay here.
         Openers.openFile(new File(book.path), this, new Openers.OpenOutcome() {
             @Override public void onLaunched() {
-                db.markRead(book.id);
-                // The list is cursor-driven: announce the new last_read so the
-                // "recently read" view (and the list, if it is on screen) re-queries.
-                BookProvider.notifyChangeAll(DetailActivity.this);
+                catalog.markRead(book.id);
             }
             @Override public void onMissingFile() {
                 Toast.makeText(DetailActivity.this, R.string.file_not_found,

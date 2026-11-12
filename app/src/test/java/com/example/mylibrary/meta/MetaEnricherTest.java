@@ -733,13 +733,16 @@ public class MetaEnricherTest {
         assertArrayEquals(TestFixtures.coverBytes(), out.cover);
     }
 
-    /** The worker's in-loop {@code notifyChange} posts are throttled (no more
-     *  often than once per {@code notifyMinIntervalMs}), but the FINAL notify of a
-     *  finished pass is always kept. A fast 12-book pass has TWO in-loop notify
+    /** The worker's in-loop {@code announceChangeAll} posts are throttled (no more
+     *  often than once per {@code notifyMinIntervalMs}), but the FINAL announce of a
+     *  finished pass is always kept. A fast 12-book pass has TWO in-loop announce
      *  opportunities (done=5 and done=10) plus the final one — under a 10-second
      *  throttle the second in-loop post falls inside the window of the first and is
-     *  suppressed, so the observer sees exactly two changes: the first batch and
-     *  the final notify (an unthrottled pass would post three). */
+     *  suppressed, so each observer sees exactly two changes: the first batch and
+     *  the final announce (an unthrottled pass would post three). Both URIs are
+     *  watched with {@code notifyForDescendants=false}: one announce hits
+     *  {@code CONTENT_URI} and {@code RECENT_URI}, and a descendant-watching parent
+     *  would count that single announce twice. */
     @Test
     public void startThrottlesTheBatchNotifiesButKeepsTheFinalOne() throws Exception {
         for (int i = 0; i < 12; i++) {
@@ -750,13 +753,21 @@ public class MetaEnricherTest {
 
         final java.util.concurrent.atomic.AtomicInteger notifies =
                 new java.util.concurrent.atomic.AtomicInteger(0);
+        final java.util.concurrent.atomic.AtomicInteger recentNotifies =
+                new java.util.concurrent.atomic.AtomicInteger(0);
         android.content.ContentResolver resolver = app.getContentResolver();
         android.database.ContentObserver observer = new android.database.ContentObserver(null) {
             @Override public void onChange(boolean selfChange) {
                 notifies.incrementAndGet();
             }
         };
-        resolver.registerContentObserver(BookProvider.CONTENT_URI, true, observer);
+        android.database.ContentObserver recentObserver = new android.database.ContentObserver(null) {
+            @Override public void onChange(boolean selfChange) {
+                recentNotifies.incrementAndGet();
+            }
+        };
+        resolver.registerContentObserver(BookProvider.CONTENT_URI, false, observer);
+        resolver.registerContentObserver(BookProvider.RECENT_URI, false, recentObserver);
 
         final MetaEnricher.ParseTask savedTask = MetaEnricher.parseTask;
         final long savedInterval = MetaEnricher.notifyMinIntervalMs;
@@ -794,10 +805,13 @@ public class MetaEnricherTest {
             MetaEnricher.notifyMinIntervalMs = savedInterval;
             MetaEnricher.parseTask = savedTask;
             resolver.unregisterContentObserver(observer);
+            resolver.unregisterContentObserver(recentObserver);
         }
         assertTrue("the pass must drain the queue", db.needMeta().isEmpty());
         assertEquals("under a huge throttle: first batch + final notify, the second "
                 + "in-loop post is suppressed", 2, notifies.get());
+        assertEquals("the recently-read cursor hears the same two announces",
+                2, recentNotifies.get());
     }
 
     /** MOBI single-pass: the cover record is handed out IN PLACE — the record's own

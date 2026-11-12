@@ -389,6 +389,52 @@ public class BookDatabase extends SQLiteOpenHelper {
         }
     }
 
+    /**
+     * Re-import skeleton in one transaction: {@link #upsertBasicOn} plus, when the
+     * path was already in the catalog, the same flag reset as {@link #markMetaPending}.
+     */
+    public long importSkeleton(Book b, boolean alreadyInCatalog) {
+        synchronized (WRITE_LOCK) {
+            SQLiteDatabase db = getWritableDatabase();
+            db.beginTransaction();
+            try {
+                long workId = upsertBasicOn(db, b);
+                if (alreadyInCatalog) {
+                    ContentValues fv = new ContentValues();
+                    fv.put("meta_done", 0);
+                    fv.put("meta_failed", 0);
+                    db.update("files", fv, "work_id=?", new String[]{String.valueOf(workId)});
+                    ContentValues wv = new ContentValues();
+                    wv.put("user_edited", 0);
+                    db.update("works", wv, "_id=?", new String[]{String.valueOf(workId)});
+                }
+                db.setTransactionSuccessful();
+                b.id = workId;
+                return workId;
+            } finally {
+                db.endTransaction();
+            }
+        }
+    }
+
+    /** Full metadata upsert plus {@code user_edited=1} in one transaction. */
+    public void saveUserEdit(Book b) {
+        synchronized (WRITE_LOCK) {
+            SQLiteDatabase db = getWritableDatabase();
+            db.beginTransaction();
+            try {
+                long workId = upsertWorkAndFile(db, b, true);
+                ContentValues cv = new ContentValues();
+                cv.put("user_edited", 1);
+                db.update("works", cv, "_id=?", new String[]{String.valueOf(workId)});
+                db.setTransactionSuccessful();
+                b.id = workId;
+            } finally {
+                db.endTransaction();
+            }
+        }
+    }
+
     public void upsertBasicBatch(List<Book> books) {
         synchronized (WRITE_LOCK) {
             SQLiteDatabase db = getWritableDatabase();

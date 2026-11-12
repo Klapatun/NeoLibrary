@@ -23,14 +23,15 @@
 
 Обновление 2026-11-12: 16.1 закрыт и вынесен (ветка
 `feature/feature_work-file-catalog`, схема v7 `works` / `files` /
-`work_genres`, список жанров). В `master` ещё не влит — 16.2 ждёт этот
-merge. 16.2–16.5 не согласованы. Планы 16.4 и 16.5 заблокированы проверкой
-сети в самом файле плана.
+`work_genres`, список жанров). Merge в `master` — `cb3c426`. 16.2
+реализован на `feature/catalog-facade` и в `master` ещё не влит. 16.3–16.5
+не согласованы. Планы 16.4 и 16.5 заблокированы проверкой сети в самом
+файле плана. 7.2 закрыт этим фасадом и вынесен из раздела 7.
 
-### 16.2 Фасад записи каталога — [ ] (высокий)
+### 16.2 Фасад записи каталога — [x] (высокий) · закрыт 2026-11-12
 - **План:** `.agents/plans/feature_catalog-facade/PLAN.md` (ветка `feature/catalog-facade`).
-- **Суть:** Activity и `MetaEnricher` пишут в каталог только через `Catalog`; каждое изменение объявляется на оба URI. Чтения остаются на `BookDatabase`. Сеть не нужна. Ждёт merge ветки `feature/feature_work-file-catalog` (схема v7).
-- **Согласование:** не согласован.
+- **Суть:** Activity и `MetaEnricher` пишут в каталог только через `Catalog`. Одиночные двери заканчиваются `notifyChangeAll`. Цикл обогащения пишет через `persistEnrichmentBatch` / `persistMetaFailed` и объявляет оба URI через `announceChangeAll` (троттлинг 300 мс сохранён). Чтения остаются на `BookDatabase`. Сеть не нужна.
+- **Согласование:** код по уточнённому плану. В `master` не влит. 2026-11-12 прогнаны `CatalogTest` и `MetaEnricherTest.startThrottlesTheBatchNotifiesButKeepsTheFinalOne` — зелёные. Полный сьют и lint этой правкой не гонялись.
 
 ### 16.3 Локатор файла перед открытием — [ ] (высокий)
 - **План:** `.agents/plans/feature_file-locator/PLAN.md` (ветка `feature/file-locator`).
@@ -84,25 +85,17 @@ merge. 16.2–16.5 не согласованы. Планы 16.4 и 16.5 забл
 `reimportClearsOldUserEditsBeforeApplyingNewFileMetadata` + новый
 `reimportPreservesLastReadTimestamp` (коммит `c3937ba`), полный сьют 250/250,
 lint 0 errors.
-
-### 7.2 «Recently read» не обновляется во время фоновой обогащённости — [ ] (низкий)
-- **Где:** `MetaEnricher.start` (batch-notify), `BookProvider` (`RECENT_URI`).
-- **Проблема:** фикс 6.1 ввёл `notifyChangeAll` для delete/edit/markRead, но сам
-  bulk-воркер по-прежнему шлёт `notifyChange` только на `CONTENT_URI`. Вкладка
-  «Recently read» слушает `RECENT_URI`: пока идёт stage-2, её строки (title
-  меняется с имени файла на настоящий, появляется обложка) остаются устаревшими
-  до любого другого события (смена фильтра, markRead, правка, удаление).
-- **Доработка:** в `MetaEnricher.start` заменить `notifyChange(CONTENT_URI)`
-  (batch + финальный) на `BookProvider.notifyChangeAll(appContext)` —
-  application-context там уже есть.
+Обновление 2026-11-12: 7.2 закрыт фасадом 16.2 и вынесен из этого файла.
+`MetaEnricher.start` объявляет оба URI через `Catalog.announceChangeAll`
+(троттлинг 300 мс сохранён). Полный текст — в истории git.
 
 ### 7.3 Узкая resurrect-гонка осталась в `EditMetaActivity.save` — [ ] (низкий)
 - **Где:** `EditMetaActivity.save` (фикс 6.2, `8d5995a`).
 - **Проблема:** фикс закрыл широкий случай (строка удалена до `getById`), но если
-  её удалят **между** `db.getById(book.id)` и `db.upsert(updated)`, path-based
-  `upsert` INSERTит новую строку, и `markUserEdited(updated.id)` пометит уже её:
-  книга воскресает под новым id. Окно — миллисекунды, но тот же класс бага.
-  Связанно: `upsert` + `markUserEdited` — две отдельные транзакции (см. 1.3).
+  её удалят **между** `db.getById(book.id)` и `catalog.saveUserEdit(updated)`,
+  запись по пути INSERTит новую строку и ставит `user_edited=1` уже ей:
+  книга воскресает под новым id. Окно — миллисекунды. План 16.2 это
+  поведение не меняет.
 - **Доработка:** сохранять через id-based update (`UPDATE ... WHERE _id=?`,
   без INSERT-ветки) — resurrect-ветка исчезает совсем.
 
