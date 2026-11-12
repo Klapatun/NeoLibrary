@@ -226,6 +226,7 @@ public final class MetaEnricher {
         try {
             byte[] header = CoverExtractor.readFb2Header(file);
             out.meta = MetaExtractor.parseFb2Xml(new ByteArrayInputStream(header));
+            MetaExtractor.fillFileNameTitle(out.meta, file);
             out.cover = CoverExtractor.coverFromFb2Bytes(header);
         } catch (Exception e) {
             Log.w(TAG, "Single-pass FB2 parse of " + file, e);
@@ -250,6 +251,7 @@ public final class MetaEnricher {
                 return;
             }
             out.meta = MetaExtractor.parseFb2Xml(new ByteArrayInputStream(fb2));
+            MetaExtractor.fillFileNameTitle(out.meta, file);
             out.cover = CoverExtractor.coverFromFb2Bytes(fb2);
             if (out.cover == null) {
                 try {

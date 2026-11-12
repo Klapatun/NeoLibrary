@@ -42,8 +42,9 @@ public final class MetaExtractor {
 
     /**
      * Attempt to read metadata from the given file. Returns a {@link MetaData} whose
-     * {@link MetaData#found} flag tells whether anything usable was parsed; fields may
-     * still be null/unset, in which case the caller should fall back to the file name.
+     * {@link MetaData#found} flag is true when a canonical title was read — the title
+     * {@code applyUpdate} may copy into the catalog. A file-name string left in
+     * {@code title} does not set {@code found}.
      *
      * <p>Never throws: a broken file (corrupt archive, malformed XML, I/O error) is
      * logged with its cause and degrades to {@code found = false}, so one bad file can
@@ -192,7 +193,9 @@ public final class MetaExtractor {
     private static MetaData extractFb2(File file) throws Exception {
         InputStream in = new BufferedInputStream(new FileInputStream(file));
         try {
-            return parseFb2Xml(in);
+            MetaData md = parseFb2Xml(in);
+            fillFileNameTitle(md, file);
+            return md;
         } finally {
             in.close();
         }
@@ -210,7 +213,9 @@ public final class MetaExtractor {
         try {
             byte[] xml = CoverExtractor.readFb2EntryBytes(zip);
             if (xml == null) return notFound(file);
-            return parseFb2Xml(new ByteArrayInputStream(xml));
+            MetaData md = parseFb2Xml(new ByteArrayInputStream(xml));
+            fillFileNameTitle(md, file);
+            return md;
         } finally {
             zip.close();
         }
@@ -241,6 +246,12 @@ public final class MetaExtractor {
         boolean seenTitleInfo = false;
         boolean titleInfoClosed = false;
         int titleInfoDepth = 0;
+        // Title tags are remembered here, not in md.title: book-title wins, and only
+        // while title-info is open and body has not started. src-title-info does not
+        // raise titleInfoDepth, so its book-title is not a book title.
+        String bookTitle = null;
+        String infoTitle = null;
+        boolean seenBody = false;
         try {
         while ((event = p.next()) != XmlPullParser.END_DOCUMENT) {
             if (event == XmlPullParser.START_TAG) {
@@ -248,8 +259,11 @@ public final class MetaExtractor {
                 if (local.equals("title-info")) {
                     seenTitleInfo = true;
                     titleInfoDepth++;
-                } else if (local.equals("title")) pending = "title";
-                else if (local.equals("first-name")) pending = "first";
+                } else if (local.equals("body")) {
+                    seenBody = true;
+                } else if (local.equals("book-title") || local.equals("title")) {
+                    if (titleInfoDepth > 0 && !seenBody) pending = local;
+                } else if (local.equals("first-name")) pending = "first";
                 else if (local.equals("last-name")) pending = "last";
                 else if (local.equals("middle-name")) pending = "middle";
                 else if (local.equals("nickname")) pending = "nick";
@@ -262,7 +276,10 @@ public final class MetaExtractor {
                 if (text == null) text = "";
                 text = text.trim();
                 if (text.length() == 0) continue;
-                if (pending.equals("title") && md.title == null) md.title = text;
+                // A nested <p> does not replace pending, so its text still belongs to
+                // the open title tag (the first non-empty chunk, as a bare <title>).
+                if (pending.equals("book-title") && bookTitle == null) bookTitle = text;
+                else if (pending.equals("title") && infoTitle == null) infoTitle = text;
                 else if (pending.equals("first")) md.firstName = text;
                 else if (pending.equals("middle")) md.middleName = text;
                 else if (pending.equals("last")) md.lastName = text;
@@ -301,8 +318,25 @@ public final class MetaExtractor {
         if (md.lastName != null) author.append(md.lastName);
         md.author = author.toString().trim();
         md.genres = MetaData.normalizeGenres(genreParts);
+        if (bookTitle != null && bookTitle.length() > 0) md.title = bookTitle;
+        else if (infoTitle != null && infoTitle.length() > 0) md.title = infoTitle;
+        else md.title = null;
         md.found = md.title != null && md.title.length() > 0;
         return md;
+    }
+
+    /**
+     * After a finished FB2 parse ({@code genres != null}), copies this file's name
+     * into {@code title} when no title tag was read. Does not raise {@code found}.
+     * For FB2ZIP {@code file} is the archive, not the inner {@code .fb2}.
+     */
+    static void fillFileNameTitle(MetaData md, File file) {
+        if (md.genres == null) return;
+        if (md.title != null && md.title.length() > 0) return;
+        String name = file.getName();
+        int dot = name.lastIndexOf('.');
+        if (dot > 0) name = name.substring(0, dot);
+        md.title = name.replace('_', ' ');
     }
 
     // -------------------------------------------------------------------
