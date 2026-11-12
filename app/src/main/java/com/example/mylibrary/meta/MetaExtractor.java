@@ -13,6 +13,7 @@ import java.io.File;
 import java.io.FileInputStream;
 import java.io.IOException;
 import java.io.InputStream;
+import java.io.StringReader;
 import java.util.Enumeration;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipFile;
@@ -135,9 +136,12 @@ public final class MetaExtractor {
      * shares it with the public {@link #extract} path.
      */
     static void parseOpf(InputStream in, MetaData md) throws Exception {
+        byte[] raw = readFully(in);
+        String decoded = XmlText.decode(raw);
+        if (decoded == null) return;
         java.util.ArrayList<String> subjects = new java.util.ArrayList<String>();
         XmlPullParser p = Xml.newPullParser();
-        p.setInput(in, "UTF-8");
+        p.setInput(new StringReader(decoded));
         int event;
         String tag = null;
         while ((event = p.next()) != XmlPullParser.END_DOCUMENT) {
@@ -184,7 +188,7 @@ public final class MetaExtractor {
     // FB2
     // -------------------------------------------------------------------
 
-    /** FB2 is UTF-8 XML with a &lt;description&gt; block containing title-info. */
+    /** FB2 XML with a &lt;description&gt; block containing title-info. Bytes go through {@link XmlText}. */
     private static MetaData extractFb2(File file) throws Exception {
         InputStream in = new BufferedInputStream(new FileInputStream(file));
         try {
@@ -223,9 +227,15 @@ public final class MetaExtractor {
      */
     static MetaData parseFb2Xml(InputStream in) throws Exception {
         MetaData md = new MetaData();
+        byte[] raw = readFully(in);
+        String decoded = XmlText.decode(raw);
+        if (decoded == null) {
+            md.found = false;
+            return md;
+        }
         java.util.ArrayList<String> genreParts = new java.util.ArrayList<String>();
         XmlPullParser p = Xml.newPullParser();
-        p.setInput(in, "UTF-8");
+        p.setInput(new StringReader(decoded));
         int event;
         String pending = null; // current leaf element we care about
         boolean seenTitleInfo = false;
@@ -365,6 +375,14 @@ public final class MetaExtractor {
     }
 
     // -------------------------------------------------------------------
+
+    private static byte[] readFully(InputStream in) throws IOException {
+        java.io.ByteArrayOutputStream baos = new java.io.ByteArrayOutputStream();
+        byte[] buf = new byte[8192];
+        int n;
+        while ((n = in.read(buf)) > 0) baos.write(buf, 0, n);
+        return baos.toByteArray();
+    }
 
     private static MetaData notFound(File file) {
         MetaData md = new MetaData();

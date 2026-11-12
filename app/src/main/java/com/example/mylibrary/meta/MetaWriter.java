@@ -54,26 +54,36 @@ public final class MetaWriter {
 
     /**
      * Rebuilds the EPUB ZIP, replacing the OPF package document with one whose
-     * Dublin-Core metadata elements carry the new values. If an element is absent it
-     * is inserted into the metadata section.
+     * Dublin-Core metadata elements carry the new values. A null string leaves
+     * that element alone. A missing non-empty element is inserted into the
+     * metadata section. An unchanged OPF is not repacked.
      */
     private static boolean writeEpub(File file, MetaData md) throws Exception {
         String opfPath = findOpfPath(file);
         if (opfPath == null) return false;
 
-        String opf = readZipEntry(file, opfPath);
+        byte[] raw = readZipEntryBytes(file, opfPath);
+        if (raw == null) return false;
+        String opf = XmlText.decode(raw);
         if (opf == null) return false;
+        String original = opf;
 
         opf = setDcElement(opf, "title", md.title);
         opf = setDcElement(opf, "creator", md.author);
         opf = setDcElement(opf, "publisher", md.publisher);
         opf = setDcElement(opf, "description", md.description);
-        opf = setDcElement(opf, "language", md.language);
+        if (md.language != null && md.language.length() > 0) {
+            opf = setDcElement(opf, "language", md.language);
+        }
         if (md.genres != null) opf = writeDcSubjects(opf, md.genres);
+        if (opf.equals(original)) return true;
+
+        byte[] encoded = XmlText.encode(opf, raw);
+        if (encoded == null) return false;
 
         // Write rebuilt archive to a temp file, then move over the original.
         File tmp = new File(file.getParentFile(), file.getName() + ".tmp");
-        boolean ok = rebuildZip(file, tmp, opfPath, opf);
+        boolean ok = rebuildZip(file, tmp, opfPath, encoded);
         if (!ok) return false;
 
         File backup = new File(file.getParentFile(), file.getName() + ".bak");
@@ -101,9 +111,14 @@ public final class MetaWriter {
         }
     }
 
-    /** Replaces the text content of a {@code <dc:X>} element. Inserts if missing. */
+    /**
+     * Replaces the text of an existing {@code <dc:X>} element.
+     * Null leaves the document alone. An empty string clears an existing
+     * element and does not insert one. A non-empty missing element is inserted
+     * before {@code </metadata>} (or {@code </opf:metadata>}).
+     */
     private static String setDcElement(String xml, String name, String value) {
-        if (value == null) value = "";
+        if (value == null) return xml;
         String escaped = escapeXml(value);
         String lower = xml.toLowerCase(Locale.US);
         String openTag = "<dc:" + name;
@@ -122,7 +137,7 @@ public final class MetaWriter {
                 // closing tag itself).
                 return xml.substring(0, contentStart) + escaped + xml.substring(close);
             }
-        } else {
+        } else if (value.length() > 0) {
             // insert before </metadata> or, failing that, </opf:metadata>
             int metaClose = lower.indexOf("</metadata>");
             if (metaClose < 0) metaClose = lower.indexOf("</opf:metadata>");
@@ -135,7 +150,7 @@ public final class MetaWriter {
     }
 
     /** Copies every entry from src into dst, replacing entry {@code replaceName} with {@code newContent}. */
-    private static boolean rebuildZip(File src, File dst, String replaceName, String newContent) {
+    private static boolean rebuildZip(File src, File dst, String replaceName, byte[] newContent) {
         try {
             ZipInputStream in = new ZipInputStream(new BufferedInputStream(new FileInputStream(src)));
             ZipOutputStream out = new ZipOutputStream(new BufferedOutputStream(new FileOutputStream(dst)));
@@ -144,7 +159,7 @@ public final class MetaWriter {
                 if (e.getName().equals(replaceName)) {
                     ZipEntry ne = new ZipEntry(e.getName());
                     out.putNextEntry(ne);
-                    out.write(newContent.getBytes("UTF-8"));
+                    out.write(newContent);
                 } else {
                     ZipEntry ne = new ZipEntry(e.getName());
                     out.putNextEntry(ne);
@@ -163,7 +178,7 @@ public final class MetaWriter {
         }
     }
 
-    private static String readZipEntry(File file, String entryName) throws Exception {
+    private static byte[] readZipEntryBytes(File file, String entryName) throws Exception {
         ZipInputStream zip = new ZipInputStream(new BufferedInputStream(new FileInputStream(file)));
         try {
             ZipEntry e;
@@ -173,7 +188,7 @@ public final class MetaWriter {
                     byte[] buf = new byte[8192];
                     int n;
                     while ((n = zip.read(buf)) > 0) baos.write(buf, 0, n);
-                    return new String(baos.toByteArray(), "UTF-8");
+                    return baos.toByteArray();
                 }
             }
         } finally {
@@ -213,37 +228,52 @@ public final class MetaWriter {
     /**
      * Edits the FB2 XML in place by rewriting the description block elements. Because
      * FB2 is a plain (single, non-container) XML file, we read it fully, patch the
-     * relevant elements with regex, and write it back with a backup.
+     * relevant elements, and write it back in the same charset. A null string field
+     * is left untouched. An unchanged document is not rewritten.
      */
     private static boolean writeFb2(File file, MetaData md) throws Exception {
-        String xml = readTextFile(file);
+        byte[] raw = readBytes(file);
+        if (raw == null) return false;
+        String xml = XmlText.decode(raw);
         if (xml == null) return false;
+        String original = xml;
 
-        // title
-        xml = replaceElementContent(xml, "title", md.title);
+        if (md.title != null) xml = replaceTitle(xml, md.title);
         // author parts. If only the combined author string is supplied (as from the
         // edit form), split it heuristically: last word -> last-name, the rest ->
-        // first-name. This lets FB2 author edits actually persist to the file.
-        if (md.firstName == null && md.lastName == null && md.author != null && md.author.length() > 0) {
-            String a = md.author.trim();
-            int sp = a.lastIndexOf(' ');
-            if (sp > 0) {
-                md.firstName = a.substring(0, sp).trim();
-                md.lastName = a.substring(sp + 1).trim();
+        // first-name. A null author leaves the name parts alone. An empty author
+        // clears them inside the first title-info author and does not create one.
+        if (md.author != null) {
+            String trimmed = md.author.trim();
+            if (trimmed.length() == 0) {
+                xml = clearNamesInFirstAuthor(xml);
             } else {
-                md.lastName = a;
+                if (md.firstName == null && md.lastName == null) {
+                    int sp = trimmed.lastIndexOf(' ');
+                    if (sp > 0) {
+                        md.firstName = trimmed.substring(0, sp).trim();
+                        md.lastName = trimmed.substring(sp + 1).trim();
+                    } else {
+                        md.lastName = trimmed;
+                    }
+                }
+                if (md.firstName != null) xml = replaceElementContent(xml, "first-name", md.firstName);
+                if (md.middleName != null) xml = replaceElementContent(xml, "middle-name", md.middleName);
+                if (md.lastName != null) xml = replaceElementContent(xml, "last-name", md.lastName);
             }
         }
-        if (md.firstName != null) xml = replaceElementContent(xml, "first-name", md.firstName);
-        if (md.middleName != null) xml = replaceElementContent(xml, "middle-name", md.middleName);
-        if (md.lastName != null) xml = replaceElementContent(xml, "last-name", md.lastName);
-        // publisher
         if (md.publisher != null) xml = replaceElementContent(xml, "publisher", md.publisher);
-        if (md.language != null) xml = replaceElementContent(xml, "lang", md.language);
+        if (md.language != null && md.language.length() > 0) {
+            xml = replaceElementContent(xml, "lang", md.language);
+        }
         if (md.genres != null) xml = writeFb2Genres(xml, md.genres);
+        if (xml.equals(original)) return true;
+
+        byte[] encoded = XmlText.encode(xml, raw);
+        if (encoded == null) return false;
 
         File tmp = new File(file.getParentFile(), file.getName() + ".tmp");
-        writeTextFile(tmp, xml);
+        writeBytes(tmp, encoded);
         File backup = new File(file.getParentFile(), file.getName() + ".bak");
         try {
             if (file.exists() && !file.renameTo(backup)) copyFile(file, backup);
@@ -371,9 +401,142 @@ public final class MetaWriter {
         return xml.substring(0, close) + element + xml.substring(close);
     }
 
+    /**
+     * Writes {@code value} into an existing {@code book-title} (keeping that tag's
+     * prefix). When there is no book-title, writes the exact {@code title} element
+     * and does not touch {@code title-info}. Does not insert a title element and
+     * does not rename one tag to the other.
+     */
+    private static String replaceTitle(String xml, String value) {
+        int book = indexOfOpenTag(xml, "book-title", 0);
+        if (book >= 0) {
+            String replaced = replaceOpenElement(xml, book, value);
+            return replaced != null ? replaced : xml;
+        }
+        int title = indexOfOpenTag(xml, "title", 0);
+        if (title >= 0) {
+            String replaced = replaceOpenElement(xml, title, value);
+            return replaced != null ? replaced : xml;
+        }
+        return xml;
+    }
+
+    /** Clears first/middle/last name text inside the first author of the first title-info. */
+    private static String clearNamesInFirstAuthor(String xml) {
+        int ti = indexOfOpenTag(xml, "title-info", 0);
+        if (ti < 0 || isSelfClosing(xml, ti)) return xml;
+        int tiGt = xml.indexOf('>', ti);
+        if (tiGt < 0) return xml;
+        int tiClose = indexOfCloseTag(xml, prefixOf(xml, ti), localOf(xml, ti), tiGt + 1);
+        if (tiClose < 0) return xml;
+        int author = indexOfOpenTag(xml, "author", tiGt + 1);
+        if (author < 0 || author >= tiClose || isSelfClosing(xml, author)) return xml;
+        int authorGt = xml.indexOf('>', author);
+        if (authorGt < 0 || authorGt >= tiClose) return xml;
+        int authorClose = indexOfCloseTag(xml, prefixOf(xml, author), localOf(xml, author), authorGt + 1);
+        if (authorClose < 0 || authorClose > tiClose) return xml;
+        String inner = xml.substring(authorGt + 1, authorClose);
+        inner = clearFirstLocal(inner, "first-name");
+        inner = clearFirstLocal(inner, "middle-name");
+        inner = clearFirstLocal(inner, "last-name");
+        return xml.substring(0, authorGt + 1) + inner + xml.substring(authorClose);
+    }
+
+    private static String clearFirstLocal(String xml, String local) {
+        int open = indexOfOpenTag(xml, local, 0);
+        if (open < 0) return xml;
+        String replaced = replaceOpenElement(xml, open, "");
+        return replaced != null ? replaced : xml;
+    }
+
+    /** Index of {@code '<'} of the first open tag whose local name is exactly {@code local}. */
+    private static int indexOfOpenTag(String xml, String local, int from) {
+        String want = local.toLowerCase(Locale.US);
+        int i = from;
+        int len = xml.length();
+        while (i < len) {
+            int lt = xml.indexOf('<', i);
+            if (lt < 0 || lt + 1 >= len) return -1;
+            char next = xml.charAt(lt + 1);
+            if (next == '/' || next == '?' || next == '!' || next == '>') {
+                i = lt + 1;
+                continue;
+            }
+            if (localOf(xml, lt).toLowerCase(Locale.US).equals(want)) return lt;
+            i = lt + 1;
+        }
+        return -1;
+    }
+
+    private static int nameEnd(String xml, int nameStart) {
+        int j = nameStart;
+        int len = xml.length();
+        while (j < len) {
+            char c = xml.charAt(j);
+            if (c == ':') {
+                j++;
+                continue;
+            }
+            if (isXmlNameChar(c)) {
+                j++;
+                continue;
+            }
+            break;
+        }
+        return j;
+    }
+
+    private static boolean isXmlNameChar(char c) {
+        return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z')
+                || (c >= '0' && c <= '9') || c == '_' || c == '-' || c == '.';
+    }
+
+    /** Prefix including the colon, or empty when the tag has none. */
+    private static String prefixOf(String xml, int openLt) {
+        int nameStart = openLt + 1;
+        int end = nameEnd(xml, nameStart);
+        int colon = -1;
+        for (int i = nameStart; i < end; i++) {
+            if (xml.charAt(i) == ':') colon = i;
+        }
+        if (colon < 0) return "";
+        return xml.substring(nameStart, colon + 1);
+    }
+
+    private static String localOf(String xml, int openLt) {
+        int nameStart = openLt + 1;
+        int end = nameEnd(xml, nameStart);
+        int colon = -1;
+        for (int i = nameStart; i < end; i++) {
+            if (xml.charAt(i) == ':') colon = i;
+        }
+        return xml.substring(colon >= 0 ? colon + 1 : nameStart, end);
+    }
+
+    private static boolean isSelfClosing(String xml, int openLt) {
+        int gt = xml.indexOf('>', openLt);
+        return gt > openLt && xml.charAt(gt - 1) == '/';
+    }
+
+    private static int indexOfCloseTag(String xml, String prefix, String local, int from) {
+        String needle = ("</" + prefix + local + ">").toLowerCase(Locale.US);
+        String lower = xml.toLowerCase(Locale.US);
+        return lower.indexOf(needle, from);
+    }
+
+    /** Replaces the text of the open tag at {@code open}. Null when it is not a pair. */
+    private static String replaceOpenElement(String xml, int open, String value) {
+        if (isSelfClosing(xml, open)) return null;
+        int gt = xml.indexOf('>', open);
+        if (gt < 0) return null;
+        int close = indexOfCloseTag(xml, prefixOf(xml, open), localOf(xml, open), gt + 1);
+        if (close < 0) return null;
+        return xml.substring(0, gt + 1) + escapeXml(value) + xml.substring(close);
+    }
+
     /** Replaces content of the first {@code <tag>...</tag>} occurrence, escaping value. */
     private static String replaceElementContent(String xml, String tag, String value) {
-        if (value == null) value = "";
+        if (value == null) return xml;
         // The opening tag must be the exact tag name followed by whitespace, '/' or
         // '>'. A bare [^>]* after the name would also match longer names that share
         // the prefix — e.g. <title-info> for tag "title" — and corrupt the parent
@@ -391,23 +554,26 @@ public final class MetaWriter {
     // helpers
     // -------------------------------------------------------------------
 
-    private static String readTextFile(File f) {
+    private static byte[] readBytes(File f) {
         try {
             InputStream in = new BufferedInputStream(new FileInputStream(f));
-            java.io.ByteArrayOutputStream baos = new java.io.ByteArrayOutputStream();
-            byte[] buf = new byte[8192];
-            int n;
-            while ((n = in.read(buf)) > 0) baos.write(buf, 0, n);
-            in.close();
-            return new String(baos.toByteArray(), "UTF-8");
+            try {
+                java.io.ByteArrayOutputStream baos = new java.io.ByteArrayOutputStream();
+                byte[] buf = new byte[8192];
+                int n;
+                while ((n = in.read(buf)) > 0) baos.write(buf, 0, n);
+                return baos.toByteArray();
+            } finally {
+                in.close();
+            }
         } catch (Exception e) {
             return null;
         }
     }
 
-    private static void writeTextFile(File f, String content) throws Exception {
+    private static void writeBytes(File f, byte[] content) throws Exception {
         OutputStream out = new BufferedOutputStream(new FileOutputStream(f));
-        out.write(content.getBytes("UTF-8"));
+        out.write(content);
         out.close();
     }
 

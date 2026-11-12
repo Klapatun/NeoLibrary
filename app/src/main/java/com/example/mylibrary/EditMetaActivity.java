@@ -264,12 +264,20 @@ public class EditMetaActivity extends Activity {
 
         private MetaData formMeta() {
             MetaData md = new MetaData();
-            md.title = title;
-            md.author = author;
-            md.publisher = publisher;
+            md.title = writerField(title, target.title);
+            md.author = writerField(author, target.author);
+            md.publisher = writerField(publisher, target.publisher);
+            md.description = writerField(description, target.description);
             md.genres = genres;
-            md.description = description;
             return md;
+        }
+
+        /** Null when the trimmed form string matches the book field the form showed. */
+        private static String writerField(String formValue, String bookValue) {
+            String form = formValue == null ? "" : formValue;
+            String book = bookValue == null ? "" : bookValue.trim();
+            if (form.equals(book)) return null;
+            return formValue;
         }
 
         private void applyForm(Book updated) {
