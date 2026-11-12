@@ -216,6 +216,15 @@ public class MetaWriterTest {
         return md;
     }
 
+    /** Opening {@code <package ...>} tag only; ignores {@code ?>} in the XML prolog. */
+    private static String openingPackageTag(String opf) {
+        int start = opf.indexOf("<package");
+        assertTrue("package element missing", start >= 0);
+        int end = opf.indexOf('>', start);
+        assertTrue("package opening tag not closed", end >= 0);
+        return opf.substring(start, end + 1);
+    }
+
     private static File writeFb2Bytes(File fb2, byte[] bytes) throws Exception {
         FileOutputStream out = new FileOutputStream(fb2);
         try {
@@ -1022,14 +1031,16 @@ public class MetaWriterTest {
                 + "  </manifest>\n"
                 + "</package>\n";
         final File epub = writeEpubFixture(opf);
-        String packageOpen = opf.substring(opf.indexOf("<package"), opf.indexOf(">") + 1);
+        String packageOpen = openingPackageTag(opf);
 
         MetaData md = metaAllStringsNull();
         md.genres = genres("mystery");
         assertTrue(MetaWriter.write(epub, md));
 
         String written = new String(readZip(epub).get("OEBPS/content.opf"), "UTF-8");
-        assertTrue(written.startsWith(packageOpen));
+        int packageAt = written.indexOf("<package");
+        assertTrue(packageAt >= 0);
+        assertEquals(packageOpen, written.substring(packageAt, packageAt + packageOpen.length()));
         int metaAt = written.indexOf("<metadata>");
         int manifestAt = written.indexOf("<manifest>");
         assertTrue(metaAt > 0);
@@ -1047,14 +1058,16 @@ public class MetaWriterTest {
                 + "  </spine>\n"
                 + "</package>\n";
         final File epub = writeEpubFixture(opf);
-        String packageTag = opf.substring(opf.indexOf("<package"), opf.indexOf(">") + 1);
+        String packageTag = openingPackageTag(opf);
 
         MetaData md = metaAllStringsNull();
         md.genres = genres("prose");
         assertTrue(MetaWriter.write(epub, md));
 
         String written = new String(readZip(epub).get("OEBPS/content.opf"), "UTF-8");
-        assertTrue(written.contains(packageTag));
+        int packageAt = written.indexOf("<package");
+        assertTrue(packageAt >= 0);
+        assertEquals(packageTag, written.substring(packageAt, packageAt + packageTag.length()));
         assertTrue(written.contains("xmlns:dc=\"http://purl.org/dc/elements/1.1/\""));
         assertTrue(written.contains("<dc:subject>prose</dc:subject>"));
     }
