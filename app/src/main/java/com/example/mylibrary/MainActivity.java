@@ -52,6 +52,8 @@ import com.example.mylibrary.model.Book;
 import com.example.mylibrary.scan.Formats;
 import com.example.mylibrary.scan.LibraryScanner;
 import com.example.mylibrary.util.CoverCache;
+import com.example.mylibrary.util.FileLocator;
+import com.example.mylibrary.util.LocateResult;
 import com.example.mylibrary.util.Openers;
 
 import java.io.File;
@@ -873,9 +875,9 @@ public class MainActivity extends Activity
     // Opening a book: the tap confirmation (Open / Cancel)
     // -----------------------------------------------------------------
 
-    /** The tap's "Open this book?": on confirm the book is launched in the reader
-     *  with the same side effects the detail screen's Open button had (viewer
-     *  intent, markRead, notify); on cancel nothing happens. */
+    /** The tap's "Open this book?": on confirm {@link #openBook} asks the locator.
+     *  Ready bytes go to the reader (viewer intent, then markRead). Absent,
+     *  downloading, and failed stay on this screen. Cancel does nothing. */
     private void confirmOpen(final Book book) {
         new AlertDialog.Builder(this)
                 .setTitle(R.string.open_confirm_title)
@@ -889,11 +891,25 @@ public class MainActivity extends Activity
                 .show();
     }
 
-    /** Launches the book in Neo Reader. The shared "file there? viewer there?" logic
-     *  lives in {@link Openers #openFile(File, Activity, OpenOutcome)}; the catalog
-     *  side effects (markRead, notify) stay here. */
+    /** Launches the book in Neo Reader when {@link FileLocator#locateWork} says
+     *  the bytes are ready. Downloading, failed, and absent do not call
+     *  {@link Openers} and do not mark the work read. Openers still owns MIME
+     *  and the viewer; markRead stays here, and only after {@code onLaunched}. */
     private void openBook(final Book book) {
-        Openers.openFile(new File(book.path), this, new Openers.OpenOutcome() {
+        LocateResult located = FileLocator.locateWork(db, book.id);
+        if (located.status == LocateResult.DOWNLOADING) {
+            Toast.makeText(this, R.string.file_downloading, Toast.LENGTH_LONG).show();
+            return;
+        }
+        if (located.status == LocateResult.FAILED) {
+            Toast.makeText(this, R.string.file_download_failed, Toast.LENGTH_LONG).show();
+            return;
+        }
+        if (located.status != LocateResult.READY || located.file == null) {
+            Toast.makeText(this, R.string.file_not_found, Toast.LENGTH_LONG).show();
+            return;
+        }
+        Openers.openFile(located.file, this, new Openers.OpenOutcome() {
             @Override public void onLaunched() {
                 catalog.markRead(book.id);
             }

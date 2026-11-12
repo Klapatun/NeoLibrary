@@ -40,6 +40,8 @@
     <string name="open_confirm_title">Open this book?</string>
     <string name="open_confirm_message">Open %1$s?</string>
     <string name="file_not_found">File not found</string>
+    <string name="file_downloading">This file is still downloading</string>
+    <string name="file_download_failed">This file could not be downloaded</string>
     <string name="no_viewer_title">No reader found</string>
     <string name="no_viewer_message">Reader does not appear to be installed, or it cannot open this file type.</string>
     <string name="ok">OK</string>

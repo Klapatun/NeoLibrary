@@ -1664,6 +1664,102 @@ public class MainActivityTest {
         assertEquals("last_read must stay 0", 0L, c.getLong(0));
     }
 
+    private void setAvailabilityForWork(long workId, String availability) {
+        db.getWritableDatabase().execSQL(
+                "UPDATE files SET availability='" + availability + "' WHERE work_id=" + workId);
+    }
+
+    @Test
+    public void confirmingOpenWithMissingFileOnDiskDoesNotLaunchViewerOrMarkRead()
+            throws Exception {
+        File f = new File(storage, "ghost.txt");
+        TestFixtures.writeText(f, "soon gone\n");
+
+        MainActivity a = launchMain();
+        awaitCatalogSize(1);
+        GridView grid = a.findViewById(R.id.book_grid);
+        awaitAdapterCount(grid, 1);
+
+        Book target = findBook("ghost.txt");
+        assertNotNull(target);
+        assertTrue(f.delete());
+
+        tapBook(grid, target);
+        android.app.Dialog d = ShadowDialog.getLatestDialog();
+        assertNotNull(d);
+        shadowOf(d).clickOn(android.R.id.button1);
+        shadowOf(Looper.getMainLooper()).idle();
+
+        assertEquals("File not found", ShadowToast.getTextOfLatestToast());
+        assertNull("no intent may be started", shadowOf(a).getNextStartedActivity());
+
+        android.database.Cursor c = db.getReadableDatabase().rawQuery(
+                "SELECT last_read FROM works WHERE _id=?",
+                new String[]{String.valueOf(target.id)});
+        assertTrue("row must exist", c.moveToFirst());
+        assertEquals("last_read must stay 0", 0L, c.getLong(0));
+    }
+
+    @Test
+    public void confirmingOpenWhileDownloadingDoesNotLaunchViewerOrMarkRead()
+            throws Exception {
+        TestFixtures.writeText(new File(storage, "dl.txt"), "payload\n");
+
+        MainActivity a = launchMain();
+        awaitCatalogSize(1);
+        GridView grid = a.findViewById(R.id.book_grid);
+        awaitAdapterCount(grid, 1);
+
+        Book target = findBook("dl.txt");
+        assertNotNull(target);
+        setAvailabilityForWork(target.id, "downloading");
+
+        tapBook(grid, target);
+        android.app.Dialog d = ShadowDialog.getLatestDialog();
+        assertNotNull(d);
+        shadowOf(d).clickOn(android.R.id.button1);
+        shadowOf(Looper.getMainLooper()).idle();
+
+        assertEquals(a.getString(R.string.file_downloading), ShadowToast.getTextOfLatestToast());
+        assertNull("no intent may be started", shadowOf(a).getNextStartedActivity());
+
+        android.database.Cursor c = db.getReadableDatabase().rawQuery(
+                "SELECT last_read FROM works WHERE _id=?",
+                new String[]{String.valueOf(target.id)});
+        assertTrue("row must exist", c.moveToFirst());
+        assertEquals("last_read must stay 0", 0L, c.getLong(0));
+    }
+
+    @Test
+    public void confirmingOpenAfterFailedDownloadDoesNotLaunchViewerOrMarkRead()
+            throws Exception {
+        TestFixtures.writeText(new File(storage, "bad_dl.txt"), "payload\n");
+
+        MainActivity a = launchMain();
+        awaitCatalogSize(1);
+        GridView grid = a.findViewById(R.id.book_grid);
+        awaitAdapterCount(grid, 1);
+
+        Book target = findBook("bad_dl.txt");
+        assertNotNull(target);
+        setAvailabilityForWork(target.id, "failed");
+
+        tapBook(grid, target);
+        android.app.Dialog d = ShadowDialog.getLatestDialog();
+        assertNotNull(d);
+        shadowOf(d).clickOn(android.R.id.button1);
+        shadowOf(Looper.getMainLooper()).idle();
+
+        assertEquals(a.getString(R.string.file_download_failed), ShadowToast.getTextOfLatestToast());
+        assertNull("no intent may be started", shadowOf(a).getNextStartedActivity());
+
+        android.database.Cursor c = db.getReadableDatabase().rawQuery(
+                "SELECT last_read FROM works WHERE _id=?",
+                new String[]{String.valueOf(target.id)});
+        assertTrue("row must exist", c.moveToFirst());
+        assertEquals("last_read must stay 0", 0L, c.getLong(0));
+    }
+
     // ------------------------------------------------------------------
     // pagination (the kebab's "Add/Remove pagination")
     // ------------------------------------------------------------------

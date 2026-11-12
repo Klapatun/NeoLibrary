@@ -17,9 +17,10 @@ import com.example.mylibrary.meta.CoverExtractor;
 import com.example.mylibrary.meta.MetaEnricher;
 import com.example.mylibrary.model.Book;
 import com.example.mylibrary.util.CoverLoader;
+import com.example.mylibrary.util.FileLocator;
+import com.example.mylibrary.util.LocateResult;
 import com.example.mylibrary.util.Openers;
 
-import java.io.File;
 import java.lang.ref.WeakReference;
 
 /**
@@ -85,10 +86,24 @@ public class DetailActivity extends Activity {
     }
 
     private void openBook() {
-        // The shared "file there? viewer there?" logic lives in Openers (the same
-        // entry point the list's tap confirmation uses); the catalog side effects
-        // (markRead, notify) stay here.
-        Openers.openFile(new File(book.path), this, new Openers.OpenOutcome() {
+        // The locator decides whether the bytes are ready. Openers still owns
+        // MIME and the viewer. markRead stays here, and only after onLaunched.
+        // Absent, downloading, and failed do not start a viewer and do not
+        // start a download.
+        LocateResult located = FileLocator.locateWork(db, book.id);
+        if (located.status == LocateResult.DOWNLOADING) {
+            Toast.makeText(this, R.string.file_downloading, Toast.LENGTH_LONG).show();
+            return;
+        }
+        if (located.status == LocateResult.FAILED) {
+            Toast.makeText(this, R.string.file_download_failed, Toast.LENGTH_LONG).show();
+            return;
+        }
+        if (located.status != LocateResult.READY || located.file == null) {
+            Toast.makeText(this, R.string.file_not_found, Toast.LENGTH_LONG).show();
+            return;
+        }
+        Openers.openFile(located.file, this, new Openers.OpenOutcome() {
             @Override public void onLaunched() {
                 catalog.markRead(book.id);
             }
