@@ -327,4 +327,47 @@ public class CatalogTest {
         assertEquals(1, obs.recent.get());
         obs.unregister(context);
     }
+
+    @Test
+    public void saveUserEditAtNewPathNotifiesBothUrisAndSetsFlag() {
+        Book b = book("/x/old-path.epub", "EPUB", "Old");
+        b.genres = genres("prose");
+        long id = db.upsert(b);
+
+        UriNotifyCounter obs = new UriNotifyCounter();
+        obs.register(context);
+
+        Book edited = db.getById(id);
+        edited.title = "New";
+        edited.genres = genres("mystery");
+        assertTrue(catalog.saveUserEditAtNewPath(edited, "/x/new-path.epub"));
+
+        obs.assertBothFired();
+        obs.unregister(context);
+
+        Book after = db.getById(id);
+        assertTrue(after.userEdited);
+        assertEquals("New", after.title);
+        assertEquals("/x/new-path.epub", after.path);
+    }
+
+    @Test
+    public void saveUserEditAtNewPathSilentWhenRowMissing() {
+        Book b = book("/x/real.epub", "EPUB", "T");
+        long id = db.upsert(b);
+        int worksBefore = db.all(null).size();
+
+        UriNotifyCounter obs = new UriNotifyCounter();
+        obs.register(context);
+
+        Book edited = db.getById(id);
+        edited.path = "/x/missing.epub";
+        assertFalse(catalog.saveUserEditAtNewPath(edited, "/x/other.epub"));
+
+        obs.idle();
+        assertEquals(0, obs.content.get());
+        assertEquals(0, obs.recent.get());
+        assertEquals(worksBefore, db.all(null).size());
+        obs.unregister(context);
+    }
 }

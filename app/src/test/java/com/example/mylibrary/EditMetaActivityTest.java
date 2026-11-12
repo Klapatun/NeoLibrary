@@ -27,6 +27,7 @@ import com.example.mylibrary.db.BookProvider;
 import com.example.mylibrary.model.Book;
 import com.example.mylibrary.testutil.TestFixtures;
 
+import org.junit.After;
 import org.junit.Before;
 import org.junit.Rule;
 import org.junit.Test;
@@ -73,6 +74,11 @@ public class EditMetaActivityTest {
         app = RuntimeEnvironment.getApplication();
         app.deleteDatabase("library.db");
         db = new BookDatabase(app);
+    }
+
+    @After
+    public void tearDownDirectoryWritableShim() {
+        EditMetaActivity.directoryWritableForTest = null;
     }
 
     private long addBookToCatalog(File file, String format, String title, String author) {
@@ -178,6 +184,64 @@ public class EditMetaActivityTest {
         } finally {
             c.close();
         }
+    }
+
+    private String adoptedFromOf(long workId) {
+        SQLiteDatabase raw = db.getReadableDatabase();
+        Cursor c = raw.rawQuery("SELECT adopted_from FROM files WHERE work_id=?",
+                new String[]{String.valueOf(workId)});
+        try {
+            c.moveToFirst();
+            return c.isNull(0) ? null : c.getString(0);
+        } finally {
+            c.close();
+        }
+    }
+
+    private int workCount() {
+        SQLiteDatabase raw = db.getReadableDatabase();
+        Cursor c = raw.rawQuery("SELECT COUNT(*) FROM works", null);
+        try {
+            c.moveToFirst();
+            return c.getInt(0);
+        } finally {
+            c.close();
+        }
+    }
+
+    private File booksDir() {
+        File dir = app.getExternalFilesDir("books");
+        if (dir != null && !dir.isDirectory()) {
+            dir.mkdirs();
+        }
+        return dir;
+    }
+
+    private static int countBookFilesIn(File dir) {
+        if (dir == null || !dir.isDirectory()) return 0;
+        File[] kids = dir.listFiles();
+        if (kids == null) return 0;
+        int n = 0;
+        for (int i = 0; i < kids.length; i++) {
+            String name = kids[i].getName().toLowerCase();
+            if (kids[i].isFile()
+                    && (name.endsWith(".epub") || name.endsWith(".fb2"))) {
+                n++;
+            }
+        }
+        return n;
+    }
+
+    private static boolean dirHasProbeFile(File dir) {
+        if (dir == null || !dir.isDirectory()) return false;
+        File[] kids = dir.listFiles();
+        if (kids == null) return false;
+        for (int i = 0; i < kids.length; i++) {
+            if (kids[i].isFile() && kids[i].getName().startsWith(".neowrite-")) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private EditMetaActivity openEditor(long id) {
@@ -545,6 +609,266 @@ public class EditMetaActivityTest {
 
         awaitCatalogGenres(db, id, "фэнтези");
         shadowOf(Looper.getMainLooper()).idle();
+    }
+
+    /** Writable catalog: in-place EPUB edit, no private copy (fix edit-private-copy). */
+    @Test
+    public void epubEditWritableCatalogKeepsPathAndWritesGenreInPlace() throws Exception {
+        File epub = new File(folder.getRoot(), "writable.epub");
+        TestFixtures.writeEpub(epub, TestFixtures.OPF_FULL);
+        long id = addBookToCatalog(epub, "EPUB", "Title", "Author", null);
+        db.markRead(id);
+        long lastRead = lastReadOf(id);
+
+        EditMetaActivity a = openEditor(id);
+        setGenreFields(a, "Mystery");
+        ((Button) a.findViewById(R.id.btn_save)).performClick();
+
+        awaitCatalogGenres(db, id, "mystery");
+        shadowOf(Looper.getMainLooper()).idle();
+
+        assertEquals("Saved", ShadowToast.getTextOfLatestToast());
+        Book got = db.getById(id);
+        assertEquals(epub.getAbsolutePath(), got.path);
+        assertNull(adoptedFromOf(id));
+        assertEquals(0, countBookFilesIn(booksDir()));
+        assertEquals(lastRead, lastReadOf(id));
+
+        Map<String, byte[]> entries = TestFixtures.readZip(epub);
+        String opf = new String(entries.get("OEBPS/content.opf"), "UTF-8");
+        assertTrue(opf.contains("<dc:subject>mystery</dc:subject>"));
+        assertFalse(new File(epub.getParentFile(), epub.getName() + ".tmp").exists());
+        assertFalse(new File(epub.getParentFile(), epub.getName() + ".bak").exists());
+    }
+
+    @Test
+    public void fb2EditWritableCatalogKeepsPathAndWritesGenreInPlace() throws Exception {
+        File fb2 = new File(folder.getRoot(), "writable.fb2");
+        TestFixtures.writeText(fb2, TestFixtures.FB2_FULL);
+        long id = addBookToCatalog(fb2, "FB2", "Title", "Ivan Ivanovich Petrov", null);
+        db.markRead(id);
+        long lastRead = lastReadOf(id);
+
+        EditMetaActivity a = openEditor(id);
+        setGenreFields(a, "SF_History");
+        ((Button) a.findViewById(R.id.btn_save)).performClick();
+
+        awaitCatalogGenres(db, id, "sf_history");
+        shadowOf(Looper.getMainLooper()).idle();
+
+        assertEquals("Saved", ShadowToast.getTextOfLatestToast());
+        Book got = db.getById(id);
+        assertEquals(fb2.getAbsolutePath(), got.path);
+        assertNull(adoptedFromOf(id));
+        assertEquals(0, countBookFilesIn(booksDir()));
+        assertEquals(lastRead, lastReadOf(id));
+
+        String xml = new String(TestFixtures.readAll(fb2), "UTF-8");
+        assertTrue(xml.contains("<genre>sf_history</genre>"));
+    }
+
+    @Test
+    public void epubEditCopiesToPrivateWhenDirectoryNotWritable() throws Exception {
+        File epub = new File(folder.getRoot(), "blocked.epub");
+        TestFixtures.writeEpub(epub, TestFixtures.OPF_FULL);
+        byte[] before = TestFixtures.readAll(epub);
+        long id = addBookToCatalog(epub, "EPUB", "Title", "Author", null);
+        db.markRead(id);
+        long lastRead = lastReadOf(id);
+
+        EditMetaActivity.directoryWritableForTest = Boolean.FALSE;
+        EditMetaActivity a = openEditor(id);
+        setGenreFields(a, "Mystery");
+        ((Button) a.findViewById(R.id.btn_save)).performClick();
+
+        awaitCatalogGenres(db, id, "mystery");
+        shadowOf(Looper.getMainLooper()).idle();
+
+        assertEquals("Saved", ShadowToast.getTextOfLatestToast());
+        File copy = new File(booksDir(), "blocked.epub");
+        Book got = db.getById(id);
+        assertEquals(id, got.id);
+        assertEquals(copy.getAbsolutePath(), got.path);
+        assertEquals(epub.getAbsolutePath(), adoptedFromOf(id));
+        assertTrue(Arrays.equals(before, TestFixtures.readAll(epub)));
+        assertEquals(1, workCount());
+        assertEquals(lastRead, lastReadOf(id));
+        assertTrue(copy.exists());
+
+        Map<String, byte[]> entries = TestFixtures.readZip(copy);
+        String opf = new String(entries.get("OEBPS/content.opf"), "UTF-8");
+        assertTrue(opf.contains("<dc:subject>mystery</dc:subject>"));
+    }
+
+    @Test
+    public void fb2EditCopiesToPrivateWhenDirectoryNotWritable() throws Exception {
+        File fb2 = new File(folder.getRoot(), "blocked.fb2");
+        TestFixtures.writeText(fb2, TestFixtures.FB2_FULL);
+        byte[] before = TestFixtures.readAll(fb2);
+        long id = addBookToCatalog(fb2, "FB2", "Title", "Ivan Ivanovich Petrov", null);
+        db.markRead(id);
+        long lastRead = lastReadOf(id);
+
+        EditMetaActivity.directoryWritableForTest = Boolean.FALSE;
+        EditMetaActivity a = openEditor(id);
+        setGenreFields(a, "SF_History");
+        ((Button) a.findViewById(R.id.btn_save)).performClick();
+
+        awaitCatalogGenres(db, id, "sf_history");
+        shadowOf(Looper.getMainLooper()).idle();
+
+        assertEquals("Saved", ShadowToast.getTextOfLatestToast());
+        File copy = new File(booksDir(), "blocked.fb2");
+        Book got = db.getById(id);
+        assertEquals(copy.getAbsolutePath(), got.path);
+        assertEquals(fb2.getAbsolutePath(), adoptedFromOf(id));
+        assertTrue(Arrays.equals(before, TestFixtures.readAll(fb2)));
+        assertEquals(lastRead, lastReadOf(id));
+
+        String xml = new String(TestFixtures.readAll(copy), "UTF-8");
+        assertTrue(xml.contains("<genre>sf_history</genre>"));
+    }
+
+    @Test
+    public void editAfterPrivateAdoptUpdatesInPlaceWithoutSecondCopy() throws Exception {
+        File epub = new File(folder.getRoot(), "adopted.epub");
+        TestFixtures.writeEpub(epub, TestFixtures.OPF_FULL);
+        long id = addBookToCatalog(epub, "EPUB", "First", "Author", null);
+
+        EditMetaActivity.directoryWritableForTest = Boolean.FALSE;
+        EditMetaActivity first = openEditor(id);
+        setGenreFields(first, "Mystery");
+        ((Button) first.findViewById(R.id.btn_save)).performClick();
+        awaitCatalogGenres(db, id, "mystery");
+        shadowOf(Looper.getMainLooper()).idle();
+
+        Book mid = db.getById(id);
+        String copyPath = mid.path;
+        String originalAdopted = adoptedFromOf(id);
+        EditMetaActivity.directoryWritableForTest = null;
+
+        EditMetaActivity second = openEditor(id);
+        ((EditText) second.findViewById(R.id.edit_title)).setText("Second Title");
+        ((Button) second.findViewById(R.id.btn_save)).performClick();
+        awaitCatalogTitle(db, id, "Second Title");
+        shadowOf(Looper.getMainLooper()).idle();
+
+        assertEquals(1, countBookFilesIn(booksDir()));
+        Book after = db.getById(id);
+        assertEquals(copyPath, after.path);
+        assertEquals(originalAdopted, adoptedFromOf(id));
+        assertEquals(id, after.id);
+        assertTrue(new File(epub.getAbsolutePath()).exists());
+        File stemId = new File(booksDir(), "adopted-" + id + ".epub");
+        assertFalse(stemId.exists());
+    }
+
+    @Test
+    public void editWhenBooksDirIsNotADirectoryLeavesNoPartialFile() throws Exception {
+        File fb2 = new File(folder.getRoot(), "fail-copy.fb2");
+        TestFixtures.writeText(fb2, TestFixtures.FB2_FULL);
+        byte[] before = TestFixtures.readAll(fb2);
+        long id = addBookToCatalog(fb2, "FB2", "Old", "Ivan Ivanovich Petrov", null);
+
+        File books = booksDir();
+        if (books != null) {
+            deleteRecursive(books);
+        }
+        File blocker = books;
+        TestFixtures.writeText(blocker, "not a directory\n");
+
+        EditMetaActivity.directoryWritableForTest = Boolean.FALSE;
+        EditMetaActivity a = openEditor(id);
+        ((EditText) a.findViewById(R.id.edit_title)).setText("New Title");
+        ((Button) a.findViewById(R.id.btn_save)).performClick();
+
+        awaitCatalogTitle(db, id, "New Title");
+        shadowOf(Looper.getMainLooper()).idle();
+
+        assertEquals(
+                "Could not write into the file. Changes saved to the library only.",
+                ShadowToast.getTextOfLatestToast());
+        Book got = db.getById(id);
+        assertEquals(fb2.getAbsolutePath(), got.path);
+        assertNull(adoptedFromOf(id));
+        assertEquals(id, got.id);
+        assertTrue(Arrays.equals(before, TestFixtures.readAll(fb2)));
+        assertFalse(new File(folder.getRoot(), "fail-copy.fb2.copying").exists());
+    }
+
+    @Test
+    public void editAdoptsWithSuffixedNameWhenForeignFileOccupiesTarget() throws Exception {
+        File foreign = new File(booksDir(), "book.fb2");
+        TestFixtures.writeText(foreign, TestFixtures.FB2_FULL);
+        long foreignId = addBookToCatalog(foreign, "FB2", "Foreign", "A", null);
+
+        File original = new File(folder.getRoot(), "book.fb2");
+        TestFixtures.writeText(original, TestFixtures.FB2_FULL);
+        long id = addBookToCatalog(original, "FB2", "Mine", "B", null);
+
+        EditMetaActivity.directoryWritableForTest = Boolean.FALSE;
+        EditMetaActivity a = openEditor(id);
+        setGenreFields(a, "Mystery");
+        ((Button) a.findViewById(R.id.btn_save)).performClick();
+
+        awaitCatalogGenres(db, id, "mystery");
+        shadowOf(Looper.getMainLooper()).idle();
+
+        File expectedCopy = new File(booksDir(), "book-" + id + ".fb2");
+        Book got = db.getById(id);
+        assertEquals(expectedCopy.getAbsolutePath(), got.path);
+        assertEquals(original.getAbsolutePath(), adoptedFromOf(id));
+        assertEquals(foreignId, db.getIdForPath(foreign.getAbsolutePath()));
+        assertEquals("Foreign", db.getById(foreignId).title);
+    }
+
+    @Test
+    public void pdfEditNonWritableCatalogDoesNotCopy() throws Exception {
+        File pdf = new File(folder.getRoot(), "read-only.pdf");
+        byte[] before = "%PDF-fake".getBytes("UTF-8");
+        TestFixtures.writeBytes(pdf, before);
+        long id = addBookToCatalog(pdf, "PDF", "Old", "Author", null);
+
+        EditMetaActivity.directoryWritableForTest = Boolean.FALSE;
+        EditMetaActivity a = openEditor(id);
+        ((EditText) a.findViewById(R.id.edit_title)).setText("New PDF");
+        ((Button) a.findViewById(R.id.btn_save)).performClick();
+
+        awaitCatalogTitle(db, id, "New PDF");
+        shadowOf(Looper.getMainLooper()).idle();
+
+        assertEquals("Saved", ShadowToast.getTextOfLatestToast());
+        assertEquals(pdf.getAbsolutePath(), db.getById(id).path);
+        assertEquals(0, countBookFilesIn(booksDir()));
+        assertTrue(Arrays.equals(before, TestFixtures.readAll(pdf)));
+    }
+
+    @Test
+    public void directoryAcceptsWritableTempDirReturnsTrueAndLeavesNoProbe() throws Exception {
+        File dir = folder.newFolder("probe-ok");
+        assertTrue(EditMetaActivity.directoryAcceptsNewFile(dir));
+        assertFalse(dirHasProbeFile(dir));
+    }
+
+    @Test
+    public void directoryAcceptsNewFileRejectsFileAndNull() throws Exception {
+        File file = new File(folder.getRoot(), "not-a-dir.txt");
+        TestFixtures.writeText(file, "x\n");
+        assertFalse(EditMetaActivity.directoryAcceptsNewFile(file));
+        assertFalse(EditMetaActivity.directoryAcceptsNewFile(null));
+    }
+
+    private static void deleteRecursive(File f) {
+        if (f == null || !f.exists()) return;
+        if (f.isDirectory()) {
+            File[] kids = f.listFiles();
+            if (kids != null) {
+                for (int i = 0; i < kids.length; i++) {
+                    deleteRecursive(kids[i]);
+                }
+            }
+        }
+        f.delete();
     }
 
     private static void assertGenres(String a, String b, ArrayList<String> actual) {

@@ -262,4 +262,71 @@ public class LibraryScannerTest {
             throw new AssertionError(e);
         }
     }
+
+    @Test
+    public void scanDetailedSkipsAbsolutePathsInSkipSet() throws Exception {
+        File pairRoot = folder.newFolder("pair");
+        File skipped = new File(pairRoot, "skip-me.txt");
+        File found = new File(pairRoot, "keep-me.txt");
+        write(skipped, "skip\n");
+        write(found, "keep\n");
+
+        Set<String> skip = new HashSet<String>();
+        skip.add(skipped.getAbsolutePath());
+        final List<String> visited = new ArrayList<String>();
+        LibraryScanner.ScanResult result = LibraryScanner.scanDetailed(
+                Arrays.asList(pairRoot), new LibraryScanner.Progress() {
+                    @Override
+                    public void onScan(String path) {
+                        visited.add(path);
+                    }
+                }, skip);
+
+        assertEquals(1, result.books.size());
+        assertEquals(found.getAbsolutePath(), result.books.get(0).path);
+        assertFalse(visited.contains(skipped.getAbsolutePath()));
+    }
+
+    @Test
+    public void scanDetailedNullAndEmptySkipSetFindBothFiles() throws Exception {
+        File pairRoot = folder.newFolder("both");
+        File one = new File(pairRoot, "one.txt");
+        File two = new File(pairRoot, "two.txt");
+        write(one, "a\n");
+        write(two, "b\n");
+
+        LibraryScanner.ScanResult withNull = LibraryScanner.scanDetailed(
+                Arrays.asList(pairRoot), null, null);
+        assertEquals(2, withNull.books.size());
+
+        LibraryScanner.ScanResult withEmpty = LibraryScanner.scanDetailed(
+                Arrays.asList(pairRoot), null, new HashSet<String>());
+        assertEquals(2, withEmpty.books.size());
+    }
+
+    @Test
+    public void scanSingleStillReturnsBookOnSkippedPath() throws Exception {
+        File solo = new File(folder.newFolder("solo"), "alone.txt");
+        write(solo, "solo\n");
+        Book b = LibraryScanner.scanSingle(solo);
+        assertNotNull(b);
+        assertEquals("TXT", b.format);
+    }
+
+    @Test
+    public void scanDetailedSkipDoesNotHideSiblingInSameDirectory() throws Exception {
+        File pairRoot = folder.newFolder("siblings");
+        File skipped = new File(pairRoot, "hidden.txt");
+        File sibling = new File(pairRoot, "visible.txt");
+        write(skipped, "h\n");
+        write(sibling, "v\n");
+
+        Set<String> skip = new HashSet<String>();
+        skip.add(skipped.getAbsolutePath());
+        LibraryScanner.ScanResult result = LibraryScanner.scanDetailed(
+                Arrays.asList(pairRoot), null, skip);
+
+        assertEquals(1, result.books.size());
+        assertEquals(sibling.getAbsolutePath(), result.books.get(0).path);
+    }
 }
