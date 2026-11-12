@@ -14,14 +14,13 @@ import java.util.regex.Pattern;
  * Read-only content provider over the book catalog.
  *
  * <p>Its only purpose is to give the UI a real {@code ContentObserver} channel: the
- * catalog rows are written directly through {@link BookDatabase}, and after every
- * batch of work (stage-1 scan, background enrichment, import) the app calls
- * {@code getContentResolver().notifyChange(CONTENT_URI, null)} — the {@code
+ * catalog rows are written through {@link Catalog} (which delegates to
+ * {@link BookDatabase} and calls {@link #notifyChangeAll(Context)}). The {@code
  * CursorLoader} listening to this URI then re-queries and the {@code CursorAdapter}
  * refreshes only the rows that changed, without blocking the UI thread.</p>
  *
  * <p>Writes are deliberately not implemented here; all catalog mutations go through
- * {@link BookDatabase} (which also owns the write lock).</p>
+ * {@link Catalog}.</p>
  */
 public class BookProvider extends ContentProvider {
 

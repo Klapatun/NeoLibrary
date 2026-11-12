@@ -43,11 +43,12 @@ Every book's metadata is stored in **two places**:
 | `DetailActivity` | book details and open in Neo Reader; the "other" block lists all genres comma-separated (or an em dash when none); fast-path enrichment of a not-yet-enriched book on open refreshes that block |
 | `EditMetaActivity` | metadata form (title, author, publisher, dynamic genre fields + "Add genre", description) → writes file (EPUB/FB2) + always updates catalog (`userEdited = true`); genres normalized to `Locale.ROOT` lower case on save; empty fields drop out of the list |
 | `Book` | Parcelable model (`genres` — ordered list from `work_genres`, empty list = no genre; cursor rows leave it empty until `getById`; plus `metaDone`, `metaFailed`, `userEdited` flags) |
-| `db/BookDatabase` | SQLite catalog (**DB v7**: `works` + `files` + `work_genres`; cursor `_id` = work id, local scan still 1 file = 1 work; server columns exist but are not written yet); **`upsert`/`upsertBasic`/`updateMetadata` preserve `last_read`** (`updateMetadata` replaces the genre list with the same merge rule as `series` when `user_edited` allows); `cursorAll` genre filter = EXISTS on `work_genres`; `distinctGenres()` reads `work_genres` in name order; `needMeta()` = stage-2 queue on `files.meta_done` (un-enriched last); static write lock |
+| `db/Catalog` | the **only** write entry for the catalog from screens and `MetaEnricher`. One-shot doors (`saveScanBatch`, `removeMissing`, `importFile`, `saveUserEdit`, `markRead`, `deleteByPath`, `clear`, `applyEnrichmentBatch`, `applyEnrichmentOne`, `markMetaFailed`) end in `BookProvider.notifyChangeAll` (list + recently read). The stage-2 loop writes through `persistEnrichmentBatch` / `persistMetaFailed` (no notify) and announces with throttled `announceChangeAll` (both URIs, no write). Reads stay on `BookDatabase` |
+| `db/BookDatabase` | SQLite catalog (**DB v7**: `works` + `files` + `work_genres`; cursor `_id` = work id, local scan still 1 file = 1 work; server columns exist but are not written yet); **`upsert`/`upsertBasic`/`updateMetadata` preserve `last_read`** (`updateMetadata` replaces the genre list with the same merge rule as `series` when `user_edited` allows); `cursorAll` genre filter = EXISTS on `work_genres`; `distinctGenres()` reads `work_genres` in name order; `needMeta()` = stage-2 queue on `files.meta_done` (un-enriched last); static write lock — **not** called directly from Activity/`MetaEnricher` for writes |
 | `db/BookProvider` | read-only `ContentProvider` — the `ContentObserver` channel for the `CursorLoader` (all / recent / `format IN (?,…)` / `genre IS NOT NULL AND genre IN (?,…)` / both combined — the combined selection args are split on the format-count boundary: `FilterState.queryArgs()` = formats in `Formats.ALL` order, then genres in first-added order) |
 | `scan/Formats` | canonical formats + ext→id map (handles `.fb2.zip`) |
 | `scan/LibraryScanner` | stage-1 fast scan (skeleton books, no in-file meta) + `scanSingle()` |
-| `meta/MetaEnricher` | stage-2 background worker: per-book `MetaExtractor` + `CoverExtractor` → DB + `CoverCache`, `notifyChange` per batch; `enrichOne` for import/fast path; **per-file parse budget of 2 min** — a parse that overruns it is abandoned and the book is marked un-enriched (`meta_failed=1`, stays `meta_done=0`, retried last on every rescan); the pass **works the queue cheapest-format-first** (EPUB/FB2 → FB2ZIP → MOBI → the rest, `Formats.enrichmentPriority`; un-enriched books still last of all); the `OnProgress` contract: `onFinished()` fires on a finished pass and is **never** sent after `cancel()` — a cancel fires `onCancelled()` instead (the listener is held weakly, a fresh `start()` reassigns it, so a `start()`-internal cancel can't clear the new pass's state) |
+| `meta/MetaEnricher` | stage-2 background worker: per-book `MetaExtractor` + `CoverExtractor` → `Catalog` (persist batch + throttled `announceChangeAll`, both URIs) + `CoverCache`; `enrichOne` for import/fast path; **per-file parse budget of 2 min** — a parse that overruns it is abandoned and the book is marked un-enriched (`meta_failed=1`, stays `meta_done=0`, retried last on every rescan); the pass **works the queue cheapest-format-first** (EPUB/FB2 → FB2ZIP → MOBI → the rest, `Formats.enrichmentPriority`; un-enriched books still last of all); the `OnProgress` contract: `onFinished()` fires on a finished pass and is **never** sent after `cancel()` — a cancel fires `onCancelled()` instead (the listener is held weakly, a fresh `start()` reassigns it, so a `start()`-internal cancel can't clear the new pass's state) |
 | `meta/MetaExtractor` | read meta: EPUB/FB2/FB2ZIP (inner `.fb2` entry)/MOBI/TXT/HTML; FB2 all `<genre>` in `title-info` (or until `</description>` when unclosed), EPUB all `dc:subject` → normalized `md.genres` |
 | `meta/MobiParser` | shared MOBI/AZW binary reader (package-private): PalmDB record table + MOBI header + EXTH |
 | `meta/MetaWriter` | write meta EPUB/FB2, non-destructive (`.tmp`→swap→`.bak`); EPUB all `dc:subject`, FB2 all `<genre>` in `title-info`; `md.genres == null` leaves file genres alone, empty list clears them |
@@ -76,29 +77,32 @@ pagination is on, a horizontal swipe also turns pages.
 
 - **Scan (stage 1, fast)** → `startScan()` → AsyncTask → `LibraryScanner.scan()`
   (file walk only, skeleton book: path/format/size/title from the file name) →
-  `db.upsertBasic()` per book → `notifyChange` → the `CursorLoader` re-queries and the
-  list is on screen immediately; the user can already interact with it.
+  `Catalog.saveScanBatch()` / `removeMissing()` → `notifyChangeAll` → the
+  `CursorLoader` re-queries and the list is on screen immediately; the user can
+  already interact with it.
 - **Enrich (stage 2, background)** → `MetaEnricher.start()` — a single worker over
   `db.needMeta()`, which is split by format type and worked cheapest-first
   (EPUB, FB2 → FB2ZIP → MOBI → the rest; the un-enriched/timed-out books stay last
   of all, `Formats.enrichmentPriority`): per book `MetaExtractor` + `CoverExtractor`
-  → `db.updateMetadata()` (never clobbers `user_edited` values, keeps `last_read`) +
-  `CoverCache` file write → `notifyChange` every batch → the cursor re-queries and
+  → `Catalog.persistEnrichmentBatch()` / `applyEnrichmentOne()` (never clobbers
+  `user_edited` values, keeps `last_read`) + `CoverCache` file write → throttled
+  `Catalog.announceChangeAll()` every batch (both URIs) → the cursor re-queries and
   rows refresh in place.
   Each file's parse (meta + cover) runs on a throwaway thread with a **2-minute
   budget**: a parse that overruns it is abandoned, the book is marked un-enriched
-  (`db.markMetaFailed`, `meta_done` stays 0) and the worker moves on to the next
-  file. On every rescan the un-enriched books are retried but taken last
+  (`Catalog.persistMetaFailed`, `meta_done` stays 0) and the worker moves on to the
+  next file. On every rescan the un-enriched books are retried but taken last
   (`needMeta()` orders `meta_failed` last).
-- **Open** → `DetailActivity` → `Openers.openFile()` → `ACTION_VIEW` → `markRead`.
-  Fast path: a book still not enriched (opened before stage 2 reached it) is enriched
-  on open, off the UI thread, and the detail screen refreshes itself.
+- **Open** → `DetailActivity` / list confirmation → `Openers.openFile()` →
+  `ACTION_VIEW` → `Catalog.markRead()`. Fast path: a book still not enriched (opened
+  before stage 2 reached it) is enriched on open, off the UI thread, and the detail
+  screen refreshes itself.
 - **Edit** → `EditMetaActivity`: if EPUB/FB2 → `MetaWriter.write(file,md)` (full genre
-  list — EPUB `dc:subject`, FB2 `<genre>`); always → upsert with `userEdited = true`
+  list — EPUB `dc:subject`, FB2 `<genre>`); always → `Catalog.saveUserEdit()`
   (the enricher will never overwrite those fields). Genres live in `work_genres` (normalized).
 - **Import** → `ACTION_OPEN_DOCUMENT` (SAF) → validate → copy to `getExternalFilesDir("books")`
-  → `scanSingle()` → `upsertBasic` → `MetaEnricher.enrichOne()` on the same background
-  thread → `notifyChange` (the list picks the book up without a manual reload).
+  → `scanSingle()` → `Catalog.importFile()` → `MetaEnricher.enrichOne()` on the same
+  background thread (each step announces via the facade).
 
 ## Invariants (don't break)
 

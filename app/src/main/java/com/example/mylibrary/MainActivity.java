@@ -46,7 +46,7 @@ import android.widget.TextView;
 import android.widget.Toast;
 
 import com.example.mylibrary.db.BookDatabase;
-import com.example.mylibrary.db.BookProvider;
+import com.example.mylibrary.db.Catalog;
 import com.example.mylibrary.meta.MetaEnricher;
 import com.example.mylibrary.model.Book;
 import com.example.mylibrary.scan.Formats;
@@ -92,6 +92,7 @@ public class MainActivity extends Activity
     private static final String PREF_KEY_PAGINATION = "pagination_enabled";
 
     private BookDatabase db;
+    private Catalog catalog;
     private BookAdapter adapter;
     private FrameLayout bookContainer;
     private ProgressBar progressBar;
@@ -200,6 +201,7 @@ public class MainActivity extends Activity
         // and in-flight background tasks (scan, import, enrichment) may outlive the
         // screen — they hold this object, so it must not pin the Activity.
         db = new BookDatabase(getApplicationContext());
+        catalog = new Catalog(getApplicationContext(), db);
 
         // The filter state is session-only (unlike view_mode/pagination, which
         // persist in SharedPreferences): restore it from the instance state
@@ -509,10 +511,9 @@ public class MainActivity extends Activity
                 .setPositiveButton(R.string.clear_yes, new DialogInterface.OnClickListener() {
                     @Override public void onClick(DialogInterface d, int w) {
                         MetaEnricher.cancel();
-                        db.clear();
+                        catalog.clear();
                         adapter.changeCursor(currentCatalogCursor());
                         updateEmptyView();
-                        BookProvider.notifyChangeAll(MainActivity.this);
                         Toast.makeText(MainActivity.this, R.string.library_cleared,
                                 Toast.LENGTH_SHORT).show();
                     }
@@ -894,10 +895,7 @@ public class MainActivity extends Activity
     private void openBook(final Book book) {
         Openers.openFile(new File(book.path), this, new Openers.OpenOutcome() {
             @Override public void onLaunched() {
-                db.markRead(book.id);
-                // The list is cursor-driven: announce the new last_read so the
-                // "recently read" view (and the list, if it is on screen) re-queries.
-                BookProvider.notifyChangeAll(MainActivity.this);
+                catalog.markRead(book.id);
             }
             @Override public void onMissingFile() {
                 Toast.makeText(MainActivity.this, R.string.file_not_found,
@@ -927,7 +925,7 @@ public class MainActivity extends Activity
                 .setNegativeButton(R.string.delete_no, null)
                 .setPositiveButton(R.string.delete_yes, new DialogInterface.OnClickListener() {
                     @Override public void onClick(DialogInterface d, int w) {
-                        db.deleteByPath(book.path);
+                        catalog.deleteByPath(book.path);
                         // The delete was committed on this (UI) thread, just now —
                         // re-query the catalog ourselves and rebind the adapter.
                         // Deterministic: it does not rely on the CursorLoader's
@@ -938,9 +936,6 @@ public class MainActivity extends Activity
                         // startScan and the import fix after it).
                         adapter.changeCursor(currentCatalogCursor());
                         updateEmptyView();
-                        // Also announce through the normal channel (the "recently
-                        // read" observer and any other listeners).
-                        BookProvider.notifyChangeAll(MainActivity.this);
                     }
                 })
                 .show();
@@ -959,17 +954,15 @@ public class MainActivity extends Activity
      *  class would carry a synthetic strong reference to the Activity (javac emits
      *  it for every anonymous class inside an instance method, used or not), and a
      *  storage walk can run for minutes — the screen must be collectible while it
-     *  is in flight. Holds the app context for the background work (the scanner
-     *  only resolves storage roots) and the Activity weakly for the UI follow-up:
-     *  the catalog upserts complete even if the screen is gone by then. */
+     *  is in flight. Holds the catalog for the writes and the Activity weakly for
+     *  the UI follow-up: the catalog upserts complete even if the screen is gone
+     *  by then. */
     private static final class ScanTask extends AsyncTask<Void, Void, LibraryScanner.ScanResult> {
-        private final Context appContext;
-        private final BookDatabase db;
+        private final Catalog catalog;
         private final WeakReference<MainActivity> self;
 
         ScanTask(MainActivity host) {
-            this.appContext = host.getApplicationContext();
-            this.db = host.db; // safe: it holds the app context
+            this.catalog = host.catalog;
             this.self = new WeakReference<MainActivity>(host);
         }
 
@@ -992,13 +985,13 @@ public class MainActivity extends Activity
             // BookDatabase.BATCH_SIZE rows per transaction), not one autocommit
             // per book.
             if (found != null) {
-                db.upsertBasicBatch(found);
+                catalog.saveScanBatch(found);
                 if (result != null) {
                     for (LibraryScanner.RootScanResult root : result.roots) {
                         if (root.complete) {
                             Set<String> paths = new HashSet<String>();
                             for (Book book : root.books) paths.add(book.path);
-                            db.removeMissingUnderRoot(root.rootPath, paths);
+                            catalog.removeMissing(root.rootPath, paths);
                         }
                     }
                 }
@@ -1034,9 +1027,6 @@ public class MainActivity extends Activity
                         a.getLoaderManager().restartLoader(LOADER_BOOKS, null, a);
                     }
                 }
-                // Also announce through the normal channel (the "recently read"
-                // observer and any other listeners).
-                appContext.getContentResolver().notifyChange(BookProvider.CONTENT_URI, null);
             }
             if (screenAlive) {
                 Toast.makeText(a,
@@ -1143,6 +1133,7 @@ public class MainActivity extends Activity
         private final File dest;
         private final Context appContext;
         private final BookDatabase db;
+        private final Catalog catalog;
         private final WeakReference<ProgressDialog> dialog;
         private final WeakReference<MainActivity> self;
 
@@ -1152,6 +1143,7 @@ public class MainActivity extends Activity
             this.dest = dest;
             this.appContext = host.getApplicationContext();
             this.db = host.db; // safe: it holds the app context
+            this.catalog = host.catalog;
             this.dialog = new WeakReference<ProgressDialog>(pd);
             this.self = new WeakReference<MainActivity>(host);
         }
@@ -1169,19 +1161,14 @@ public class MainActivity extends Activity
                 Book b = LibraryScanner.scanSingle(dest);
                 if (b != null) {
                     long existing = db.getIdForPath(dest.getAbsolutePath());
-                    db.upsertBasic(b);
+                    catalog.importFile(b, existing >= 0, existing);
                     if (existing >= 0) {
-                        // The import overwrote an existing file: the row still carries
-                        // the OLD in-file metadata and the cache the OLD cover (a new
-                        // file without a cover would keep the stale one forever).
-                        // Drop both — the re-extraction below refreshes them, and the
-                        // pending flag is the safety net for a later bulk pass.
-                        db.markMetaPending(existing);
+                        // The import overwrote an existing file: drop the stale cover
+                        // cache — enrichOne below refreshes it.
                         CoverCache.delete(appContext, dest.getAbsolutePath());
                     }
                     // Stage 2 for this single book — already off the UI thread.
                     MetaEnricher.enrichOne(appContext, db, b);
-                    appContext.getContentResolver().notifyChange(BookProvider.CONTENT_URI, null);
                 }
                 return b != null;
             } catch (Exception e) {

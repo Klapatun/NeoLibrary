@@ -13,7 +13,7 @@ import android.widget.TextView;
 import android.widget.Toast;
 
 import com.example.mylibrary.db.BookDatabase;
-import com.example.mylibrary.db.BookProvider;
+import com.example.mylibrary.db.Catalog;
 import com.example.mylibrary.meta.MetaData;
 import com.example.mylibrary.meta.MetaWriter;
 import com.example.mylibrary.model.Book;
@@ -35,6 +35,7 @@ public class EditMetaActivity extends Activity {
     public static final String EXTRA_BOOK = "extra_book";
 
     private BookDatabase db;
+    private Catalog catalog;
     private Book book;
 
     private EditText etTitle, etAuthor, etPublisher, etDescription;
@@ -47,6 +48,7 @@ public class EditMetaActivity extends Activity {
         setContentView(R.layout.activity_edit_meta);
 
         db = new BookDatabase(getApplicationContext());
+        catalog = new Catalog(getApplicationContext(), db);
         book = getIntent().getParcelableExtra(EXTRA_BOOK);
         if (book == null) {
             finish();
@@ -139,6 +141,7 @@ public class EditMetaActivity extends Activity {
     private static final class SaveTask extends AsyncTask<Void, Void, Boolean> {
         private final Context appContext;
         private final BookDatabase db;
+        private final Catalog catalog;
         private final Book target;
         private final File file;
         private final boolean inline;
@@ -155,6 +158,7 @@ public class EditMetaActivity extends Activity {
                  String description, ProgressDialog pd) {
             this.appContext = host.getApplicationContext();
             this.db = host.db;
+            this.catalog = host.catalog;
             this.target = target;
             this.file = file;
             this.inline = inline;
@@ -188,9 +192,7 @@ public class EditMetaActivity extends Activity {
             updated.genres = genres;
             updated.description = description;
             updated.exported = ok && inline;
-            db.upsert(updated);
-            db.markUserEdited(updated.id);
-            BookProvider.notifyChangeAll(appContext);
+            catalog.saveUserEdit(updated);
             return ok;
         }
 

@@ -7,7 +7,7 @@ import android.os.Looper;
 import android.util.Log;
 
 import com.example.mylibrary.db.BookDatabase;
-import com.example.mylibrary.db.BookProvider;
+import com.example.mylibrary.db.Catalog;
 import com.example.mylibrary.model.Book;
 import com.example.mylibrary.scan.Formats;
 import com.example.mylibrary.util.CoverCache;
@@ -32,19 +32,20 @@ import java.util.concurrent.atomic.AtomicInteger;
  * <p>Works book by book, fully off the UI thread: for every catalog row with
  * {@code meta_done = 0} it runs the single-pass parsers and stores the cover bytes
  * in {@link CoverCache}, then commits the group's results through
- * {@link BookDatabase#updateMetadataBatch} — every {@code BATCH_NOTIFY_EVERY} books
+ * {@link Catalog#persistEnrichmentBatch} — every {@code BATCH_NOTIFY_EVERY} books
  * in one SQLite transaction (same contract as the single-book path: it preserves
- * {@code last_read} and never clobbers user edits). After each batch it calls
- * {@code notifyChange} (throttled — no more often than once per
- * {@code notifyMinIntervalMs} — plus one final, unthrottled notify at the end of
- * the pass) so the UI's {@code CursorLoader} picks the new values up automatically
+ * {@code last_read} and never clobbers user edits). The batch write does not
+ * announce. {@link Catalog#announceChangeAll} fires on both catalog URIs, throttled
+ * — no more often than once per
+ * {@code notifyMinIntervalMs} — plus one final, unthrottled announce at the end of
+ * the pass, so the UI's {@code CursorLoader} picks the new values up automatically
  * — the user has been able to see and interact with the whole library since stage 1
  * finished.</p>
  *
  * <p><b>Time budget.</b> Each file is parsed on a throwaway thread with a deadline
  * of {@link #DEFAULT_EXTRACT_TIMEOUT_MS} (2 minutes) for the whole per-file parse
  * (metadata + cover). A parse that overruns it is abandoned and the book is marked
- * "un-enriched" via {@link BookDatabase#markMetaFailed}: it stays in the queue
+ * "un-enriched" via {@link Catalog#persistMetaFailed}: it stays in the queue
  * ({@code meta_done} remains 0, so every rescan retries it) and is ordered last in
  * the queue ({@code needMeta()} sorts {@code meta_failed} last), so one pathological
  * file can never block the rest of the library. The abandoned thread is harmless —
@@ -105,7 +106,7 @@ public final class MetaEnricher {
     private static final int BATCH_NOTIFY_EVERY = 5;
     private static final long PROGRESS_MIN_INTERVAL_MS = 150L;
 
-    /** Default minimum gap between two of the worker's in-loop {@code notifyChange}
+    /** Default minimum gap between two of the worker's in-loop {@code announceChangeAll}
      *  posts (the resolver callback is expensive, and a big pass would otherwise
      *  fire it every few books): 300 ms, the middle of the 250-500 ms band. The
      *  FINAL notify of a finished pass is never throttled. */
@@ -344,6 +345,7 @@ public final class MetaEnricher {
         // is correct: the old pass really did stop.
         cancel();
         final Context appContext = app.getApplicationContext();
+        final Catalog catalog = new Catalog(appContext, db);
         final Handler main = new Handler(Looper.getMainLooper());
         // The listener is (in production) an inner class of the screen that started
         // the pass; cancel() comes from that screen's onDestroy, so the worker (which
@@ -375,7 +377,7 @@ public final class MetaEnricher {
                     for (int j = i; j < to; j++) {
                         if (isCancelled()) break;
                         Book book = pending.get(j);
-                        BookDatabase.MetaUpdate update = enrichOneBook(appContext, db, book);
+                        BookDatabase.MetaUpdate update = enrichOneBook(appContext, catalog, book);
                         if (update != null) batch.add(update);
                         done++;
                         long now = System.currentTimeMillis();
@@ -397,7 +399,7 @@ public final class MetaEnricher {
                     }
                     if (!batch.isEmpty()) {
                         try {
-                            db.updateMetadataBatch(batch);
+                            catalog.persistEnrichmentBatch(batch);
                         } catch (Exception e) {
                             // A database error can never kill the worker: the failed
                             // group was rolled back as a whole (nothing of it was
@@ -413,8 +415,7 @@ public final class MetaEnricher {
                         long now = System.currentTimeMillis();
                         if (now - lastNotify >= notifyMinIntervalMs) {
                             lastNotify = now;
-                            appContext.getContentResolver()
-                                    .notifyChange(BookProvider.CONTENT_URI, null);
+                            catalog.announceChangeAll();
                         }
                     }
                 }
@@ -423,7 +424,7 @@ public final class MetaEnricher {
                 // "Clear"): the listener may be dead and no one is listening, so
                 // neither the notify nor the onFinished post is worth sending.
                 if (!isCancelled()) {
-                    appContext.getContentResolver().notifyChange(BookProvider.CONTENT_URI, null);
+                    catalog.announceChangeAll();
                     if (listenerRef.get() != null) {
                         main.post(new Runnable() {
                             @Override public void run() {
@@ -445,10 +446,11 @@ public final class MetaEnricher {
      * idempotent.
      */
     public static void enrichOne(Context app, BookDatabase db, Book book) {
+        Catalog catalog = new Catalog(app.getApplicationContext(), db);
         BookDatabase.MetaUpdate update =
-                enrichOneBook(app.getApplicationContext(), db, book);
+                enrichOneBook(app.getApplicationContext(), catalog, book);
         if (update != null) {
-            persistMetadata(db, update.id, update.meta, update.fileReadable);
+            persistMetadata(catalog, update.id, update.meta, update.fileReadable);
         }
     }
 
@@ -507,7 +509,7 @@ public final class MetaEnricher {
      * when found, is cached right away: it is a file write, independent of the
      * database batch.
      */
-    private static BookDatabase.MetaUpdate enrichOneBook(Context app, BookDatabase db, Book book) {
+    private static BookDatabase.MetaUpdate enrichOneBook(Context app, Catalog catalog, Book book) {
         File f = new File(book.path);
         if (!f.isFile()) {
             // File is gone: keep the file-name title and drain the queue slot.
@@ -524,7 +526,7 @@ public final class MetaEnricher {
             live = liveParseThreads.get();
             if (live >= Math.max(1, maxLiveParseThreads)) {
                 Log.w(TAG, "skipped_due_to_live_thread_cap for " + f);
-                markFailed(db, book.id);
+                markFailed(catalog, book.id);
                 return null;
             }
         } while (!liveParseThreads.compareAndSet(live, live + 1));
@@ -566,7 +568,7 @@ public final class MetaEnricher {
             Log.w(TAG, "Parse of " + f + " overran " + extractTimeoutMs
                     + " ms; marked un-enriched (id=" + book.id
                     + "), retried last on the next rescan");
-            markFailed(db, book.id);
+            markFailed(catalog, book.id);
             return null;
         }
         if (parseError[0] != null) {
@@ -600,20 +602,20 @@ public final class MetaEnricher {
         return new BookDatabase.MetaUpdate(book.id, parsed.meta, true);
     }
 
-    /** {@link BookDatabase#updateMetadata} isolated: a database error on one book
+    /** {@link Catalog#applyEnrichmentOne} isolated: a database error on one book
      *  must not kill the worker loop or the import/detail fast paths. */
-    private static void persistMetadata(BookDatabase db, long id, MetaData md, boolean readable) {
+    private static void persistMetadata(Catalog catalog, long id, MetaData md, boolean readable) {
         try {
-            db.updateMetadata(id, md, readable);
+            catalog.applyEnrichmentOne(id, md, readable);
         } catch (Exception e) {
             Log.e(TAG, "Could not persist metadata (id=" + id + ")", e);
         }
     }
 
-    /** {@link BookDatabase#markMetaFailed} isolated (see {@link #persistMetadata}). */
-    private static void markFailed(BookDatabase db, long id) {
+    /** {@link Catalog#persistMetaFailed} isolated (see {@link #persistMetadata}). */
+    private static void markFailed(Catalog catalog, long id) {
         try {
-            db.markMetaFailed(id);
+            catalog.persistMetaFailed(id);
         } catch (Exception e) {
             Log.e(TAG, "Could not flag the timed-out book (id=" + id + ")", e);
         }
