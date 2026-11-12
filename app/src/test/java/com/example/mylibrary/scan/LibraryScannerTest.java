@@ -329,4 +329,56 @@ public class LibraryScannerTest {
         assertEquals(1, result.books.size());
         assertEquals(sibling.getAbsolutePath(), result.books.get(0).path);
     }
+
+    @Test
+    public void scanDetailedSkipsAdoptedPathWhenOnlyTheCanonicalFormMatches() throws Exception {
+        File pairRoot = folder.newFolder("canon");
+        new File(pairRoot, "sub").mkdirs();
+        File book = new File(pairRoot, "skip-me.txt");
+        File kept = new File(pairRoot, "keep-me.txt");
+        write(book, "skip\n");
+        write(kept, "keep\n");
+
+        // Absolute form differs from the path listFiles reports; canonical does not.
+        String viaDotDot = new File(pairRoot, "sub/../skip-me.txt").getAbsolutePath();
+        assertFalse(viaDotDot.equals(book.getAbsolutePath()));
+        Set<String> skip = new HashSet<String>();
+        skip.add(viaDotDot);
+
+        LibraryScanner.ScanResult result = LibraryScanner.scanDetailed(
+                Arrays.asList(pairRoot), null, skip);
+
+        assertEquals(1, result.books.size());
+        assertEquals(kept.getAbsolutePath(), result.books.get(0).path);
+    }
+
+    @Test
+    public void scanDetailedDoesNotEnterTheAppFilesTree() throws Exception {
+        File scanRoot = folder.newFolder("phone");
+        File shelf = new File(scanRoot, "Download");
+        shelf.mkdirs();
+        File original = new File(shelf, "shelf.txt");
+        write(original, "orig\n");
+
+        File appFiles = new File(scanRoot, "Android/data/app/files");
+        File copy = new File(appFiles, "books/shelf.txt");
+        copy.getParentFile().mkdirs();
+        write(copy, "copy\n");
+
+        File otherFiles = new File(scanRoot, "notes/files");
+        File note = new File(otherFiles, "note.txt");
+        note.getParentFile().mkdirs();
+        write(note, "note\n");
+
+        LibraryScanner.ScanResult result = LibraryScanner.scanDetailed(
+                Arrays.asList(scanRoot), null, null, appFiles);
+
+        assertEquals(2, result.books.size());
+        Set<String> paths = new HashSet<String>();
+        for (int i = 0; i < result.books.size(); i++) paths.add(result.books.get(i).path);
+        assertTrue(paths.contains(original.getAbsolutePath()));
+        assertTrue(paths.contains(note.getAbsolutePath()));
+        assertFalse(paths.contains(copy.getAbsolutePath()));
+        assertTrue(result.roots.get(0).complete);
+    }
 }

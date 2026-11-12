@@ -976,21 +976,29 @@ public class MainActivity extends Activity
     private static final class ScanTask extends AsyncTask<Void, Void, LibraryScanner.ScanResult> {
         private final Catalog catalog;
         private final BookDatabase db;
+        private final File privateFilesDir;
         private final WeakReference<MainActivity> self;
 
         ScanTask(MainActivity host) {
             this.catalog = host.catalog;
             this.db = host.db; // safe: it holds the app context
+            File dir = null;
+            try {
+                dir = host.getExternalFilesDir(null);
+            } catch (Exception ignored) {}
+            this.privateFilesDir = dir;
             this.self = new WeakReference<MainActivity>(host);
         }
 
         @Override protected LibraryScanner.ScanResult doInBackground(Void... v) {
             // Fast by design: file walk only, no in-file metadata extraction
             // (that is stage 2's job). Paths already recorded as adopted_from
-            // are not walked into the batch, so the original file still sitting
-            // in shared storage does not become a second book.
+            // are matched canonically, so the original file still sitting in
+            // shared storage does not become a second book under another prefix.
+            // The app files directory is not entered: private copies live there
+            // and are already the catalog path.
             Set<String> skip = db.adoptedFromPaths();
-            return LibraryScanner.scanDetailed(null, null, skip);
+            return LibraryScanner.scanDetailed(null, null, skip, privateFilesDir);
         }
 
         @Override protected void onPostExecute(LibraryScanner.ScanResult result) {

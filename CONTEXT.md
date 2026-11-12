@@ -47,7 +47,7 @@ Every book's metadata is stored in **two places**:
 | `db/BookDatabase` | SQLite catalog (**DB v8**: `works` + `files` + `work_genres`; cursor `_id` = work id, local scan still 1 file = 1 work; server columns exist but are not written yet; `files.adopted_from` is the previous absolute path when an EPUB/FB2 was copied into the app directory, otherwise NULL — not written into `remote_key` / `content_hash` and not a field on `Book`); the locator reads an edition with `getFileEdition` / `listFileEditions` (id, path, availability, remote_key, format) and does not write those columns; **`upsert`/`upsertBasic`/`updateMetadata` preserve `last_read`** (`updateMetadata` replaces the genre list with the same merge rule as `series` when `user_edited` allows); `cursorAll` genre filter = EXISTS on `work_genres`; `distinctGenres()` reads `work_genres` in name order; `needMeta()` = stage-2 queue on `files.meta_done` (un-enriched last); static write lock — **not** called directly from Activity/`MetaEnricher` for writes |
 | `db/BookProvider` | read-only `ContentProvider` — the `ContentObserver` channel for the `CursorLoader` (all / recent / `format IN (?,…)` / `genre IS NOT NULL AND genre IN (?,…)` / both combined — the combined selection args are split on the format-count boundary: `FilterState.queryArgs()` = formats in `Formats.ALL` order, then genres in first-added order) |
 | `scan/Formats` | canonical formats + ext→id map (handles `.fb2.zip`) |
-| `scan/LibraryScanner` | stage-1 fast scan (skeleton books, no in-file meta) + `scanSingle()`; the stage-1 walk does not add a path already stored in `files.adopted_from` (the set is passed by `ScanTask`); `scanSingle()` does not hide paths |
+| `scan/LibraryScanner` | stage-1 fast scan (skeleton books, no in-file meta) + `scanSingle()`; the stage-1 walk does not add a path already stored in `files.adopted_from` (canonical match, the set is passed by `ScanTask`) and does not enter the app external-files directory (`ScanTask` passes `getExternalFilesDir(null)`); `scanSingle()` does not hide paths |
 | `meta/MetaEnricher` | stage-2 background worker: per-book `MetaExtractor` + `CoverExtractor` → `Catalog` (persist batch + throttled `announceChangeAll`, both URIs) + `CoverCache`; `enrichOne` for import/fast path; **per-file parse budget of 2 min** — a parse that overruns it is abandoned and the book is marked un-enriched (`meta_failed=1`, stays `meta_done=0`, retried last on every rescan); the pass **works the queue cheapest-format-first** (EPUB/FB2 → FB2ZIP → MOBI → the rest, `Formats.enrichmentPriority`; un-enriched books still last of all); the `OnProgress` contract: `onFinished()` fires on a finished pass and is **never** sent after `cancel()` — a cancel fires `onCancelled()` instead (the listener is held weakly, a fresh `start()` reassigns it, so a `start()`-internal cancel can't clear the new pass's state) |
 | `meta/MetaExtractor` | read meta: EPUB/FB2/FB2ZIP (inner `.fb2` entry)/MOBI/TXT/HTML; FB2 all `<genre>` in `title-info` (or until `</description>` when unclosed), EPUB all `dc:subject` → normalized `md.genres` |
 | `meta/MobiParser` | shared MOBI/AZW binary reader (package-private): PalmDB record table + MOBI header + EXTH |
@@ -81,8 +81,10 @@ pagination is on, a horizontal swipe also turns pages.
   `Catalog.saveScanBatch()` / `removeMissing()` → `notifyChangeAll` → the
   `CursorLoader` re-queries and the list is on screen immediately; the user can
   already interact with it. A path already stored in `files.adopted_from` does not
-  enter `saveScanBatch` and does not become a second book while the original file
-  is still in shared storage.
+  enter `saveScanBatch` (the match is canonical, so another prefix of the same
+  file is still the original) and does not become a second book while the original
+  file is still in shared storage. The walk does not enter the app external-files
+  directory, so a private copy there is not discovered as a new book.
 - **Enrich (stage 2, background)** → `MetaEnricher.start()` — a single worker over
   `db.needMeta()`, which is split by format type and worked cheapest-first
   (EPUB, FB2 → FB2ZIP → MOBI → the rest; the un-enriched/timed-out books stay last
