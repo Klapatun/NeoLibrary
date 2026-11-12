@@ -714,6 +714,50 @@ public class MetaEnricherTest {
         assertArrayEquals(cover, out.cover);
     }
 
+    /** FB2 single-pass: finished parse without a tag title keeps the file-name in
+     *  {@code meta.title} without {@code found}; {@code book-title} yields {@code found}. */
+    @Test
+    public void parseFb2SinglePassFillsFileNameWhenNotFoundAndReadsBookTitle() throws Exception {
+        String noTitle = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+                + "<FictionBook xmlns=\"http://www.gribuser.ru/xml/fictionbook/2.0\">\n"
+                + "  <description>\n"
+                + "    <title-info>\n"
+                + "      <genre>sf</genre>\n"
+                + "    </title-info>\n"
+                + "  </description>\n"
+                + "</FictionBook>\n";
+        File novel = new File(folder.getRoot(), "my_novel.fb2");
+        TestFixtures.writeText(novel, noTitle);
+
+        MetaEnricher.Parsed out = new MetaEnricher.Parsed();
+        MetaEnricher.parseFb2SinglePass(novel, out);
+
+        assertNotNull(out.meta);
+        assertFalse(out.meta.found);
+        assertEquals("my novel", out.meta.title);
+        assertEquals(1, out.meta.genres.size());
+        assertEquals("sf", out.meta.genres.get(0));
+
+        String withBookTitle = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+                + "<FictionBook xmlns=\"http://www.gribuser.ru/xml/fictionbook/2.0\">\n"
+                + "  <description>\n"
+                + "    <title-info>\n"
+                + "      <book-title>Tagged Title</book-title>\n"
+                + "      <genre>prose</genre>\n"
+                + "    </title-info>\n"
+                + "  </description>\n"
+                + "</FictionBook>\n";
+        File tagged = new File(folder.getRoot(), "ignored_name.fb2");
+        TestFixtures.writeText(tagged, withBookTitle);
+
+        out = new MetaEnricher.Parsed();
+        MetaEnricher.parseFb2SinglePass(tagged, out);
+
+        assertNotNull(out.meta);
+        assertTrue(out.meta.found);
+        assertEquals("Tagged Title", out.meta.title);
+    }
+
     /** FB2ZIP single-pass fallback: when the inner document carries no coverpage, the
      *  loose image entry ({@code cover.jpg}) wins — still one ZipFile session. */
     @Test

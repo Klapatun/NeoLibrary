@@ -125,6 +125,164 @@ public class MetaExtractorTest {
     }
 
     @Test
+    public void fb2BookTitleOnlyYieldsFoundTitleAndGenres() throws Exception {
+        String xml = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+                + "<FictionBook xmlns=\"http://www.gribuser.ru/xml/fictionbook/2.0\">\n"
+                + "  <description>\n"
+                + "    <title-info>\n"
+                + "      <book-title>Война и мир</book-title>\n"
+                + "      <genre>sf</genre>\n"
+                + "    </title-info>\n"
+                + "  </description>\n"
+                + "</FictionBook>\n";
+        TestFixtures.writeText(fb2, xml);
+        MetaData md = MetaExtractor.extract(fb2);
+        assertTrue(md.found);
+        assertEquals("Война и мир", md.title);
+        assertGenres("sf", md.genres);
+
+        byte[] raw = TestFixtures.readAll(fb2);
+        MetaData parsed = MetaExtractor.parseFb2Xml(new ByteArrayInputStream(raw));
+        assertTrue(parsed.found);
+        assertEquals("Война и мир", parsed.title);
+        assertGenres("sf", parsed.genres);
+
+        String prefixed = xml.replace(
+                "<book-title>Война и мир</book-title>",
+                "<fb:book-title xmlns:fb=\"http://www.gribuser.ru/xml/fictionbook/2.0\""
+                        + ">Война и мир</fb:book-title>");
+        TestFixtures.writeText(fb2, prefixed);
+        md = MetaExtractor.extract(fb2);
+        assertEquals("Война и мир", md.title);
+    }
+
+    @Test
+    public void fb2BookTitleWinsWhenTitleComesFirstInTitleInfo() throws Exception {
+        String xml = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+                + "<FictionBook xmlns=\"http://www.gribuser.ru/xml/fictionbook/2.0\">\n"
+                + "  <description>\n"
+                + "    <title-info>\n"
+                + "      <title>Из title</title>\n"
+                + "      <book-title>Из book-title</book-title>\n"
+                + "      <book-title>Second book-title</book-title>\n"
+                + "    </title-info>\n"
+                + "  </description>\n"
+                + "</FictionBook>\n";
+        TestFixtures.writeText(fb2, xml);
+        MetaData md = MetaExtractor.extract(fb2);
+        assertTrue(md.found);
+        assertEquals("Из book-title", md.title);
+    }
+
+    @Test
+    public void fb2WhitespaceBookTitleFallsBackToTitleInTitleInfo() throws Exception {
+        String xml = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+                + "<FictionBook xmlns=\"http://www.gribuser.ru/xml/fictionbook/2.0\">\n"
+                + "  <description>\n"
+                + "    <title-info>\n"
+                + "      <book-title>   </book-title>\n"
+                + "      <title>Из title</title>\n"
+                + "    </title-info>\n"
+                + "  </description>\n"
+                + "</FictionBook>\n";
+        TestFixtures.writeText(fb2, xml);
+        MetaData md = MetaExtractor.extract(fb2);
+        assertTrue(md.found);
+        assertEquals("Из title", md.title);
+    }
+
+    @Test
+    public void fb2IgnoresBodySectionTitleAfterClosedTitleInfo() throws Exception {
+        String xml = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+                + "<FictionBook xmlns=\"http://www.gribuser.ru/xml/fictionbook/2.0\">\n"
+                + "  <description>\n"
+                + "    <title-info>\n"
+                + "      <genre>sf</genre>\n"
+                + "    </title-info>\n"
+                + "    <body><title><p>Глава</p></title></body>\n"
+                + "  </description>\n"
+                + "</FictionBook>\n";
+        byte[] raw = xml.getBytes("UTF-8");
+        MetaData parsed = MetaExtractor.parseFb2Xml(new ByteArrayInputStream(raw));
+        assertFalse(parsed.found);
+        assertNull(parsed.title);
+        assertGenres("sf", parsed.genres);
+
+        TestFixtures.writeText(fb2, xml);
+        MetaData md = MetaExtractor.extract(fb2);
+        assertFalse(md.found);
+        assertEquals("book", md.title);
+    }
+
+    @Test
+    public void fb2IgnoresBodyTitleBeforeDescriptionEndsWhenTitleInfoOpen() throws Exception {
+        String xml = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+                + "<FictionBook xmlns=\"http://www.gribuser.ru/xml/fictionbook/2.0\">\n"
+                + "  <description>\n"
+                + "    <title-info>\n"
+                + "      <genre>sf</genre>\n"
+                + "    <body>\n"
+                + "      <title><p>Глава</p></title>\n"
+                + "    </body>\n"
+                + "  </description>\n"
+                + "</FictionBook>\n";
+        TestFixtures.writeText(fb2, xml);
+        MetaData md = MetaExtractor.extract(fb2);
+        assertFalse(md.found);
+        assertGenres("sf", md.genres);
+        assertFalse("Глава".equals(md.title));
+    }
+
+    @Test
+    public void fb2IgnoresBookTitleInSrcTitleInfo() throws Exception {
+        String xml = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+                + "<FictionBook xmlns=\"http://www.gribuser.ru/xml/fictionbook/2.0\">\n"
+                + "  <description>\n"
+                + "    <title-info>\n"
+                + "      <genre>prose</genre>\n"
+                + "    </title-info>\n"
+                + "    <src-title-info>\n"
+                + "      <book-title>Источник</book-title>\n"
+                + "    </src-title-info>\n"
+                + "  </description>\n"
+                + "</FictionBook>\n";
+        byte[] raw = xml.getBytes("UTF-8");
+        MetaData parsed = MetaExtractor.parseFb2Xml(new ByteArrayInputStream(raw));
+        assertFalse(parsed.found);
+        assertNull(parsed.title);
+        assertGenres("prose", parsed.genres);
+
+        File novel = folder.newFile("my_novel.fb2");
+        TestFixtures.writeText(novel, xml);
+        MetaData md = MetaExtractor.extract(novel);
+        assertFalse(md.found);
+        assertEquals("my novel", md.title);
+    }
+
+    @Test
+    public void fb2NoTitleExtractFillsFileNameButParseStaysNotFound() throws Exception {
+        TestFixtures.writeText(fb2, TestFixtures.FB2_NO_TITLE);
+        MetaData md = MetaExtractor.extract(fb2);
+        assertFalse(md.found);
+        assertEquals("book", md.title);
+        assertGenres("prose", md.genres);
+
+        byte[] raw = TestFixtures.readAll(fb2);
+        MetaData parsed = MetaExtractor.parseFb2Xml(new ByteArrayInputStream(raw));
+        assertFalse(parsed.found);
+        assertNull(parsed.title);
+        assertGenres("prose", parsed.genres);
+    }
+
+    @Test
+    public void fb2FullKeepsTagTitleDespiteFileName() throws Exception {
+        TestFixtures.writeText(fb2, TestFixtures.FB2_FULL);
+        MetaData md = MetaExtractor.extract(fb2);
+        assertTrue(md.found);
+        assertEquals("Original Title", md.title);
+    }
+
+    @Test
     public void fb2CorruptXmlIsNotFoundWithoutThrowing() throws Exception {
         TestFixtures.writeBytes(fb2, new byte[]{(byte) 0xFF, (byte) 0xFE, 0x00, 0x01, 0x02});
         MetaData md = MetaExtractor.extract(fb2);
