@@ -794,6 +794,72 @@ public class BookDatabase extends SQLiteOpenHelper {
         }
     }
 
+    /**
+     * One {@code files} row as the locator reads it: id, path, availability,
+     * remote key, format. These columns stay off {@link Book} and off the list
+     * cursor. Read-only — nothing here writes the row or queues a download.
+     */
+    public static final class FileEdition {
+        public final long id;
+        public final String path;
+        public final String availability;
+        public final String remoteKey;
+        public final String format;
+
+        public FileEdition(long id, String path, String availability,
+                           String remoteKey, String format) {
+            this.id = id;
+            this.path = path;
+            this.availability = availability;
+            this.remoteKey = remoteKey;
+            this.format = format;
+        }
+    }
+
+    private static final String[] FILE_EDITION_COLUMNS = new String[] {
+            "_id", "path", "availability", "remote_key", "format"
+    };
+
+    /** The edition with this {@code files._id}, or null when that row is gone. */
+    public FileEdition getFileEdition(long fileId) {
+        synchronized (WRITE_LOCK) {
+            Cursor c = readableDb().query("files", FILE_EDITION_COLUMNS,
+                    "_id=?", new String[]{String.valueOf(fileId)},
+                    null, null, null);
+            try {
+                if (!c.moveToFirst()) return null;
+                return readFileEdition(c);
+            } finally {
+                c.close();
+            }
+        }
+    }
+
+    /** Editions of one work, smallest {@code files._id} first. */
+    public List<FileEdition> listFileEditions(long workId) {
+        synchronized (WRITE_LOCK) {
+            List<FileEdition> list = new ArrayList<FileEdition>();
+            Cursor c = readableDb().query("files", FILE_EDITION_COLUMNS,
+                    "work_id=?", new String[]{String.valueOf(workId)},
+                    null, null, "_id ASC");
+            try {
+                while (c.moveToNext()) list.add(readFileEdition(c));
+            } finally {
+                c.close();
+            }
+            return list;
+        }
+    }
+
+    private static FileEdition readFileEdition(Cursor c) {
+        return new FileEdition(
+                c.getLong(c.getColumnIndexOrThrow("_id")),
+                c.getString(c.getColumnIndexOrThrow("path")),
+                c.getString(c.getColumnIndexOrThrow("availability")),
+                c.getString(c.getColumnIndexOrThrow("remote_key")),
+                c.getString(c.getColumnIndexOrThrow("format")));
+    }
+
     private static List<Book> listOf(Book b) {
         List<Book> list = new ArrayList<Book>();
         list.add(b);
