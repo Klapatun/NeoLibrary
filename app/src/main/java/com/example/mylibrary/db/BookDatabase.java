@@ -3,6 +3,7 @@ package com.example.mylibrary.db;
 import android.content.ContentValues;
 import android.content.Context;
 import android.database.Cursor;
+import android.database.sqlite.SQLiteConstraintException;
 import android.database.sqlite.SQLiteDatabase;
 import android.database.sqlite.SQLiteOpenHelper;
 import android.util.Log;
@@ -28,7 +29,7 @@ public class BookDatabase extends SQLiteOpenHelper {
 
     private static final String TAG = "BookDatabase";
     private static final String DB_NAME = "library.db";
-    private static final int DB_VERSION = 7;
+    private static final int DB_VERSION = 8;
 
     /** How many books go into one batch commit (one SQLite transaction per group;
      *  see {@link #upsertBasicBatch} and {@link #updateMetadataBatch}): one commit
@@ -91,7 +92,8 @@ public class BookDatabase extends SQLiteOpenHelper {
             + "exported INTEGER DEFAULT 0, "
             + "meta_done INTEGER NOT NULL DEFAULT 0, "
             + "meta_failed INTEGER NOT NULL DEFAULT 0, "
-            + "availability TEXT NOT NULL DEFAULT 'local'"
+            + "availability TEXT NOT NULL DEFAULT 'local', "
+            + "adopted_from TEXT"
             + ")";
 
     private static final String WORK_GENRES_CREATE =
@@ -161,6 +163,12 @@ public class BookDatabase extends SQLiteOpenHelper {
                 }
             }
             migrateBooksToV7(db);
+        }
+        if (oldVersion < 8) {
+            try {
+                db.execSQL("ALTER TABLE files ADD COLUMN adopted_from TEXT");
+            } catch (Exception ignored) {
+            }
         }
     }
 
@@ -432,6 +440,85 @@ public class BookDatabase extends SQLiteOpenHelper {
             } finally {
                 db.endTransaction();
             }
+        }
+    }
+
+    /**
+     * Same catalog edit as {@link #saveUserEdit}, but updates the existing
+     * {@code files} row (matched by work id and the book's current path) to
+     * {@code newPath} and records the previous path in {@code adopted_from}.
+     * Does not insert a work or a file. On success {@code book.path} becomes
+     * {@code newPath}.
+     */
+    public boolean saveUserEditAtNewPath(Book book, String newPath) {
+        if (book == null || newPath == null || newPath.length() == 0
+                || newPath.equals(book.path)) {
+            return false;
+        }
+        synchronized (WRITE_LOCK) {
+            SQLiteDatabase db = getWritableDatabase();
+            db.beginTransaction();
+            boolean committed = false;
+            try {
+                long fileId = -1;
+                Cursor c = db.rawQuery(
+                        "SELECT _id FROM files WHERE work_id=? AND path=?",
+                        new String[]{String.valueOf(book.id), book.path});
+                try {
+                    if (c.moveToFirst()) fileId = c.getLong(0);
+                } finally {
+                    c.close();
+                }
+                if (fileId < 0) return false;
+
+                ContentValues wv = new ContentValues();
+                wv.put("title", book.title);
+                wv.put("author", book.author);
+                wv.put("publisher", book.publisher);
+                wv.put("description", book.description);
+                wv.put("series", book.series);
+                wv.put("user_edited", 1);
+                db.update("works", wv, "_id=?", new String[]{String.valueOf(book.id)});
+
+                ArrayList<String> genreList = book.genres == null
+                        ? new ArrayList<String>() : book.genres;
+                replaceGenresOn(db, book.id, MetaData.normalizeGenres(genreList));
+
+                ContentValues fv = new ContentValues();
+                fv.put("path", newPath);
+                fv.put("adopted_from", book.path);
+                fv.put("format", book.format);
+                fv.put("size_bytes", book.sizeBytes);
+                fv.put("exported", book.exported ? 1 : 0);
+                db.update("files", fv, "_id=?", new String[]{String.valueOf(fileId)});
+
+                db.setTransactionSuccessful();
+                committed = true;
+            } catch (SQLiteConstraintException ignored) {
+                committed = false;
+            } finally {
+                db.endTransaction();
+            }
+            if (committed) book.path = newPath;
+            return committed;
+        }
+    }
+
+    /** Absolute {@code files.adopted_from} values. Empty, never null. Does not write. */
+    public Set<String> adoptedFromPaths() {
+        synchronized (WRITE_LOCK) {
+            HashSet<String> paths = new HashSet<String>();
+            Cursor c = readableDb().rawQuery(
+                    "SELECT adopted_from FROM files WHERE adopted_from IS NOT NULL", null);
+            try {
+                while (c.moveToNext()) {
+                    if (c.isNull(0)) continue;
+                    paths.add(new File(c.getString(0)).getAbsolutePath());
+                }
+            } finally {
+                c.close();
+            }
+            return paths;
         }
     }
 
