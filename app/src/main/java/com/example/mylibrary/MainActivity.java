@@ -954,18 +954,14 @@ public class MainActivity extends Activity
      *  class would carry a synthetic strong reference to the Activity (javac emits
      *  it for every anonymous class inside an instance method, used or not), and a
      *  storage walk can run for minutes — the screen must be collectible while it
-     *  is in flight. Holds the app context for the background work (the scanner
-     *  only resolves storage roots) and the Activity weakly for the UI follow-up:
-     *  the catalog upserts complete even if the screen is gone by then. */
+     *  is in flight. Holds the catalog for the writes and the Activity weakly for
+     *  the UI follow-up: the catalog upserts complete even if the screen is gone
+     *  by then. */
     private static final class ScanTask extends AsyncTask<Void, Void, LibraryScanner.ScanResult> {
-        private final Context appContext;
-        private final BookDatabase db;
         private final Catalog catalog;
         private final WeakReference<MainActivity> self;
 
         ScanTask(MainActivity host) {
-            this.appContext = host.getApplicationContext();
-            this.db = host.db; // safe: it holds the app context
             this.catalog = host.catalog;
             this.self = new WeakReference<MainActivity>(host);
         }
