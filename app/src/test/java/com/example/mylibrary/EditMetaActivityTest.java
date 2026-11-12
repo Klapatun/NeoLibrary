@@ -556,6 +556,35 @@ public class EditMetaActivityTest {
     }
 
     @Test
+    public void fb2EditGenreOnlyLeavesTitleAndAuthorUntouchedInFileAndCatalog() throws Exception {
+        File fb2 = new File(folder.getRoot(), "genre-only.fb2");
+        TestFixtures.writeText(fb2, TestFixtures.FB2_FULL);
+
+        EditMetaActivity a = launch(fb2, "FB2", "Original Title", "Ivan Ivanovich Petrov");
+        long id = db.getIdForPath(fb2.getAbsolutePath());
+
+        setGenreFields(a, "SF_History");
+        ((Button) a.findViewById(R.id.btn_save)).performClick();
+
+        awaitCatalogGenres(db, id, "sf_history");
+        shadowOf(Looper.getMainLooper()).idle();
+
+        assertEquals("Saved", ShadowToast.getTextOfLatestToast());
+        Book got = db.getById(id);
+        assertEquals("Original Title", got.title);
+        assertEquals("Ivan Ivanovich Petrov", got.author);
+
+        String xml = new String(TestFixtures.readAll(fb2), "UTF-8");
+        assertTrue(xml.contains("<title>Original Title</title>"));
+        assertTrue(xml.contains("<first-name>Ivan</first-name>"));
+        assertTrue(xml.contains("<last-name>Petrov</last-name>"));
+        assertTrue(xml.contains("<genre>sf_history</genre>"));
+        assertTrue(got.exported);
+        assertTrue(a.isFinishing());
+        assertEquals(Activity.RESULT_OK, shadowOf(a).getResultCode());
+    }
+
+    @Test
     public void fb2EditWritesGenreIntoTheFileAndTheCatalog() throws Exception {
         File fb2 = new File(folder.getRoot(), "genre.fb2");
         TestFixtures.writeText(fb2, TestFixtures.FB2_FULL);

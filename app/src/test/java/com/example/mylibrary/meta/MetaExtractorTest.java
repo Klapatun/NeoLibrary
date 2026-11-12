@@ -3,6 +3,7 @@ package com.example.mylibrary.meta;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
+import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 
 import org.junit.Before;
@@ -15,8 +16,10 @@ import org.robolectric.annotation.Config;
 
 import com.example.mylibrary.testutil.TestFixtures;
 
+import java.io.ByteArrayInputStream;
 import java.io.File;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Map;
 
 /**
@@ -126,6 +129,51 @@ public class MetaExtractorTest {
         TestFixtures.writeBytes(fb2, new byte[]{(byte) 0xFF, (byte) 0xFE, 0x00, 0x01, 0x02});
         MetaData md = MetaExtractor.extract(fb2);
         assertFalse(md.found);
+    }
+
+    @Test
+    public void fb2Windows1251ExtractAndParseFb2XmlAgreeOnTitle() throws Exception {
+        String xml = TestFixtures.FB2_FULL
+                .replace("encoding=\"UTF-8\"", "encoding=\"windows-1251\"")
+                .replace("Original Title", "Война и мир");
+        byte[] raw = xml.getBytes("windows-1251");
+        TestFixtures.writeBytes(fb2, raw);
+        assertTrue(Arrays.equals(raw, TestFixtures.readAll(fb2)));
+
+        MetaData md = MetaExtractor.extract(fb2);
+        assertTrue(md.found);
+        assertEquals("Война и мир", md.title);
+
+        MetaData parsed = MetaExtractor.parseFb2Xml(new ByteArrayInputStream(raw));
+        assertEquals("Война и мир", parsed.title);
+    }
+
+    @Test
+    public void epubWindows1251OpfYieldsTitleFromExtract() throws Exception {
+        String opf = TestFixtures.OPF_FULL
+                .replace("encoding=\"UTF-8\"", "encoding=\"windows-1251\"")
+                .replace("Original Title", "Война и мир");
+        Map<String, byte[]> entries = new java.util.LinkedHashMap<String, byte[]>();
+        entries.put("META-INF/container.xml", TestFixtures.CONTAINER_XML.getBytes("UTF-8"));
+        entries.put("OEBPS/content.opf", opf.getBytes("windows-1251"));
+        entries.put("OEBPS/ch1.xhtml", TestFixtures.CHAPTER_XHTML.getBytes("UTF-8"));
+        TestFixtures.writeZip(epub, entries);
+
+        MetaData md = MetaExtractor.extract(epub);
+        assertTrue(md.found);
+        assertEquals("Война и мир", md.title);
+    }
+
+    @Test
+    public void fb2UnknownEncodingIsNotFoundAndLeavesBytes() throws Exception {
+        String xml = TestFixtures.FB2_FULL.replace("encoding=\"UTF-8\"", "encoding=\"x-not-a-charset\"");
+        byte[] raw = xml.getBytes("UTF-8");
+        TestFixtures.writeBytes(fb2, raw);
+
+        MetaData md = MetaExtractor.extract(fb2);
+        assertFalse(md.found);
+        assertNull(md.title);
+        assertTrue(Arrays.equals(raw, TestFixtures.readAll(fb2)));
     }
 
     // ------------------------------------------------------------------
