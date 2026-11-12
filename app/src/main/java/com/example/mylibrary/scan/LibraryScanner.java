@@ -39,6 +39,11 @@ public class LibraryScanner {
     }
 
     public static ScanResult scanDetailed(List<File> roots, Progress onProgress) {
+        return scanDetailed(roots, onProgress, null);
+    }
+
+    public static ScanResult scanDetailed(List<File> roots, Progress onProgress,
+            Set<String> skipAbsolutePaths) {
         if (roots == null || roots.isEmpty()) roots = defaultRoots(null);
         List<RootScanResult> rootResults = new ArrayList<RootScanResult>();
         List<Book> books = new ArrayList<Book>();
@@ -48,16 +53,17 @@ public class LibraryScanner {
             String rootPath = root.getAbsolutePath();
             if (containsRoot(normalizedRoots, rootPath)) continue;
             normalizedRoots.add(rootPath);
-            RootScanResult result = scanRoot(root, onProgress);
+            RootScanResult result = scanRoot(root, onProgress, skipAbsolutePaths);
             rootResults.add(result);
             addUniqueBooks(books, result.books);
         }
         return new ScanResult(rootResults, books);
     }
 
-    private static RootScanResult scanRoot(File root, Progress onProgress) {
+    private static RootScanResult scanRoot(File root, Progress onProgress,
+            Set<String> skipAbsolutePaths) {
         List<Book> found = new ArrayList<Book>();
-        boolean complete = walk(root, found, onProgress);
+        boolean complete = walk(root, found, onProgress, skipAbsolutePaths);
         return new RootScanResult(root.getAbsolutePath(), found, complete);
     }
 
@@ -82,7 +88,8 @@ public class LibraryScanner {
         return scan(defaultRoots(context), onProgress);
     }
 
-    private static boolean walk(File dir, List<Book> out, Progress onProgress) {
+    private static boolean walk(File dir, List<Book> out, Progress onProgress,
+            Set<String> skipAbsolutePaths) {
         if (dir == null || !dir.exists() || !dir.isDirectory()) return false;
         File[] children;
         try {
@@ -94,8 +101,12 @@ public class LibraryScanner {
         boolean complete = true;
         for (File f : children) {
             if (f.isDirectory()) {
-                if (!walk(f, out, onProgress)) complete = false;
+                if (!walk(f, out, onProgress, skipAbsolutePaths)) complete = false;
             } else if (f.isFile() && Formats.isSupported(f.getName())) {
+                if (skipAbsolutePaths != null
+                        && skipAbsolutePaths.contains(f.getAbsolutePath())) {
+                    continue;
+                }
                 if (onProgress != null) onProgress.onScan(f.getAbsolutePath());
                 Book b = buildBook(f);
                 if (b != null) out.add(b);

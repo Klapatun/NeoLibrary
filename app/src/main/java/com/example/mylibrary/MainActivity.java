@@ -970,22 +970,27 @@ public class MainActivity extends Activity
      *  class would carry a synthetic strong reference to the Activity (javac emits
      *  it for every anonymous class inside an instance method, used or not), and a
      *  storage walk can run for minutes — the screen must be collectible while it
-     *  is in flight. Holds the catalog for the writes and the Activity weakly for
-     *  the UI follow-up: the catalog upserts complete even if the screen is gone
-     *  by then. */
+     *  is in flight. Holds the catalog for the writes, the database for the
+     *  adopted-path read, and the Activity weakly for the UI follow-up: the
+     *  catalog upserts complete even if the screen is gone by then. */
     private static final class ScanTask extends AsyncTask<Void, Void, LibraryScanner.ScanResult> {
         private final Catalog catalog;
+        private final BookDatabase db;
         private final WeakReference<MainActivity> self;
 
         ScanTask(MainActivity host) {
             this.catalog = host.catalog;
+            this.db = host.db; // safe: it holds the app context
             this.self = new WeakReference<MainActivity>(host);
         }
 
         @Override protected LibraryScanner.ScanResult doInBackground(Void... v) {
             // Fast by design: file walk only, no in-file metadata extraction
-            // (that is stage 2's job).
-            return LibraryScanner.scanDetailed(null, null);
+            // (that is stage 2's job). Paths already recorded as adopted_from
+            // are not walked into the batch, so the original file still sitting
+            // in shared storage does not become a second book.
+            Set<String> skip = db.adoptedFromPaths();
+            return LibraryScanner.scanDetailed(null, null, skip);
         }
 
         @Override protected void onPostExecute(LibraryScanner.ScanResult result) {
