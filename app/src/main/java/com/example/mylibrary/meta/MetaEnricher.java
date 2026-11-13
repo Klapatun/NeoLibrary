@@ -217,10 +217,9 @@ public final class MetaEnricher {
     }
 
     /**
-     * FB2, one pass: the batch-1 streaming header read ({@link
-     * CoverExtractor#readFb2Header}) yields BOTH the metadata (the description block)
-     * and the cover (the binary blocks) from a single pass over the file — the body
-     * (the bulk of a real book) is never read or parsed.
+     * FB2, one pass: {@link CoverExtractor#readFb2Header} yields both the description
+     * (metadata) and the cover {@code <binary>} bytes. Book text is not kept in that
+     * buffer; when a cover id is present the body is read past and discarded.
      */
     static void parseFb2SinglePass(File file, Parsed out) {
         try {
@@ -235,11 +234,9 @@ public final class MetaEnricher {
     }
 
     /**
-     * FB2ZIP, one session: a single {@link ZipFile} open — the central directory is
-     * scanned for the inner {@code .fb2} (nothing else is decompressed); the
-     * metadata + cover come from the inner document's bytes, and when the inner
-     * document carries no cover, the first image entry (a name containing "cover"
-     * wins outright) is read instead.
+     * FB2ZIP, one session: a single {@link ZipFile} open. The inner {@code .fb2}
+     * is inflated once; metadata and the cover come from those bytes. A loose image
+     * entry is read only when the inner document's own cover was not found.
      */
     static void parseFb2ZipSinglePass(File file, Parsed out) {
         ZipFile zip = null;
