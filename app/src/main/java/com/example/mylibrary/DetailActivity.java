@@ -3,6 +3,7 @@ package com.example.mylibrary;
 import android.app.Activity;
 import android.app.AlertDialog;
 import android.content.Context;
+import android.content.Intent;
 import android.os.AsyncTask;
 import android.os.Bundle;
 import android.view.View;
@@ -26,9 +27,10 @@ import java.lang.ref.WeakReference;
 /**
  * Shows a single book's details and offers to open it in Neo Reader.
  *
- * <p>Editing the metadata and removing the book from the library were moved to the
- * per-book kebab menu of the main screen ({@code BookAdapter} popup) — one entry
- * point from the list or the tile, without the extra hop through this screen.</p>
+ * <p>The Edit metadata button on this screen opens {@link EditMetaActivity} with
+ * the current book ({@code EXTRA_BOOK}). The same action stays in the per-book
+ * kebab menu of the main screen ({@code BookAdapter} popup). Removing the book
+ * from the library stays in that kebab.</p>
  */
 public class DetailActivity extends Activity {
 
@@ -80,9 +82,35 @@ public class DetailActivity extends Activity {
             new EnrichTask(this, book).execute();
         }
 
+        ((Button) findViewById(R.id.btn_edit_meta)).setOnClickListener(new View.OnClickListener() {
+            @Override public void onClick(View v) {
+                Intent i = new Intent(DetailActivity.this, EditMetaActivity.class);
+                i.putExtra(EditMetaActivity.EXTRA_BOOK, book);
+                startActivity(i);
+            }
+        });
+
         ((Button) findViewById(R.id.btn_open)).setOnClickListener(new View.OnClickListener() {
             @Override public void onClick(View v) { openBook(); }
         });
+    }
+
+    /** Re-read the catalog row after the editor (or any other pause). A user edit
+     *  of EPUB/FB2 can change {@code files.path}. No second {@link EnrichTask}:
+     *  the fast path starts only from {@link #onCreate}. Cover and the letter
+     *  badge are left as {@code onCreate} set them — {@link #showBook} does not
+     *  write them. */
+    @Override
+    protected void onResume() {
+        super.onResume();
+        if (book == null) return;
+        Book fresh = db.getById(book.id);
+        if (fresh == null) {
+            finish();
+            return;
+        }
+        book = fresh;
+        showBook(book);
     }
 
     private void openBook() {
