@@ -58,6 +58,10 @@ import java.util.Map;
  * <p>The save runs on a background {@code AsyncTask} thread, so the tests poll the
  * catalog (the completion signal emitted from {@code doInBackground}) and then idle
  * the main looper to let {@code onPostExecute} finish the activity.</p>
+ *
+ * <p>Each genre row is a horizontal {@code LinearLayout} with an {@code EditText}
+ * and a clear cross ({@code \u2715}); {@code Add genre} stays disabled while any
+ * row is empty after trim.</p>
  */
 @RunWith(RobolectricTestRunner.class)
 @Config(sdk = 19)
@@ -152,20 +156,45 @@ public class EditMetaActivityTest {
         return genreContainer(a).getChildCount();
     }
 
-    private static EditText genreFieldAt(EditMetaActivity a, int index) {
+    private static LinearLayout genreRowAt(EditMetaActivity a, int index) {
         View child = genreContainer(a).getChildAt(index);
-        return (EditText) child;
+        return (LinearLayout) child;
     }
 
-  private static void setGenreFieldCount(EditMetaActivity a, int count) {
-    LinearLayout box = genreContainer(a);
-    while (box.getChildCount() < count) {
-      ((Button) a.findViewById(R.id.btn_add_genre)).performClick();
+    private static EditText genreFieldAt(EditMetaActivity a, int index) {
+        return (EditText) genreRowAt(a, index).getChildAt(0);
     }
-    while (box.getChildCount() > count) {
-      box.removeViewAt(box.getChildCount() - 1);
+
+    private static TextView genreClearAt(EditMetaActivity a, int index) {
+        return (TextView) genreRowAt(a, index).getChildAt(1);
     }
-  }
+
+    private static boolean genreFieldIsEmptyAfterTrim(EditText field) {
+        return field.getText().toString().trim().length() == 0;
+    }
+
+    private static void setGenreFieldCount(EditMetaActivity a, int count) {
+        LinearLayout box = genreContainer(a);
+        Button addBtn = (Button) a.findViewById(R.id.btn_add_genre);
+        ShadowLooper looper = shadowOf(Looper.getMainLooper());
+        while (box.getChildCount() < count) {
+            int rows = box.getChildCount();
+            for (int i = 0; i < rows; i++) {
+                EditText field = genreFieldAt(a, i);
+                if (genreFieldIsEmptyAfterTrim(field)) {
+                    field.setText("x");
+                }
+            }
+            looper.idle();
+            addBtn.performClick();
+            looper.idle();
+        }
+        while (box.getChildCount() > count) {
+            int last = box.getChildCount() - 1;
+            genreClearAt(a, last).performClick();
+            looper.idle();
+        }
+    }
 
     private static void setGenreFields(EditMetaActivity a, String... texts) {
         setGenreFieldCount(a, texts.length);
@@ -480,9 +509,152 @@ public class EditMetaActivityTest {
         TestFixtures.writeBytes(pdf, new byte[]{1});
         long id = addBookToCatalog(pdf, "PDF", "T", "A", null);
         EditMetaActivity a = openEditor(id);
+        Button addBtn = (Button) a.findViewById(R.id.btn_add_genre);
+
         assertEquals(1, genreFieldCount(a));
-        ((Button) a.findViewById(R.id.btn_add_genre)).performClick();
+        assertEquals("", genreFieldAt(a, 0).getText().toString());
+        assertEquals(View.GONE, genreClearAt(a, 0).getVisibility());
+        assertFalse(addBtn.isEnabled());
+        addBtn.performClick();
+        assertEquals(1, genreFieldCount(a));
+
+        genreFieldAt(a, 0).setText("prose");
+        shadowOf(Looper.getMainLooper()).idle();
+        assertEquals(View.VISIBLE, genreClearAt(a, 0).getVisibility());
+        assertTrue(addBtn.isEnabled());
+
+        addBtn.performClick();
+        shadowOf(Looper.getMainLooper()).idle();
         assertEquals(2, genreFieldCount(a));
+        assertEquals("", genreFieldAt(a, 1).getText().toString());
+        assertEquals(View.VISIBLE, genreClearAt(a, 0).getVisibility());
+        assertEquals(View.VISIBLE, genreClearAt(a, 1).getVisibility());
+        assertFalse(addBtn.isEnabled());
+    }
+
+    @Test
+    public void genreClearRemovesTheRowWhenAnotherRowExists() throws Exception {
+        File withGenres = new File(folder.getRoot(), "clear-row.pdf");
+        TestFixtures.writeBytes(withGenres, new byte[]{1});
+        ArrayList<String> two = new ArrayList<String>();
+        two.add("prose");
+        two.add("mystery");
+        long id = addBookToCatalog(withGenres, "PDF", "T", "A", two);
+        EditMetaActivity a = openEditor(id);
+        Button addBtn = (Button) a.findViewById(R.id.btn_add_genre);
+
+        assertEquals(2, genreFieldCount(a));
+        assertEquals(View.VISIBLE, genreClearAt(a, 0).getVisibility());
+        assertEquals(View.VISIBLE, genreClearAt(a, 1).getVisibility());
+        assertTrue(addBtn.isEnabled());
+
+        genreClearAt(a, 0).performClick();
+        shadowOf(Looper.getMainLooper()).idle();
+        assertEquals(1, genreFieldCount(a));
+        assertEquals("mystery", genreFieldAt(a, 0).getText().toString());
+        assertEquals(View.VISIBLE, genreClearAt(a, 0).getVisibility());
+        assertTrue(addBtn.isEnabled());
+
+        setGenreFields(a, "prose", "   ");
+        assertEquals(View.VISIBLE, genreClearAt(a, 0).getVisibility());
+        assertEquals(View.VISIBLE, genreClearAt(a, 1).getVisibility());
+        assertFalse(addBtn.isEnabled());
+
+        genreClearAt(a, 1).performClick();
+        shadowOf(Looper.getMainLooper()).idle();
+        assertEquals(1, genreFieldCount(a));
+        assertEquals("prose", genreFieldAt(a, 0).getText().toString());
+    }
+
+    @Test
+    public void genreClearClearsTheOnlyFieldAndThenHides() throws Exception {
+        File pdf = new File(folder.getRoot(), "clear-only.pdf");
+        TestFixtures.writeBytes(pdf, new byte[]{1});
+        ArrayList<String> one = new ArrayList<String>();
+        one.add("prose");
+        long id = addBookToCatalog(pdf, "PDF", "T", "A", one);
+        EditMetaActivity a = openEditor(id);
+        Button addBtn = (Button) a.findViewById(R.id.btn_add_genre);
+
+        assertEquals(1, genreFieldCount(a));
+        assertEquals(View.VISIBLE, genreClearAt(a, 0).getVisibility());
+
+        genreClearAt(a, 0).performClick();
+        shadowOf(Looper.getMainLooper()).idle();
+        assertEquals(1, genreFieldCount(a));
+        assertEquals("", genreFieldAt(a, 0).getText().toString());
+        assertEquals(View.GONE, genreClearAt(a, 0).getVisibility());
+        assertFalse(addBtn.isEnabled());
+    }
+
+    @Test
+    public void genreClearAndAddFollowTyping() throws Exception {
+        File pdf = new File(folder.getRoot(), "typing-genre.pdf");
+        TestFixtures.writeBytes(pdf, new byte[]{1});
+        long id = addBookToCatalog(pdf, "PDF", "T", "A", null);
+        EditMetaActivity a = openEditor(id);
+        Button addBtn = (Button) a.findViewById(R.id.btn_add_genre);
+        EditText field = genreFieldAt(a, 0);
+
+        field.setText("   ");
+        shadowOf(Looper.getMainLooper()).idle();
+        assertEquals(View.GONE, genreClearAt(a, 0).getVisibility());
+        assertFalse(addBtn.isEnabled());
+
+        field.setText("a");
+        shadowOf(Looper.getMainLooper()).idle();
+        assertEquals(View.VISIBLE, genreClearAt(a, 0).getVisibility());
+        assertTrue(addBtn.isEnabled());
+
+        field.setText("");
+        shadowOf(Looper.getMainLooper()).idle();
+        assertEquals(View.GONE, genreClearAt(a, 0).getVisibility());
+        assertFalse(addBtn.isEnabled());
+
+        field.setText("one");
+        shadowOf(Looper.getMainLooper()).idle();
+        addBtn.performClick();
+        shadowOf(Looper.getMainLooper()).idle();
+        assertEquals(2, genreFieldCount(a));
+        field = genreFieldAt(a, 1);
+        field.setText("two");
+        shadowOf(Looper.getMainLooper()).idle();
+        assertTrue(addBtn.isEnabled());
+
+        field.setText("");
+        shadowOf(Looper.getMainLooper()).idle();
+        assertEquals(View.VISIBLE, genreClearAt(a, 1).getVisibility());
+        assertFalse(addBtn.isEnabled());
+
+        genreClearAt(a, 1).performClick();
+        shadowOf(Looper.getMainLooper()).idle();
+        assertEquals(1, genreFieldCount(a));
+        assertTrue(addBtn.isEnabled());
+    }
+
+    @Test
+    public void clearingTheOnlyGenreThenSaveStoresEmptyList() throws Exception {
+        File pdf = new File(folder.getRoot(), "clear-save.pdf");
+        byte[] original = new byte[]{5, 6, 7};
+        TestFixtures.writeBytes(pdf, original);
+
+        ArrayList<String> one = new ArrayList<String>();
+        one.add("prose");
+        long id = addBookToCatalog(pdf, "PDF", "Old Title", "Old Author", one);
+        EditMetaActivity a = openEditor(id);
+
+        genreClearAt(a, 0).performClick();
+        shadowOf(Looper.getMainLooper()).idle();
+        assertEquals("", genreFieldAt(a, 0).getText().toString());
+
+        ((Button) a.findViewById(R.id.btn_save)).performClick();
+
+        awaitCatalogGenres(db, id);
+        shadowOf(Looper.getMainLooper()).idle();
+
+        assertNotNull(db.getById(id).genres);
+        assertTrue(db.getById(id).genres.isEmpty());
+        assertTrue(Arrays.equals(original, TestFixtures.readAll(pdf)));
     }
 
     /** Trimming, normalization and catalog-only save for PDF (file bytes untouched). */
