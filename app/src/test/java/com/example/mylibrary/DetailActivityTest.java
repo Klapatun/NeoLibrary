@@ -32,15 +32,17 @@ import org.robolectric.Robolectric;
 import org.robolectric.RobolectricTestRunner;
 import org.robolectric.RuntimeEnvironment;
 import org.robolectric.annotation.Config;
+import org.robolectric.android.controller.ActivityController;
 import org.robolectric.shadows.ShadowToast;
 
 import java.io.File;
+import java.util.ArrayList;
 
 /**
- * Robolectric smoke tests for {@link DetailActivity}: the fields it shows and the
- * "open in reader" intent (+ mark-as-read side effect). The edit-metadata and
- * remove actions live in the per-book kebab of the main screen now — those flows
- * are covered by {@link MainActivityTest}.
+ * Robolectric smoke tests for {@link DetailActivity}: the fields it shows, the
+ * on-screen "Edit metadata" button, resume refresh, and the "open in reader"
+ * intent (+ mark-as-read side effect). Kebab-driven edit/remove on the main
+ * screen remain covered by {@link MainActivityTest}.
  *
  * <p>No viewer app is installed in the Robolectric environment, but Robolectric's
  * shadow {@code startActivity} is lenient: it records the intent instead of throwing
@@ -86,6 +88,11 @@ public class DetailActivityTest {
         Intent i = new Intent();
         i.putExtra(DetailActivity.EXTRA_BOOK_ID, id);
         return Robolectric.buildActivity(DetailActivity.class, i).setup().get();
+    }
+
+    private void markMetaDone(long workId) {
+        db.getWritableDatabase().execSQL(
+                "UPDATE files SET meta_done = 1 WHERE work_id = " + workId);
     }
 
     @Test
@@ -222,6 +229,74 @@ public class DetailActivityTest {
     public void unknownBookIdFinishesImmediately() {
         DetailActivity a = launch(424242);
         assertTrue(a.isFinishing());
+    }
+
+    @Test
+    public void editMetadataButtonOpensTheEditorWithTheBookParcel() {
+        DetailActivity a = launch(bookId);
+        Book expected = db.getById(bookId);
+
+        Button edit = (Button) a.findViewById(R.id.btn_edit_meta);
+        assertEquals(View.VISIBLE, edit.getVisibility());
+        assertEquals(a.getString(R.string.edit_meta), edit.getText().toString());
+
+        edit.performClick();
+        shadowOf(Looper.getMainLooper()).idle();
+
+        Intent started = shadowOf(a).getNextStartedActivity();
+        assertNotNull("Edit metadata must start the editor", started);
+        assertEquals(EditMetaActivity.class.getName(), started.getComponent().getClassName());
+        Book parcel = started.getParcelableExtra(EditMetaActivity.EXTRA_BOOK);
+        assertNotNull("the editor must receive the book parcel", parcel);
+        assertEquals(expected.id, parcel.id);
+        assertEquals(expected.path, parcel.path);
+        assertEquals(expected.title, parcel.title);
+
+        assertNotNull("Open in reader must stay on the detail screen", a.findViewById(R.id.btn_open));
+    }
+
+    @Test
+    public void detailReloadsTitleAndGenresOnResume() {
+        markMetaDone(bookId);
+
+        Intent i = new Intent();
+        i.putExtra(DetailActivity.EXTRA_BOOK_ID, bookId);
+        ActivityController<DetailActivity> c = Robolectric.buildActivity(DetailActivity.class, i);
+        DetailActivity a = c.setup().get();
+
+        String titleBefore = ((TextView) a.findViewById(R.id.detail_title)).getText().toString();
+        assertEquals("A Plain Book", titleBefore);
+
+        Book updated = db.getById(bookId);
+        updated.title = "Renamed On Catalog";
+        updated.genres = new ArrayList<String>();
+        updated.genres.add("Science Fiction");
+        db.upsert(updated);
+
+        c.pause();
+        c.resume();
+
+        assertEquals("Renamed On Catalog",
+                ((TextView) a.findViewById(R.id.detail_title)).getText().toString());
+        String other = ((TextView) a.findViewById(R.id.detail_other)).getText().toString();
+        assertTrue("detail_other must show the normalized genre",
+                other.contains("science fiction"));
+    }
+
+    @Test
+    public void detailFinishesOnResumeWhenTheRowIsGone() {
+        markMetaDone(bookId);
+
+        Intent i = new Intent();
+        i.putExtra(DetailActivity.EXTRA_BOOK_ID, bookId);
+        ActivityController<DetailActivity> c = Robolectric.buildActivity(DetailActivity.class, i);
+        DetailActivity a = c.setup().get();
+
+        db.deleteByPath(bookFile.getAbsolutePath());
+        c.pause();
+        c.resume();
+
+        assertTrue("the detail screen must close when the catalog row is gone", a.isFinishing());
     }
 
     // ------------------------------------------------------------------
