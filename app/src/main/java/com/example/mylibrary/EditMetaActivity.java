@@ -5,6 +5,10 @@ import android.app.ProgressDialog;
 import android.content.Context;
 import android.os.AsyncTask;
 import android.os.Bundle;
+import android.text.Editable;
+import android.text.TextWatcher;
+import android.util.TypedValue;
+import android.view.Gravity;
 import android.view.View;
 import android.widget.Button;
 import android.widget.EditText;
@@ -126,7 +130,11 @@ public class EditMetaActivity extends Activity {
         }
 
         ((Button) findViewById(R.id.btn_add_genre)).setOnClickListener(new View.OnClickListener() {
-            @Override public void onClick(View v) { addGenreField(""); }
+            @Override public void onClick(View v) {
+                // API 19 performClick still invokes the listener on a disabled view.
+                if (!v.isEnabled()) return;
+                addGenreField("");
+            }
         });
         ((Button) findViewById(R.id.btn_save)).setOnClickListener(new View.OnClickListener() {
             @Override public void onClick(View v) { save(); }
@@ -137,23 +145,80 @@ public class EditMetaActivity extends Activity {
     }
 
     private void addGenreField(String value) {
-        EditText et = new EditText(this);
-        et.setLayoutParams(new LinearLayout.LayoutParams(
+        final LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setGravity(Gravity.CENTER_VERTICAL);
+        row.setLayoutParams(new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT));
+
+        final EditText et = new EditText(this);
+        et.setLayoutParams(new LinearLayout.LayoutParams(
+                0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
         et.setInputType(android.text.InputType.TYPE_CLASS_TEXT);
+        et.addTextChangedListener(new TextWatcher() {
+            @Override public void beforeTextChanged(CharSequence s, int start, int count, int after) {}
+            @Override public void onTextChanged(CharSequence s, int start, int before, int count) {}
+            @Override public void afterTextChanged(Editable s) {
+                refreshGenreControls();
+            }
+        });
+
+        TextView clear = new TextView(this);
+        clear.setText("\u2715");
+        clear.setTextSize(TypedValue.COMPLEX_UNIT_SP, 20);
+        clear.setTextColor(0xFF757575);
+        clear.setPadding(12, 4, 12, 4);
+        clear.setContentDescription(getString(R.string.clear_genre));
+        clear.setClickable(true);
+        clear.setFocusable(true);
+        clear.setOnClickListener(new View.OnClickListener() {
+            @Override public void onClick(View v) { onClearGenre(row); }
+        });
+
+        row.addView(et);
+        row.addView(clear);
+        genreContainer.addView(row);
         et.setText(value == null ? "" : value);
-        genreContainer.addView(et);
+        refreshGenreControls();
+    }
+
+    /** One row: clear the field. Several rows: drop this row. */
+    private void onClearGenre(LinearLayout row) {
+        if (genreContainer.getChildCount() <= 1) {
+            ((EditText) row.getChildAt(0)).setText("");
+        } else {
+            genreContainer.removeView(row);
+            refreshGenreControls();
+        }
+    }
+
+    /** Cross is gone only on the single empty row. Add stays off while any row is blank. */
+    private void refreshGenreControls() {
+        int count = genreContainer.getChildCount();
+        boolean anyEmpty = false;
+        for (int i = 0; i < count; i++) {
+            LinearLayout row = (LinearLayout) genreContainer.getChildAt(i);
+            EditText field = (EditText) row.getChildAt(0);
+            View clear = row.getChildAt(1);
+            boolean empty = field.getText().toString().trim().length() == 0;
+            if (empty) anyEmpty = true;
+            if (count == 1 && empty) {
+                clear.setVisibility(View.GONE);
+            } else {
+                clear.setVisibility(View.VISIBLE);
+            }
+        }
+        ((Button) findViewById(R.id.btn_add_genre)).setEnabled(!anyEmpty);
     }
 
     private ArrayList<String> readGenresFromForm() {
         ArrayList<String> raw = new ArrayList<String>();
         for (int i = 0; i < genreContainer.getChildCount(); i++) {
-            View child = genreContainer.getChildAt(i);
-            if (child instanceof EditText) {
-                String t = ((EditText) child).getText().toString().trim();
-                if (t.length() > 0) raw.add(t);
-            }
+            LinearLayout row = (LinearLayout) genreContainer.getChildAt(i);
+            EditText field = (EditText) row.getChildAt(0);
+            String t = field.getText().toString().trim();
+            if (t.length() > 0) raw.add(t);
         }
         return MetaData.normalizeGenres(raw);
     }

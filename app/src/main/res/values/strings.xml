@@ -22,6 +22,7 @@
     <string name="enriching_progress">Fetching metadata… %1$d/%2$d</string>
     <string name="open">Open</string>
     <string name="edit_meta">Edit metadata</string>
+    <string name="clear_genre">Clear genre</string>
     <string name="delete">Remove from library</string>
     <string name="more_options">More options</string>
     <string name="book_menu_details">Details</string>
