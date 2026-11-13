@@ -125,6 +125,60 @@ public class CoverExtractorTest {
         return result.toString();
     }
 
+    private static final String FB2_XML_HEAD = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+            + "<FictionBook xmlns=\"http://www.gribuser.ru/xml/fictionbook/2.0\" "
+            + "xmlns:l=\"http://www.w3.org/1999/xlink\">\n";
+
+    /** FB2 2.1 document order: description, body, then cover {@code <binary>}. */
+    private static String buildSchemaOrderFb2(String title, boolean withCoverpage,
+            String bodySection, String trailingBinaries) {
+        StringBuilder sb = new StringBuilder(256 * 1024);
+        sb.append(FB2_XML_HEAD);
+        sb.append("  <description>\n");
+        sb.append("    <title-info>\n");
+        sb.append("      <title>").append(title).append("</title>\n");
+        sb.append("    </title-info>\n");
+        if (withCoverpage) {
+            sb.append("    <coverpage>\n");
+            sb.append("      <image l:href=\"#coverimg\"/>\n");
+            sb.append("    </coverpage>\n");
+        }
+        sb.append("  </description>\n");
+        sb.append(bodySection);
+        if (trailingBinaries != null) {
+            sb.append(trailingBinaries);
+        }
+        sb.append("</FictionBook>\n");
+        return sb.toString();
+    }
+
+    private static String bodyAtLeastBytes(int minBytes) {
+        String marker = "BODYMARKER";
+        StringBuilder text = new StringBuilder(minBytes + marker.length());
+        text.append(marker);
+        while (text.length() < minBytes) {
+            text.append('x');
+        }
+        return "  <body>\n    <p>" + text.toString() + "</p>\n  </body>\n";
+    }
+
+    private static String smallBodySection() {
+        return "  <body><p>short text without the marker.</p></body>\n";
+    }
+
+    private static void assertHeaderOmitsBodyMarker(byte[] header) throws Exception {
+        assertNotNull(header);
+        String asText = new String(header, "UTF-8");
+        assertTrue("header must stay well below a 200 KB body",
+                header.length < 8 * 1024);
+        assertFalse("header must not contain the body marker",
+                asText.indexOf("BODYMARKER") >= 0);
+    }
+
+    private static void assertNoSubstring(byte[] header, String forbidden) throws Exception {
+        assertFalse(new String(header, "UTF-8").indexOf(forbidden) >= 0);
+    }
+
     // ------------------------------------------------------------------
     // EPUB covers
     // ------------------------------------------------------------------
@@ -312,6 +366,99 @@ public class CoverExtractorTest {
         TestFixtures.writeZip(z, entries);
 
         assertArrayEquals(cover, CoverExtractor.extract(z));
+    }
+
+    /**
+     * XSD order puts {@code <binary>} after {@code body+}: the reader must skip the body,
+     * attach only the cover block, and still decode via {@code coverFromFb2Bytes}.
+     */
+    @Test
+    public void fb2SchemaOrderBinaryAfterLargeBodyExtractsCoverAndSmallHeader() throws Exception {
+        byte[] cover = TestFixtures.coverBytes();
+        String base64 = Base64.getEncoder().encodeToString(cover);
+        String binaries = "  <binary id=\"coverimg\" content-type=\"image/jpeg\">"
+                + base64 + "</binary>\n";
+        String xml = buildSchemaOrderFb2("After Body", true, bodyAtLeastBytes(200 * 1024), binaries);
+        TestFixtures.writeText(fb2, xml);
+
+        assertArrayEquals(cover, CoverExtractor.extract(fb2));
+
+        byte[] header = CoverExtractor.readFb2Header(fb2);
+        assertHeaderOmitsBodyMarker(header);
+        assertArrayEquals(cover, CoverExtractor.coverFromFb2Bytes(header));
+    }
+
+    @Test
+    public void fb2ZipSchemaOrderBinaryAfterLargeBodyExtractsCoverAndSmallEntryBytes() throws Exception {
+        byte[] cover = TestFixtures.coverBytes();
+        String base64 = Base64.getEncoder().encodeToString(cover);
+        String binaries = "  <binary id=\"coverimg\" content-type=\"image/jpeg\">"
+                + base64 + "</binary>\n";
+        String xml = buildSchemaOrderFb2("After Body", true, bodyAtLeastBytes(200 * 1024), binaries);
+        File z = folder.newFile("schema-order.fb2.zip");
+        java.util.Map<String, byte[]> entries = new java.util.LinkedHashMap<String, byte[]>();
+        entries.put("inner.fb2", xml.getBytes("UTF-8"));
+        TestFixtures.writeZip(z, entries);
+
+        assertArrayEquals(cover, CoverExtractor.extract(z));
+
+        java.util.zip.ZipFile zip = new java.util.zip.ZipFile(z);
+        try {
+            byte[] header = CoverExtractor.readFb2EntryBytes(zip);
+            assertHeaderOmitsBodyMarker(header);
+            assertArrayEquals(cover, CoverExtractor.coverFromFb2Bytes(header));
+        } finally {
+            zip.close();
+        }
+    }
+
+    /** No coverpage: reading stops at {@code </description>} regardless of body size. */
+    @Test
+    public void fb2WithoutCoverpageIgnoresBodySizeForHeaderAndExtract() throws Exception {
+        String descOnly = buildSchemaOrderFb2("No Cover", false, smallBodySection(), null);
+        String largeBody = buildSchemaOrderFb2("No Cover", false,
+                bodyAtLeastBytes(200 * 1024), null);
+        File small = folder.newFile("no-cover-small.fb2");
+        File large = folder.newFile("no-cover-large.fb2");
+        TestFixtures.writeText(small, descOnly);
+        TestFixtures.writeText(large, largeBody);
+
+        assertNull(CoverExtractor.extract(small));
+        assertNull(CoverExtractor.extract(large));
+
+        byte[] hSmall = CoverExtractor.readFb2Header(small);
+        byte[] hLarge = CoverExtractor.readFb2Header(large);
+        assertNotNull(hSmall);
+        assertNotNull(hLarge);
+        assertEquals(hSmall.length, hLarge.length);
+        assertNoSubstring(hSmall, "<body");
+        assertNoSubstring(hLarge, "<body");
+        assertNoSubstring(hSmall, "BODYMARKER");
+        assertNoSubstring(hLarge, "BODYMARKER");
+    }
+
+    @Test
+    public void fb2SchemaOrderSkipsForeignBinaryBeforeCoverBinary() throws Exception {
+        byte[] cover = TestFixtures.coverBytes();
+        String coverB64 = Base64.getEncoder().encodeToString(cover);
+        String otherB64 = Base64.getEncoder().encodeToString(new byte[]{1, 2, 3, 4});
+        String binaries = "  <binary id=\"other\" content-type=\"image/png\">" + otherB64
+                + "</binary>\n"
+                + "  <binary id=\"coverimg\" content-type=\"image/jpeg\">" + coverB64
+                + "</binary>\n";
+        String xml = buildSchemaOrderFb2("Foreign First", true,
+                bodyAtLeastBytes(200 * 1024), binaries);
+        TestFixtures.writeText(fb2, xml);
+
+        byte[] extracted = CoverExtractor.extract(fb2);
+        assertNotNull(extracted);
+        assertArrayEquals(cover, extracted);
+        assertFalse(java.util.Arrays.equals(new byte[]{1, 2, 3, 4}, extracted));
+
+        byte[] header = CoverExtractor.readFb2Header(fb2);
+        assertHeaderOmitsBodyMarker(header);
+        assertNoSubstring(header, otherB64);
+        assertArrayEquals(cover, CoverExtractor.coverFromFb2Bytes(header));
     }
 
     @Test

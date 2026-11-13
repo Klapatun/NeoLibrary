@@ -693,6 +693,134 @@ public class MetaEnricherTest {
         assertArrayEquals(TestFixtures.coverBytes(), out.cover);
     }
 
+    private static final String FB2_XML_HEAD = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+            + "<FictionBook xmlns=\"http://www.gribuser.ru/xml/fictionbook/2.0\" "
+            + "xmlns:l=\"http://www.w3.org/1999/xlink\">\n";
+
+    private static String buildSchemaOrderFb2WithCover(String title, int bodyMinBytes) {
+        byte[] cover = TestFixtures.coverBytes();
+        String base64 = Base64.getEncoder().encodeToString(cover);
+        String marker = "BODYMARKER";
+        StringBuilder text = new StringBuilder(bodyMinBytes + marker.length());
+        text.append(marker);
+        while (text.length() < bodyMinBytes) {
+            text.append('x');
+        }
+        StringBuilder sb = new StringBuilder(256 * 1024);
+        sb.append(FB2_XML_HEAD);
+        sb.append("  <description>\n");
+        sb.append("    <title-info>\n");
+        sb.append("      <title>").append(title).append("</title>\n");
+        sb.append("    </title-info>\n");
+        sb.append("    <coverpage><image l:href=\"#coverimg\"/></coverpage>\n");
+        sb.append("  </description>\n");
+        sb.append("  <body><p>").append(text.toString()).append("</p></body>\n");
+        sb.append("  <binary id=\"coverimg\" content-type=\"image/jpeg\">")
+                .append(base64).append("</binary>\n");
+        sb.append("</FictionBook>\n");
+        return sb.toString();
+    }
+
+    private static void writeKeptMetaFb2OversizedCoverBinary(File f) throws Exception {
+        int decoded = CoverExtractor.effectiveCoverLimit() + 1;
+        byte[] payload = new byte[decoded];
+        Arrays.fill(payload, (byte) 'A');
+        String prefix = FB2_XML_HEAD
+                + "  <description>\n"
+                + "    <title-info>\n"
+                + "      <title>Kept</title>\n"
+                + "      <genre>sf</genre>\n"
+                + "    </title-info>\n"
+                + "    <coverpage><image l:href=\"#coverimg\"/></coverpage>\n"
+                + "  </description>\n"
+                + "  <body><p>x</p></body>\n"
+                + "  <binary id=\"coverimg\" content-type=\"image/jpeg\">";
+        byte[] encoded = Base64.getEncoder().encode(payload);
+        payload = null;
+        java.io.FileOutputStream fos = new java.io.FileOutputStream(f);
+        try {
+            fos.write(prefix.getBytes("UTF-8"));
+            fos.write(encoded);
+            encoded = null;
+            fos.write("</binary>\n</FictionBook>\n".getBytes("UTF-8"));
+        } finally {
+            fos.close();
+        }
+    }
+
+    @Test
+    public void parseFb2SinglePassFindsCoverWhenBinaryFollowsLargeBody() throws Exception {
+        File novel = new File(folder.getRoot(), "schema.fb2");
+        TestFixtures.writeText(novel, buildSchemaOrderFb2WithCover("After Body", 200 * 1024));
+
+        MetaEnricher.Parsed out = new MetaEnricher.Parsed();
+        MetaEnricher.parseFb2SinglePass(novel, out);
+
+        assertNotNull(out.meta);
+        assertTrue(out.meta.found);
+        assertEquals("After Body", out.meta.title);
+        assertArrayEquals(TestFixtures.coverBytes(), out.cover);
+    }
+
+    @Test
+    public void parseFb2ZipSinglePassFindsCoverWhenBinaryFollowsLargeBody() throws Exception {
+        String inner = buildSchemaOrderFb2WithCover("After Body", 200 * 1024);
+        Map<String, byte[]> entries = new LinkedHashMap<String, byte[]>();
+        entries.put("inner.fb2", inner.getBytes("UTF-8"));
+        File z = new File(folder.getRoot(), "schema.fb2.zip");
+        TestFixtures.writeZip(z, entries);
+
+        MetaEnricher.Parsed out = new MetaEnricher.Parsed();
+        MetaEnricher.parseFb2ZipSinglePass(z, out);
+
+        assertNotNull(out.meta);
+        assertTrue(out.meta.found);
+        assertEquals("After Body", out.meta.title);
+        assertArrayEquals(TestFixtures.coverBytes(), out.cover);
+    }
+
+    /** Oversized cover payload must not erase description metadata (step 2). */
+    @Test
+    public void parseFb2SinglePassKeepsMetaWhenCoverBinaryExceedsLimit() throws Exception {
+        File novel = new File(folder.getRoot(), "kept-meta.fb2");
+        writeKeptMetaFb2OversizedCoverBinary(novel);
+
+        byte[] header = CoverExtractor.readFb2Header(novel);
+        assertNotNull(header);
+        assertTrue("header must stay near description size, not the oversized base64",
+                header.length < 4 * 1024);
+
+        MetaEnricher.Parsed out = new MetaEnricher.Parsed();
+        MetaEnricher.parseFb2SinglePass(novel, out);
+
+        assertNotNull(out.meta);
+        assertTrue(out.meta.found);
+        assertEquals("Kept", out.meta.title);
+        assertEquals(1, out.meta.genres.size());
+        assertEquals("sf", out.meta.genres.get(0));
+        assertNull(out.cover);
+    }
+
+    @Test
+    public void parseFb2ZipSinglePassKeepsMetaWhenCoverBinaryExceedsLimit() throws Exception {
+        File inner = new File(folder.getRoot(), "kept-inner.fb2");
+        writeKeptMetaFb2OversizedCoverBinary(inner);
+        Map<String, byte[]> entries = new LinkedHashMap<String, byte[]>();
+        entries.put("inner.fb2", TestFixtures.readAll(inner));
+        File z = new File(folder.getRoot(), "kept-meta.fb2.zip");
+        TestFixtures.writeZip(z, entries);
+
+        MetaEnricher.Parsed out = new MetaEnricher.Parsed();
+        MetaEnricher.parseFb2ZipSinglePass(z, out);
+
+        assertNotNull(out.meta);
+        assertTrue(out.meta.found);
+        assertEquals("Kept", out.meta.title);
+        assertEquals(1, out.meta.genres.size());
+        assertEquals("sf", out.meta.genres.get(0));
+        assertNull(out.cover);
+    }
+
     /** FB2ZIP single-pass: the inner FB2's own {@code <binary>} block is the cover
      *  source (the same path as a plain FB2), everything in one ZipFile session. */
     @Test
