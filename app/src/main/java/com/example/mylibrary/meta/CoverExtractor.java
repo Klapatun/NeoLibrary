@@ -300,7 +300,8 @@ public final class CoverExtractor {
      *
      * <p>Bounded by {@link #effectiveCoverLimit()} (at most {@link #FB2_HEADER_CAP}).
      * A description longer than that returns {@code null}; no partial description
-     * is returned. The same bound applies to the buffered cover element.</p>
+     * is returned. A cover image over that limit is left out of the result, and
+     * the description bytes are still returned.</p>
      *
      * <p>Package-private so the single-pass enricher (and the tests) share the reader.</p>
      */
@@ -320,7 +321,8 @@ public final class CoverExtractor {
         int size = 0;
         // Bytes are kept only through </description>. The overlap covers a marker
         // split across the 8 KB chunk seam. A cover id then keeps one <binary>
-        // element; body bytes are discarded and do not count toward the limit.
+        // element when its decoded bytes fit the cover limit. Body bytes are
+        // discarded and do not count toward that limit.
         int n;
         while ((n = in.read(chunk)) > 0) {
             if (size + n > cap) {
@@ -387,6 +389,7 @@ public final class CoverExtractor {
         byte[] idDouble = ascii("id=\"" + binaryId + "\"");
         byte[] idSingle = ascii("id='" + binaryId + "'");
         int overlap = discardOverlap();
+        int rawLimit = coverElementRawLimit(cap);
         byte[] hold = new byte[FB2_READ_CHUNK + overlap];
         int holdLen = 0;
         if (tail != null && tail.length > 0) {
@@ -399,6 +402,7 @@ public final class CoverExtractor {
         int mode = 0;
         byte[] element = null;
         int elementLen = 0;
+        int binaryScan = 0;
         while (true) {
             boolean needRead = false;
             while (!needRead) {
@@ -422,13 +426,9 @@ public final class CoverExtractor {
                             mode = 1;
                         } else {
                             int piece = holdLen - at;
-                            if (overCap(desc.length, piece, cap)) {
-                                Log.w(TAG, "FB2 header exceeds cover limit; giving up");
-                                return null;
-                            }
-                            int room = cap - desc.length;
+                            if ((long) piece > (long) rawLimit) return desc;
                             int alloc = piece < 256 ? 256 : piece;
-                            if (alloc > room) alloc = room;
+                            if (alloc > rawLimit) alloc = rawLimit;
                             element = new byte[alloc];
                             System.arraycopy(hold, at, element, 0, piece);
                             elementLen = piece;
@@ -446,26 +446,24 @@ public final class CoverExtractor {
                         mode = 0;
                     }
                 } else {
-                    int close = indexOf(element, 0, elementLen, TAG_BINARY_CLOSE);
+                    int close = indexOf(element, binaryScan, elementLen, TAG_BINARY_CLOSE);
                     if (close >= 0) {
                         return joinCoverElement(desc, element,
-                                close + TAG_BINARY_CLOSE.length, cap);
+                                close + TAG_BINARY_CLOSE.length);
                     }
+                    binaryScan = elementLen - (TAG_BINARY_CLOSE.length - 1);
+                    if (binaryScan < 0) binaryScan = 0;
                     needRead = true;
                 }
             }
             int n = in.read(chunk);
             if (n <= 0) return desc;
             if (mode == 2) {
-                if (overCap(desc.length, elementLen + n, cap)) {
-                    Log.w(TAG, "FB2 header exceeds cover limit; giving up");
-                    return null;
-                }
-                int room = cap - desc.length;
+                if ((long) elementLen + (long) n > (long) rawLimit) return desc;
                 if (elementLen + n > element.length) {
                     int next = element.length * 2;
                     if (next < elementLen + n) next = elementLen + n;
-                    if (next > room) next = room;
+                    if (next > rawLimit) next = rawLimit;
                     element = Arrays.copyOf(element, next);
                 }
                 System.arraycopy(chunk, 0, element, elementLen, n);
@@ -478,21 +476,29 @@ public final class CoverExtractor {
         }
     }
 
-    /** Description plus the cover element, or {@code null} when the two together
-     *  exceed the cover limit. {@code keep} ends at {@code </binary>}. */
-    private static byte[] joinCoverElement(byte[] desc, byte[] element, int keep, int cap) {
-        if (overCap(desc.length, keep, cap)) {
-            Log.w(TAG, "FB2 header exceeds cover limit; giving up");
-            return null;
-        }
+    /** Description plus the cover element when its base64 decodes within
+     *  {@link #effectiveCoverLimit()}. A payload over that limit, or an empty
+     *  one, is dropped and the description is returned alone. {@code keep}
+     *  ends at {@code </binary>}. */
+    private static byte[] joinCoverElement(byte[] desc, byte[] element, int keep) {
+        int gt = indexOfByte(element, 0, keep, '>');
+        int payloadEnd = keep - TAG_BINARY_CLOSE.length;
+        if (gt < 0 || payloadEnd <= gt) return desc;
+        byte[] decoded = decodeBase64(element, gt + 1, payloadEnd - gt - 1);
+        if (decoded == null || decoded.length == 0) return desc;
         byte[] out = new byte[desc.length + keep];
         System.arraycopy(desc, 0, out, 0, desc.length);
         System.arraycopy(element, 0, out, desc.length, keep);
         return out;
     }
 
-    private static boolean overCap(int base, int extra, int cap) {
-        return (long) base + (long) extra > (long) cap;
+    /** Raw-byte ceiling for one cover {@code <binary>} element: base64 is larger
+     *  than the decoded image, plus slack for line breaks and the tags. Past this
+     *  the decoded image cannot fit {@link #effectiveCoverLimit()}. */
+    private static int coverElementRawLimit(int cap) {
+        long raw = ((long) cap * 4L) / 3L + ((long) cap / 16L) + 65536L;
+        if (raw > Integer.MAX_VALUE - 8) return Integer.MAX_VALUE - 8;
+        return (int) raw;
     }
 
     private static byte[] ensureCapacity(byte[] buf, int needed) {

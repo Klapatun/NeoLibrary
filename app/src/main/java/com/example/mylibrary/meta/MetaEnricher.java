@@ -220,6 +220,8 @@ public final class MetaEnricher {
      * FB2, one pass: {@link CoverExtractor#readFb2Header} yields both the description
      * (metadata) and the cover {@code <binary>} bytes. Book text is not kept in that
      * buffer; when a cover id is present the body is read past and discarded.
+     * An image over the cover limit is omitted and does not clear this description.
+     * A null buffer remains only when the description itself does not fit.
      */
     static void parseFb2SinglePass(File file, Parsed out) {
         try {
@@ -237,6 +239,8 @@ public final class MetaEnricher {
      * FB2ZIP, one session: a single {@link ZipFile} open. The inner {@code .fb2}
      * is inflated once; metadata and the cover come from those bytes. A loose image
      * entry is read only when the inner document's own cover was not found.
+     * An image over the cover limit is omitted and does not clear this description.
+     * A null buffer remains only when the description itself does not fit.
      */
     static void parseFb2ZipSinglePass(File file, Parsed out) {
         ZipFile zip = null;
