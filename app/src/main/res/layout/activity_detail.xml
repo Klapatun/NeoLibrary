@@ -62,6 +62,16 @@
             android:layout_marginTop="4dp" />
 
         <TextView
+            android:id="@+id/detail_missing"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:visibility="gone"
+            android:text="@string/file_not_found"
+            android:textSize="13sp"
+            android:textColor="#E74C3C"
+            android:layout_marginTop="8dp" />
+
+        <TextView
             android:id="@+id/detail_other"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"

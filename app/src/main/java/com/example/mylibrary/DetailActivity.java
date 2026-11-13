@@ -58,6 +58,7 @@ public class DetailActivity extends Activity {
 
         ((TextView) findViewById(R.id.detail_file)).setText(book.path);
         showBook(book);
+        updateMissingMark(book);
 
         // Full-format cover (no circular crop) with the letter badge as fallback; same
         // mechanism as the list rows, square variant.
@@ -111,6 +112,7 @@ public class DetailActivity extends Activity {
         }
         book = fresh;
         showBook(book);
+        updateMissingMark(book);
     }
 
     private void openBook() {
@@ -171,6 +173,20 @@ public class DetailActivity extends Activity {
         ((TextView) findViewById(R.id.detail_other)).setText(other.toString());
     }
 
+    /** Shows {@code detail_missing} only when {@link FileLocator#locateWork} is
+     *  {@link LocateResult#ABSENT}. Ready, downloading, and failed stay gone.
+     *  Does not write the catalog or the cover cache. */
+    private void updateMissingMark(Book b) {
+        if (b == null || isFinishing()) return;
+        LocateResult located = FileLocator.locateWork(db, b.id);
+        View missing = findViewById(R.id.detail_missing);
+        if (located.status == LocateResult.ABSENT) {
+            missing.setVisibility(View.VISIBLE);
+        } else {
+            missing.setVisibility(View.GONE);
+        }
+    }
+
     /** The fast-path enrichment task. A STATIC nested class on purpose: an anonymous
      *  inner class would carry a synthetic strong reference to the Activity (javac
      *  emits it for every anonymous class inside an instance method, used or not),
@@ -199,6 +215,7 @@ public class DetailActivity extends Activity {
             if (a == null || a.isFinishing() || fresh == null) return;
             a.book = fresh;
             a.showBook(fresh);
+            a.updateMissingMark(fresh);
         }
     }
 
