@@ -30,6 +30,10 @@ import android.widget.EditText;
 import android.widget.GridView;
 import android.widget.ImageButton;
 import android.widget.ListView;
+import android.view.LayoutInflater;
+import android.widget.LinearLayout;
+import android.widget.TabHost;
+import android.widget.TabWidget;
 import android.widget.TextView;
 
 import com.example.mylibrary.db.BookDatabase;
@@ -58,6 +62,7 @@ import org.robolectric.shadows.ShadowToast;
 
 import java.io.File;
 import java.io.FileInputStream;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashSet;
 import java.util.Set;
@@ -76,6 +81,12 @@ import java.util.Set;
  * <p>The SAF import is driven by calling {@code onActivityResult} directly and feeding
  * the ContentResolver a fake cursor (display name) + input stream, exactly what a
  * picked document would yield. Run at {@code sdk = 19}.</p>
+ *
+ * <p>The filter-tab draft dots ({@code filterTabDotsFollowTheDraftAndTheTabClear},
+ * {@code filterTabDotSurvivesSearchAndSelectAll},
+ * {@code filterTabDotMatchesCommittedStateOnReopen},
+ * {@code genreTabDotTracksOnlyTheGenreDraft}) pin the tab-title indicator to the
+ * per-tab draft; the funnel icon still follows committed {@code FilterState.isActive()}.</p>
  */
 @RunWith(RobolectricTestRunner.class)
 @Config(sdk = 19)
@@ -1257,6 +1268,391 @@ public class MainActivityTest {
         assertEquals(View.VISIBLE, formats.getVisibility());
         assertEquals(View.GONE, genres.getVisibility());
     }
+
+  // ------------------------------------------------------------------
+  // filter tab draft dots (feature_filter_ui_fixes step 1)
+  // ------------------------------------------------------------------
+
+  /** The TabHost that owns {@code R.id.formats_tab} in the filter dialog. */
+  private static TabHost findFilterTabHost(android.app.Dialog d) {
+    View page = d.findViewById(R.id.formats_tab);
+    assertNotNull(page);
+    View v = page;
+    while (v != null && !(v instanceof TabHost)) {
+      android.view.ViewParent parent = v.getParent();
+      v = parent instanceof View ? (View) parent : null;
+    }
+    assertNotNull("the filter dialog must contain a TabHost", v);
+    return (TabHost) v;
+  }
+
+  /**
+   * Robolectric does not always materialize {@code TabHost} tab indicators; the
+   * contract under test uses {@code TabWidget.getChildAt(i)} — add minimal
+   * indicators when the strip is empty so assertions hit the same views.
+   */
+  private static void ensureFilterTabIndicators(MainActivity a, android.app.Dialog d) {
+    TabWidget tabs = d.findViewById(android.R.id.tabs);
+    assertNotNull(tabs);
+    if (tabs.getChildCount() >= 2) {
+      return;
+    }
+    Context ctx = RuntimeEnvironment.getApplication();
+    LayoutInflater inflater = LayoutInflater.from(ctx);
+    int layout = ctx.getResources().getIdentifier(
+            "tab_indicator_holo", "layout", "android");
+    if (layout == 0) {
+      layout = ctx.getResources().getIdentifier("tab_indicator", "layout", "android");
+    }
+    while (tabs.getChildCount() < 2) {
+      int idx = tabs.getChildCount();
+      View tab;
+      if (layout != 0) {
+        tab = inflater.inflate(layout, tabs, false);
+        TextView title = (TextView) tab.findViewById(android.R.id.title);
+        assertNotNull(title);
+        title.setText(idx == 0 ? a.getString(R.string.filter_tab_formats)
+                : a.getString(R.string.filter_tab_genres));
+      } else {
+        tab = new LinearLayout(ctx);
+        TextView title = new TextView(ctx);
+        title.setId(android.R.id.title);
+        title.setText(idx == 0 ? a.getString(R.string.filter_tab_formats)
+                : a.getString(R.string.filter_tab_genres));
+        ((LinearLayout) tab).addView(title);
+      }
+      tabs.addView(tab);
+    }
+  }
+
+  /** Tab label {@code TextView} for tab index 0 (Formats) or 1 (Genres). */
+  private static TextView filterTabTitle(MainActivity a, android.app.Dialog d, int tabIndex)
+          throws InterruptedException {
+    ensureFilterTabIndicators(a, d);
+    TabWidget tabs = d.findViewById(android.R.id.tabs);
+    assertNotNull(tabs);
+    long deadline = System.currentTimeMillis() + 5000;
+    while (System.currentTimeMillis() < deadline
+            && tabs.getChildCount() <= tabIndex) {
+      shadowOf(Looper.getMainLooper()).idle();
+      Thread.sleep(10);
+    }
+    View tabChild = tabs.getChildAt(tabIndex);
+    assertNotNull("tab child " + tabIndex, tabChild);
+    TextView title = (TextView) tabChild.findViewById(android.R.id.title);
+    assertNotNull("tab " + tabIndex + " must have a title", title);
+    return title;
+  }
+
+  /** The page-clear cross ({@code \u2715}) inside a filter tab page. */
+  private static TextView findClearCrossInTab(View tabPage) {
+    if (tabPage instanceof TextView) {
+      TextView tv = (TextView) tabPage;
+      if ("\u2715".equals(tv.getText().toString())) {
+        return tv;
+      }
+    }
+    if (tabPage instanceof ViewGroup) {
+      ViewGroup g = (ViewGroup) tabPage;
+      for (int i = 0; i < g.getChildCount(); i++) {
+        TextView found = findClearCrossInTab(g.getChildAt(i));
+        if (found != null) {
+          return found;
+        }
+      }
+    }
+    return null;
+  }
+
+  /** Genre rows live in the {@code ListView} inside {@code R.id.genres_tab}. */
+  private static ListView findGenreListInDialog(android.app.Dialog d) {
+    View genresPage = d.findViewById(R.id.genres_tab);
+    assertNotNull(genresPage);
+    return findViewByType(genresPage, ListView.class);
+  }
+
+  @Test
+  public void filterTabDotsFollowTheDraftAndTheTabClear() throws Exception {
+    TestFixtures.writeText(new File(storage, "story_a.txt"), "alpha\n");
+    TestFixtures.writeText(new File(storage, "story_b.txt"), "beta\n");
+
+    MainActivity a = launchMain();
+    awaitCatalogSize(2);
+
+    GridView grid = a.findViewById(R.id.book_grid);
+    awaitAdapterCount(grid, 2);
+
+    a.findViewById(R.id.btn_filter).performClick();
+    android.app.Dialog d = ShadowDialog.getLatestDialog();
+    assertNotNull(d);
+
+    TextView formatsTitle = filterTabTitle(a, d, 0);
+    TextView genresTitle = filterTabTitle(a, d, 1);
+    assertNull(formatsTitle.getCompoundDrawables()[2]);
+    assertNull(genresTitle.getCompoundDrawables()[2]);
+
+    AbsListView list = findDialogList(d);
+    clickDialogItem(list, formatPos("TXT"));
+    assertNotNull("a checked format must light the Formats tab dot",
+        formatsTitle.getCompoundDrawables()[2]);
+    assertNull(genresTitle.getCompoundDrawables()[2]);
+
+  View formatsPage = d.findViewById(R.id.formats_tab);
+  TextView clear = findClearCrossInTab(formatsPage);
+  assertNotNull(clear);
+  clear.performClick();
+  shadowOf(Looper.getMainLooper()).idle();
+  assertNull("the page clear must turn off the Formats tab dot",
+      formatsTitle.getCompoundDrawables()[2]);
+
+  shadowOf(d).clickOn(android.R.id.button2);
+  shadowOf(Looper.getMainLooper()).idle();
+
+  assertFalse(a.getFilterState().isActive());
+  assertTrue(a.getFilterState().selectedFormats.isEmpty());
+
+  a.findViewById(R.id.btn_filter).performClick();
+  d = ShadowDialog.getLatestDialog();
+  formatsTitle = filterTabTitle(a, d, 0);
+  genresTitle = filterTabTitle(a, d, 1);
+  assertNull(formatsTitle.getCompoundDrawables()[2]);
+  assertNull(genresTitle.getCompoundDrawables()[2]);
+  shadowOf(d).clickOn(android.R.id.button2);
+  shadowOf(Looper.getMainLooper()).idle();
+  }
+
+  @Test
+  public void filterTabDotSurvivesSearchAndSelectAll() throws Exception {
+    TestFixtures.writeText(new File(storage, "story_a.txt"), "alpha\n");
+    TestFixtures.writeText(new File(storage, "story_b.txt"), "beta\n");
+    TestFixtures.writeBytes(new File(storage, "manual.pdf"), new byte[]{0x25, 0x25});
+
+    MainActivity a = launchMain();
+    awaitCatalogSize(3);
+
+    GridView grid = a.findViewById(R.id.book_grid);
+    awaitAdapterCount(grid, 3);
+
+    a.findViewById(R.id.btn_filter).performClick();
+    android.app.Dialog d = ShadowDialog.getLatestDialog();
+    assertNotNull(d);
+
+    AbsListView list = findDialogList(d);
+    clickDialogItem(list, formatPos("TXT"));
+    TextView formatsTitle = filterTabTitle(a, d, 0);
+    assertNotNull(formatsTitle.getCompoundDrawables()[2]);
+
+    EditText search = findDialogSearchEditText(d);
+    assertNotNull(search);
+    search.setText("__no_such_format_in_all__");
+    shadowOf(Looper.getMainLooper()).idle();
+    assertNotNull("search must not change the Formats tab dot",
+        formatsTitle.getCompoundDrawables()[2]);
+
+    search.setText("");
+    shadowOf(Looper.getMainLooper()).idle();
+    assertNotNull(formatsTitle.getCompoundDrawables()[2]);
+
+    CheckBox selectAll = findDialogSelectAllCheckBox(d);
+    assertNotNull(selectAll);
+    selectAll.performClick();
+    shadowOf(Looper.getMainLooper()).idle();
+    assertNotNull("Select all must keep the Formats tab dot on",
+        formatsTitle.getCompoundDrawables()[2]);
+
+    selectAll.performClick();
+    shadowOf(Looper.getMainLooper()).idle();
+    assertNull("Deselect all must turn the Formats tab dot off",
+        formatsTitle.getCompoundDrawables()[2]);
+
+    shadowOf(d).clickOn(android.R.id.button2);
+    shadowOf(Looper.getMainLooper()).idle();
+    assertFalse(a.getFilterState().isActive());
+  }
+
+  @Test
+  public void filterTabDotMatchesCommittedStateOnReopen() throws Exception {
+    TestFixtures.writeText(new File(storage, "story_a.txt"), "alpha\n");
+    TestFixtures.writeText(new File(storage, "story_b.txt"), "beta\n");
+    TestFixtures.writeBytes(new File(storage, "manual.pdf"), new byte[]{0x25, 0x25});
+
+    MainActivity a = launchMain();
+    awaitCatalogSize(3);
+
+    GridView grid = a.findViewById(R.id.book_grid);
+    awaitAdapterCount(grid, 3);
+
+    a.findViewById(R.id.btn_filter).performClick();
+    android.app.Dialog d = ShadowDialog.getLatestDialog();
+    AbsListView list = findDialogList(d);
+    clickDialogItem(list, formatPos("TXT"));
+    shadowOf(d).clickOn(android.R.id.button1);
+    shadowOf(Looper.getMainLooper()).idle();
+    final AbsListView gridRef = grid;
+    awaitCondition("the TXT filter to apply", new Cond() {
+      public boolean holds() {
+        return adapterHasCount(gridRef, 2);
+      }
+    });
+    assertTrue(a.getFilterState().isActive());
+
+    a.findViewById(R.id.btn_filter).performClick();
+    d = ShadowDialog.getLatestDialog();
+    TextView formatsTitle = filterTabTitle(a, d, 0);
+    TextView genresTitle = filterTabTitle(a, d, 1);
+    assertNotNull(formatsTitle.getCompoundDrawables()[2]);
+    assertNull(genresTitle.getCompoundDrawables()[2]);
+    assertEquals(a.getString(R.string.filter_tab_formats),
+        formatsTitle.getText().toString());
+    assertEquals(a.getString(R.string.filter_tab_genres),
+        genresTitle.getText().toString());
+
+    list = findDialogList(d);
+    clickDialogItem(list, formatPos("TXT"));
+    shadowOf(d).clickOn(android.R.id.button1);
+    shadowOf(Looper.getMainLooper()).idle();
+    awaitCondition("the selection to clear", new Cond() {
+      public boolean holds() {
+        return adapterHasCount(gridRef, 3);
+      }
+    });
+
+    a.findViewById(R.id.btn_filter).performClick();
+    d = ShadowDialog.getLatestDialog();
+    formatsTitle = filterTabTitle(a, d, 0);
+    genresTitle = filterTabTitle(a, d, 1);
+    assertNull(formatsTitle.getCompoundDrawables()[2]);
+    assertNull(genresTitle.getCompoundDrawables()[2]);
+    shadowOf(d).clickOn(android.R.id.button2);
+    shadowOf(Looper.getMainLooper()).idle();
+    assertFalse(a.getFilterState().isActive());
+  }
+
+  @Test
+  public void genreTabDotTracksOnlyTheGenreDraft() throws Exception {
+    TestFixtures.writeText(new File(storage, "story_a.txt"), "alpha\n");
+    TestFixtures.writeText(new File(storage, "story_b.txt"), "beta\n");
+
+    MainActivity a = launchMain();
+    awaitCatalogSize(2);
+
+    GridView grid = a.findViewById(R.id.book_grid);
+    awaitAdapterCount(grid, 2);
+
+    final MainActivity act = a;
+    final BookDatabase dbLocal = db;
+    awaitCondition("stage-2 to finish", new Cond() {
+      public boolean holds() {
+        return dbLocal.needMeta().isEmpty()
+            && act.findViewById(R.id.enrich_bar).getVisibility() == View.GONE;
+      }
+    });
+
+    Book b = db.all(null).get(0);
+    b.genres = new ArrayList<String>();
+    b.genres.add("Prose");
+    db.upsert(b);
+
+    a.findViewById(R.id.btn_filter).performClick();
+    android.app.Dialog d = ShadowDialog.getLatestDialog();
+    assertNotNull(d);
+
+    ensureFilterTabIndicators(a, d);
+    TabWidget tabWidget = d.findViewById(android.R.id.tabs);
+    assertEquals(2, tabWidget.getChildCount());
+
+    TextView formatsTitle = filterTabTitle(a, d, 0);
+    TextView genresTitle = filterTabTitle(a, d, 1);
+    assertNull(formatsTitle.getCompoundDrawables()[2]);
+    assertNull(genresTitle.getCompoundDrawables()[2]);
+
+    TabHost tabHost = findFilterTabHost(d);
+    tabHost.setCurrentTab(1);
+    shadowOf(Looper.getMainLooper()).idle();
+    d.findViewById(R.id.genres_tab).setVisibility(View.VISIBLE);
+    d.findViewById(R.id.formats_tab).setVisibility(View.GONE);
+    shadowOf(Looper.getMainLooper()).idle();
+
+    ListView genreList = findGenreListInDialog(d);
+    assertNotNull(genreList);
+    assertEquals(1, genreList.getAdapter().getCount());
+    clickDialogItem(genreList, 0);
+
+    assertNull(formatsTitle.getCompoundDrawables()[2]);
+    assertNotNull(genresTitle.getCompoundDrawables()[2]);
+
+    TextView genreClear = findClearCrossInTab(d.findViewById(R.id.genres_tab));
+    assertNotNull(genreClear);
+    genreClear.performClick();
+    shadowOf(Looper.getMainLooper()).idle();
+    assertNull(genresTitle.getCompoundDrawables()[2]);
+
+    shadowOf(d).clickOn(android.R.id.button2);
+    shadowOf(Looper.getMainLooper()).idle();
+    assertTrue(a.getFilterState().selectedGenres.isEmpty());
+
+    a.findViewById(R.id.btn_filter).performClick();
+    d = ShadowDialog.getLatestDialog();
+    AbsListView list = findDialogList(d);
+    clickDialogItem(list, formatPos("TXT"));
+    shadowOf(d).clickOn(android.R.id.button1);
+    shadowOf(Looper.getMainLooper()).idle();
+    final AbsListView gridRef = grid;
+    awaitCondition("the TXT filter to apply", new Cond() {
+      public boolean holds() {
+        return adapterHasCount(gridRef, 2);
+      }
+    });
+
+    a.findViewById(R.id.btn_menu).performClick();
+    a.getLastHeaderMenu().getMenu().performIdentifierAction(R.id.main_menu_recent, 0);
+    awaitCondition("the recent view to apply", new Cond() {
+      public boolean holds() {
+        return adapterHasCount(gridRef, 0);
+      }
+    });
+
+    a.findViewById(R.id.btn_filter).performClick();
+    d = ShadowDialog.getLatestDialog();
+    formatsTitle = filterTabTitle(a, d, 0);
+    assertNotNull("formats dot must follow the draft, not recentView alone",
+        formatsTitle.getCompoundDrawables()[2]);
+    shadowOf(d).clickOn(android.R.id.button2);
+    shadowOf(Looper.getMainLooper()).idle();
+
+    a.findViewById(R.id.btn_filter).performClick();
+    d = ShadowDialog.getLatestDialog();
+    list = findDialogList(d);
+    list.setSelection(formatPos("TXT"));
+    shadowOf(Looper.getMainLooper()).idle();
+    clickDialogItem(list, formatPos("TXT"));
+    shadowOf(d).clickOn(android.R.id.button1);
+    shadowOf(Looper.getMainLooper()).idle();
+    awaitCondition("the TXT filter to clear", new Cond() {
+      public boolean holds() {
+        return adapterHasCount(gridRef, 2);
+      }
+    });
+    assertFalse(a.getFilterState().isActive());
+
+    a.findViewById(R.id.btn_menu).performClick();
+    a.getLastHeaderMenu().getMenu().performIdentifierAction(R.id.main_menu_recent, 0);
+    awaitCondition("the recent view to apply again", new Cond() {
+      public boolean holds() {
+        return adapterHasCount(gridRef, 0);
+      }
+    });
+    assertTrue(a.getFilterState().recentView);
+
+    a.findViewById(R.id.btn_filter).performClick();
+    d = ShadowDialog.getLatestDialog();
+    formatsTitle = filterTabTitle(a, d, 0);
+    genresTitle = filterTabTitle(a, d, 1);
+    assertNull(formatsTitle.getCompoundDrawables()[2]);
+    assertNull(genresTitle.getCompoundDrawables()[2]);
+    shadowOf(d).clickOn(android.R.id.button2);
+    shadowOf(Looper.getMainLooper()).idle();
+  }
 
     /** The filter dialog's "Select all" checkbox toggles all format checkboxes.
      *  On empty state it shows "Select all" (unchecked). Checking it selects all

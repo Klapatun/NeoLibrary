@@ -708,6 +708,14 @@ public class MainActivity extends Activity
         tabHost.addTab(tabHost.newTabSpec("genres")
                 .setIndicator(getString(R.string.filter_tab_genres))
                 .setContent(R.id.genres_tab));
+        // Not getTabWidget(): its shadow looks up android.R.id.tabs on the
+        // Activity, and this strip lives in the dialog. On a device addTab
+        // already installed the holo title; the fallback label only fills a
+        // strip that addTab left empty.
+        formatsTab.bindAppliedMarker(ensureFilterTabLabel(
+                tabs, 0, R.string.filter_tab_formats));
+        genreTab.bindAppliedMarker(ensureFilterTabLabel(
+                tabs, 1, R.string.filter_tab_genres));
         // A re-open lands on the Genres tab when the draft carries a genre
         // selection (the plan's step 8); otherwise on Formats (already
         // selected by the first addTab).
@@ -755,6 +763,29 @@ public class MainActivity extends Activity
                     }
                 })
                 .show();
+    }
+
+    /** Tab label at {@code index}. Reuses the holo title when {@code addTab}
+     *  already put one there; otherwise installs a plain label (a child with
+     *  no title at that index is replaced). */
+    private TextView ensureFilterTabLabel(TabWidget tabs, int index, int labelRes) {
+        if (index < tabs.getChildCount()) {
+            TextView existing = (TextView) tabs.getChildAt(index)
+                    .findViewById(android.R.id.title);
+            if (existing != null) {
+                return existing;
+            }
+            tabs.removeViewAt(index);
+        }
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setGravity(Gravity.CENTER_VERTICAL);
+        TextView title = new TextView(this);
+        title.setId(android.R.id.title);
+        title.setText(labelRes);
+        row.addView(title);
+        tabs.addView(row, index);
+        return title;
     }
 
     /** Re-applies the current filter state to the catalog view: restarts the
@@ -1267,6 +1298,10 @@ public class MainActivity extends Activity
         /** True while the stage-2 worker runs (the genres tab): the tab is
          *  locked (see the class javadoc). */
         boolean loading;
+        /** The framework tab label. Null until {@link #bindAppliedMarker}
+         *  (the constructor rebuilds before the TabWidget exists). The draft
+         *  dot is this view's right compound drawable. */
+        TextView appliedMarker;
 
         FilterTab(Context context, String[] all, int searchHintRes, int pageId) {
             this.all = all;
@@ -1420,7 +1455,11 @@ public class MainActivity extends Activity
         }
 
         /** Refreshes the select-all label and the clear button's visibility to
-         *  match the current checked state. */
+         *  match the current checked state. The only place the tab-label dot
+         *  turns on or off: on while this tab's draft has any check, off
+         *  otherwise. A null marker (before {@link #bindAppliedMarker}) leaves
+         *  the label untouched. {@code setLoading} does not call this and does
+         *  not hide the dot. */
         void updateSelectAllState() {
             boolean allChecked = all.length > 0;
             boolean anyChecked = false;
@@ -1435,6 +1474,25 @@ public class MainActivity extends Activity
             selectAll.setText(allChecked && anyChecked
                     ? R.string.filter_deselect_all : R.string.filter_select_all);
             clear.setVisibility(anyChecked ? View.VISIBLE : View.GONE);
+            if (appliedMarker == null) {
+                return;
+            }
+            if (anyChecked) {
+                appliedMarker.setCompoundDrawablesWithIntrinsicBounds(
+                        0, 0, R.drawable.filter_tab_applied, 0);
+                int pad = (int) TypedValue.applyDimension(
+                        TypedValue.COMPLEX_UNIT_DIP, 6f,
+                        appliedMarker.getResources().getDisplayMetrics());
+                appliedMarker.setCompoundDrawablePadding(pad);
+            } else {
+                appliedMarker.setCompoundDrawablesWithIntrinsicBounds(0, 0, 0, 0);
+            }
+        }
+
+        /** Remembers the framework tab label and paints the draft dot at once. */
+        void bindAppliedMarker(TextView title) {
+            appliedMarker = title;
+            updateSelectAllState();
         }
 
         /** Rebuilds the vocabulary in place (the dynamic genre reference: a
