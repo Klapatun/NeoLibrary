@@ -262,4 +262,123 @@ public class LibraryScannerTest {
             throw new AssertionError(e);
         }
     }
+
+    @Test
+    public void scanDetailedSkipsAbsolutePathsInSkipSet() throws Exception {
+        File pairRoot = folder.newFolder("pair");
+        File skipped = new File(pairRoot, "skip-me.txt");
+        File found = new File(pairRoot, "keep-me.txt");
+        write(skipped, "skip\n");
+        write(found, "keep\n");
+
+        Set<String> skip = new HashSet<String>();
+        skip.add(skipped.getAbsolutePath());
+        final List<String> visited = new ArrayList<String>();
+        LibraryScanner.ScanResult result = LibraryScanner.scanDetailed(
+                Arrays.asList(pairRoot), new LibraryScanner.Progress() {
+                    @Override
+                    public void onScan(String path) {
+                        visited.add(path);
+                    }
+                }, skip);
+
+        assertEquals(1, result.books.size());
+        assertEquals(found.getAbsolutePath(), result.books.get(0).path);
+        assertFalse(visited.contains(skipped.getAbsolutePath()));
+    }
+
+    @Test
+    public void scanDetailedNullAndEmptySkipSetFindBothFiles() throws Exception {
+        File pairRoot = folder.newFolder("both");
+        File one = new File(pairRoot, "one.txt");
+        File two = new File(pairRoot, "two.txt");
+        write(one, "a\n");
+        write(two, "b\n");
+
+        LibraryScanner.ScanResult withNull = LibraryScanner.scanDetailed(
+                Arrays.asList(pairRoot), null, null);
+        assertEquals(2, withNull.books.size());
+
+        LibraryScanner.ScanResult withEmpty = LibraryScanner.scanDetailed(
+                Arrays.asList(pairRoot), null, new HashSet<String>());
+        assertEquals(2, withEmpty.books.size());
+    }
+
+    @Test
+    public void scanSingleStillReturnsBookOnSkippedPath() throws Exception {
+        File solo = new File(folder.newFolder("solo"), "alone.txt");
+        write(solo, "solo\n");
+        Book b = LibraryScanner.scanSingle(solo);
+        assertNotNull(b);
+        assertEquals("TXT", b.format);
+    }
+
+    @Test
+    public void scanDetailedSkipDoesNotHideSiblingInSameDirectory() throws Exception {
+        File pairRoot = folder.newFolder("siblings");
+        File skipped = new File(pairRoot, "hidden.txt");
+        File sibling = new File(pairRoot, "visible.txt");
+        write(skipped, "h\n");
+        write(sibling, "v\n");
+
+        Set<String> skip = new HashSet<String>();
+        skip.add(skipped.getAbsolutePath());
+        LibraryScanner.ScanResult result = LibraryScanner.scanDetailed(
+                Arrays.asList(pairRoot), null, skip);
+
+        assertEquals(1, result.books.size());
+        assertEquals(sibling.getAbsolutePath(), result.books.get(0).path);
+    }
+
+    @Test
+    public void scanDetailedSkipsAdoptedPathWhenOnlyTheCanonicalFormMatches() throws Exception {
+        File pairRoot = folder.newFolder("canon");
+        new File(pairRoot, "sub").mkdirs();
+        File book = new File(pairRoot, "skip-me.txt");
+        File kept = new File(pairRoot, "keep-me.txt");
+        write(book, "skip\n");
+        write(kept, "keep\n");
+
+        // Absolute form differs from the path listFiles reports; canonical does not.
+        String viaDotDot = new File(pairRoot, "sub/../skip-me.txt").getAbsolutePath();
+        assertFalse(viaDotDot.equals(book.getAbsolutePath()));
+        Set<String> skip = new HashSet<String>();
+        skip.add(viaDotDot);
+
+        LibraryScanner.ScanResult result = LibraryScanner.scanDetailed(
+                Arrays.asList(pairRoot), null, skip);
+
+        assertEquals(1, result.books.size());
+        assertEquals(kept.getAbsolutePath(), result.books.get(0).path);
+    }
+
+    @Test
+    public void scanDetailedDoesNotEnterTheAppFilesTree() throws Exception {
+        File scanRoot = folder.newFolder("phone");
+        File shelf = new File(scanRoot, "Download");
+        shelf.mkdirs();
+        File original = new File(shelf, "shelf.txt");
+        write(original, "orig\n");
+
+        File appFiles = new File(scanRoot, "Android/data/app/files");
+        File copy = new File(appFiles, "books/shelf.txt");
+        copy.getParentFile().mkdirs();
+        write(copy, "copy\n");
+
+        File otherFiles = new File(scanRoot, "notes/files");
+        File note = new File(otherFiles, "note.txt");
+        note.getParentFile().mkdirs();
+        write(note, "note\n");
+
+        LibraryScanner.ScanResult result = LibraryScanner.scanDetailed(
+                Arrays.asList(scanRoot), null, null, appFiles);
+
+        assertEquals(2, result.books.size());
+        Set<String> paths = new HashSet<String>();
+        for (int i = 0; i < result.books.size(); i++) paths.add(result.books.get(i).path);
+        assertTrue(paths.contains(original.getAbsolutePath()));
+        assertTrue(paths.contains(note.getAbsolutePath()));
+        assertFalse(paths.contains(copy.getAbsolutePath()));
+        assertTrue(result.roots.get(0).complete);
+    }
 }

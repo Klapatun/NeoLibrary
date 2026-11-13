@@ -15,6 +15,7 @@ import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.zip.ZipEntry;
@@ -172,6 +173,98 @@ public class MetaWriterTest {
             in.close();
         }
         return baos.toByteArray();
+    }
+
+    private static void assertBytesEqual(byte[] expected, byte[] actual) {
+        assertTrue("file bytes changed", Arrays.equals(expected, actual));
+    }
+
+    private static void assertSubsequencePresent(byte[] haystack, byte[] needle) {
+        assertTrue("missing byte sequence", indexOf(haystack, needle) >= 0);
+    }
+
+    private static int indexOf(byte[] haystack, byte[] needle) {
+        if (needle.length == 0 || haystack.length < needle.length) return -1;
+        outer:
+        for (int i = 0; i <= haystack.length - needle.length; i++) {
+            for (int j = 0; j < needle.length; j++) {
+                if (haystack[i + j] != needle[j]) continue outer;
+            }
+            return i;
+        }
+        return -1;
+    }
+
+    private static int countUtf8Bom(byte[] bytes) {
+        int n = 0;
+        for (int i = 0; i + 2 < bytes.length; i++) {
+            if (bytes[i] == (byte) 0xEF && bytes[i + 1] == (byte) 0xBB && bytes[i + 2] == (byte) 0xBF) {
+                n++;
+            }
+        }
+        return n;
+    }
+
+    private static MetaData metaAllStringsNull() {
+        MetaData md = new MetaData();
+        md.title = null;
+        md.author = null;
+        md.publisher = null;
+        md.description = null;
+        md.language = null;
+        md.genres = null;
+        return md;
+    }
+
+    /** Opening {@code <package ...>} tag only; ignores {@code ?>} in the XML prolog. */
+    private static String openingPackageTag(String opf) {
+        int start = opf.indexOf("<package");
+        assertTrue("package element missing", start >= 0);
+        int end = opf.indexOf('>', start);
+        assertTrue("package opening tag not closed", end >= 0);
+        return opf.substring(start, end + 1);
+    }
+
+    private static File writeFb2Bytes(File fb2, byte[] bytes) throws Exception {
+        FileOutputStream out = new FileOutputStream(fb2);
+        try {
+            out.write(bytes);
+        } finally {
+            out.close();
+        }
+        return fb2;
+    }
+
+  /** Windows-1251 FB2 with closed title-info, shared title word in body. */
+    private static String fb2Windows1251Source() {
+        return "<?xml version=\"1.0\" encoding=\"windows-1251\"?>\n"
+                + "<FictionBook xmlns=\"http://www.gribuser.ru/xml/fictionbook/2.0\">\n"
+                + "  <description>\n"
+                + "    <title-info>\n"
+                + "      <genre>prose</genre>\n"
+                + "      <title>Война и мир</title>\n"
+                + "      <lang>ru</lang>\n"
+                + "    </title-info>\n"
+                + "  </description>\n"
+                + "  <body><p>Война и мир</p></body>\n"
+                + "</FictionBook>\n";
+    }
+
+    /** FB2_FIXTURE without title-info; publish-info and body stay. */
+    private static String fb2WithoutTitleInfo() {
+        return "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+                + "<FictionBook xmlns=\"http://www.gribuser.ru/xml/fictionbook/2.0\">\n"
+                + "  <description>\n"
+                + "    <publish-info>\n"
+                + "      <publisher>Original Publisher</publisher>\n"
+                + "      <published>2020</published>\n"
+                + "    </publish-info>\n"
+                + "    <annotation>An original story.</annotation>\n"
+                + "  </description>\n"
+                + "  <body>\n"
+                + "    <chapter><p>Hello</p></chapter>\n"
+                + "  </body>\n"
+                + "</FictionBook>\n";
     }
 
     private static void assertWellFormedXml(String xml) throws Exception {
@@ -474,14 +567,15 @@ public class MetaWriterTest {
                 + "      <genre>prose</genre>\n"
                 + "  </description>\n"
                 + "</FictionBook>\n";
-        FileOutputStream out = new FileOutputStream(fb2);
-        try { out.write(text(source)); } finally { out.close(); }
+        byte[] before = text(source);
+        writeFb2Bytes(fb2, before);
 
         MetaData md = new MetaData();
         md.genres = genres("sf");
-        assertTrue(MetaWriter.write(fb2, md));
+        md.title = "Also A New Title";
+        assertFalse(MetaWriter.write(fb2, md));
+        assertBytesEqual(before, readAll(fb2));
         String xml = new String(readAll(fb2), "UTF-8");
-
         assertTrue(xml.contains("<genre>prose</genre>"));
         assertFalse(xml.contains("<genre>sf</genre>"));
         assertNoLeftovers(folder.getRoot());
@@ -552,14 +646,18 @@ public class MetaWriterTest {
                 + "  <dc:subject>Keep</dc:subject>\n"
                 + "</package>\n";
         final File epub = writeEpubFixture(opf);
+        Map<String, byte[]> before = readZip(epub);
 
         MetaData md = new MetaData();
         md.genres = genres("mystery");
-        assertTrue(MetaWriter.write(epub, md));
+        assertFalse(MetaWriter.write(epub, md));
 
-        String written = new String(readZip(epub).get("OEBPS/content.opf"), "UTF-8");
-        assertTrue(written.contains("<dc:subject>Keep</dc:subject>"));
-        assertFalse(written.contains("mystery"));
+        Map<String, byte[]> after = readZip(epub);
+        assertEquals(before.keySet(), after.keySet());
+        for (Map.Entry<String, byte[]> e : before.entrySet()) {
+            assertTrue(e.getKey() + " changed",
+                    Arrays.equals(e.getValue(), after.get(e.getKey())));
+        }
         assertNoLeftovers(folder.getRoot());
     }
 
@@ -585,6 +683,486 @@ public class MetaWriterTest {
         assertFalse(opf.contains("Two"));
         assertFalse(opf.contains("<dc:subject>"));
         assertNoLeftovers(folder.getRoot());
+    }
+
+    @Test
+    public void fb2Windows1251NullFieldsLeaveFileBytesUntouched() throws Exception {
+        File fb2 = folder.newFile("w1251.fb2");
+        byte[] before = fb2Windows1251Source().getBytes("windows-1251");
+        writeFb2Bytes(fb2, before);
+
+        assertTrue(MetaWriter.write(fb2, metaAllStringsNull()));
+        assertBytesEqual(before, readAll(fb2));
+        String declared = new String(readAll(fb2), "windows-1251");
+        assertTrue(declared.contains("encoding=\"windows-1251\""));
+    }
+
+    @Test
+    public void fb2Windows1251GenreWriteKeepsTitleBytesAndDeclaration() throws Exception {
+        File fb2 = folder.newFile("w1251-genre.fb2");
+        byte[] before = fb2Windows1251Source().getBytes("windows-1251");
+        writeFb2Bytes(fb2, before);
+        byte[] titleRunes = "Война и мир".getBytes("windows-1251");
+
+        MetaData md = metaAllStringsNull();
+        md.genres = genres("sf");
+        assertTrue(MetaWriter.write(fb2, md));
+
+        byte[] after = readAll(fb2);
+        assertSubsequencePresent(after, titleRunes);
+        String xml = new String(after, "windows-1251");
+        assertTrue(xml.contains("encoding=\"windows-1251\""));
+        assertTrue(xml.contains("<genre>sf</genre>"));
+        assertFalse(xml.contains("<genre>prose</genre>"));
+        assertNoLeftovers(folder.getRoot());
+    }
+
+    @Test
+    public void fb2Windows1251RejectsTitleOutsideCharsetAndLeavesBytes() throws Exception {
+        File fb2 = folder.newFile("w1251-outside.fb2");
+        byte[] before = fb2Windows1251Source().getBytes("windows-1251");
+        writeFb2Bytes(fb2, before);
+
+        MetaData md = metaAllStringsNull();
+        md.title = "\u4E00";
+        md.genres = genres("sf");
+        assertFalse(MetaWriter.write(fb2, md));
+        assertBytesEqual(before, readAll(fb2));
+        assertNoLeftovers(folder.getRoot());
+    }
+
+    @Test
+    public void fb2WriteReturnsFalseOnUnknownEncodingDeclaration() throws Exception {
+        File fb2 = folder.newFile("bad-encoding.fb2");
+        String source = fb2Windows1251Source().replace("windows-1251", "x-not-a-charset");
+        byte[] before = source.getBytes("UTF-8");
+        writeFb2Bytes(fb2, before);
+
+        MetaData md = metaAllStringsNull();
+        md.genres = genres("sf");
+        assertFalse(MetaWriter.write(fb2, md));
+        assertBytesEqual(before, readAll(fb2));
+        assertNoLeftovers(folder.getRoot());
+    }
+
+    @Test
+    public void fb2WriteUtf8BomSurvivesGenreInsert() throws Exception {
+        File fb2 = folder.newFile("bom.fb2");
+        byte[] body = text(FB2_FIXTURE);
+        byte[] withBom = new byte[body.length + 3];
+        withBom[0] = (byte) 0xEF;
+        withBom[1] = (byte) 0xBB;
+        withBom[2] = (byte) 0xBF;
+        System.arraycopy(body, 0, withBom, 3, body.length);
+        writeFb2Bytes(fb2, withBom);
+
+        MetaData md = metaAllStringsNull();
+        md.genres = genres("sf");
+        assertTrue(MetaWriter.write(fb2, md));
+
+        byte[] after = readAll(fb2);
+        assertEquals("BOM must appear exactly once", 1, countUtf8Bom(after));
+        String xml = new String(after, "UTF-8");
+        assertTrue(xml.contains("encoding=\"UTF-8\""));
+        assertTrue(xml.contains("<genre>sf</genre>"));
+        assertNoLeftovers(folder.getRoot());
+    }
+
+    @Test
+    public void fb2WriteCreatesTitleInfoInsideDescription() throws Exception {
+        File fb2 = folder.newFile("create-title-info.fb2");
+        FileOutputStream out = new FileOutputStream(fb2);
+        try {
+            out.write(text(fb2WithoutTitleInfo()));
+        } finally {
+            out.close();
+        }
+
+        MetaData md = metaAllStringsNull();
+        md.genres = genres("sf");
+        assertTrue(MetaWriter.write(fb2, md));
+        String xml = new String(readAll(fb2), "UTF-8");
+
+        int titleInfoOpen = xml.indexOf("<title-info>");
+        int publishOpen = xml.indexOf("<publish-info>");
+        assertTrue(titleInfoOpen >= 0);
+        assertTrue(publishOpen > titleInfoOpen);
+        assertTrue(xml.contains("<genre>sf</genre>"));
+        assertFalse(xml.contains("<book-title>"));
+        assertFalse(xml.contains("<author>"));
+        assertFalse(xml.contains("<document-info>"));
+        int langAt = xml.indexOf("<lang>");
+        int titleInfoClose = xml.indexOf("</title-info>");
+        assertTrue(langAt < 0 || langAt > titleInfoClose);
+        assertWellFormedXml(xml);
+        assertNoLeftovers(folder.getRoot());
+    }
+
+    @Test
+    public void fb2WriteCreatesTitleInfoWithBookTitleAndAuthor() throws Exception {
+        File fb2 = folder.newFile("create-title-info-filled.fb2");
+        FileOutputStream out = new FileOutputStream(fb2);
+        try {
+            out.write(text(fb2WithoutTitleInfo()));
+        } finally {
+            out.close();
+        }
+
+        MetaData md = metaAllStringsNull();
+        md.title = "Anna Akhmatova";
+        md.author = "Anna Akhmatova";
+        md.genres = genres("sf");
+        assertTrue(MetaWriter.write(fb2, md));
+        String xml = new String(readAll(fb2), "UTF-8");
+
+        assertTrue(xml.contains("<book-title>Anna Akhmatova</book-title>"));
+        assertFalse(xml.contains("<title>Anna Akhmatova</title>"));
+        assertTrue(xml.contains("<first-name>Anna</first-name>"));
+        assertTrue(xml.contains("<last-name>Akhmatova</last-name>"));
+        assertWellFormedXml(xml);
+    }
+
+    @Test
+    public void fb2WriteCreatesDescriptionBeforeBody() throws Exception {
+        File fb2 = folder.newFile("create-description.fb2");
+        String source = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+                + "<FictionBook xmlns=\"http://www.gribuser.ru/xml/fictionbook/2.0\">\n"
+                + "  <body><p>Hi</p></body>\n"
+                + "</FictionBook>\n";
+        writeFb2Bytes(fb2, text(source));
+
+        MetaData md = metaAllStringsNull();
+        md.genres = genres("sf");
+        assertTrue(MetaWriter.write(fb2, md));
+        String xml = new String(readAll(fb2), "UTF-8");
+
+        int rootClose = xml.indexOf("<FictionBook");
+        int bodyOpen = xml.indexOf("<body>");
+        int descOpen = xml.indexOf("<description>");
+        assertTrue(rootClose >= 0);
+        assertTrue(descOpen > rootClose);
+        assertTrue(bodyOpen > descOpen);
+        assertTrue(xml.contains("<genre>sf</genre>"));
+        assertWellFormedXml(xml);
+    }
+
+    @Test
+    public void fb2WriteCreatesPrefixedTitleInfoInsidePrefixedDescription() throws Exception {
+        File fb2 = folder.newFile("fb-prefix.fb2");
+        String source = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+                + "<fb:FictionBook xmlns:fb=\"http://www.gribuser.ru/xml/fictionbook/2.0\">\n"
+                + "  <fb:description>\n"
+                + "    <fb:publish-info><publisher>P</publisher></fb:publish-info>\n"
+                + "  </fb:description>\n"
+                + "  <fb:body><p>x</p></fb:body>\n"
+                + "</fb:FictionBook>\n";
+        writeFb2Bytes(fb2, text(source));
+
+        MetaData md = metaAllStringsNull();
+        md.genres = genres("sf");
+        assertTrue(MetaWriter.write(fb2, md));
+        String xml = new String(readAll(fb2), "UTF-8");
+        assertTrue(xml.contains("<fb:title-info>"));
+        assertTrue(xml.contains("<fb:genre>sf</fb:genre>"));
+        assertWellFormedXml(xml);
+    }
+
+    @Test
+    public void fb2WriteReturnsFalseWhenThereIsNoFictionBookRoot() throws Exception {
+        File fb2 = folder.newFile("not-fb2.fb2");
+        byte[] before = text("<p>hi</p>");
+        writeFb2Bytes(fb2, before);
+
+        MetaData md = metaAllStringsNull();
+        md.genres = genres("sf");
+        assertFalse(MetaWriter.write(fb2, md));
+        assertBytesEqual(before, readAll(fb2));
+        assertNoLeftovers(folder.getRoot());
+    }
+
+    @Test
+    public void fb2WriteExpandsSelfClosingTitleInfoWithGenre() throws Exception {
+        File fb2 = folder.newFile("self-close-title-info.fb2");
+        String source = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+                + "<FictionBook>\n"
+                + "  <description>\n"
+                + "    <title-info/>\n"
+                + "    <publish-info/>\n"
+                + "  </description>\n"
+                + "  <body/>\n"
+                + "</FictionBook>\n";
+        writeFb2Bytes(fb2, text(source));
+
+        MetaData md = metaAllStringsNull();
+        md.genres = genres("sf");
+        assertTrue(MetaWriter.write(fb2, md));
+        String xml = new String(readAll(fb2), "UTF-8");
+        assertEquals(1, countOccurrences(xml, "<title-info"));
+        assertEquals(1, countOccurrences(xml, "</title-info>"));
+        assertTrue(xml.contains("<genre>sf</genre>"));
+        assertWellFormedXml(xml);
+    }
+
+    @Test
+    public void fb2WriteExpandsSelfClosingDescriptionWithTitleInfo() throws Exception {
+        File fb2 = folder.newFile("self-close-description.fb2");
+        String source = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+                + "<FictionBook>\n"
+                + "  <description/>\n"
+                + "  <body/>\n"
+                + "</FictionBook>\n";
+        writeFb2Bytes(fb2, text(source));
+
+        MetaData md = metaAllStringsNull();
+        md.genres = genres("sf");
+        assertTrue(MetaWriter.write(fb2, md));
+        String xml = new String(readAll(fb2), "UTF-8");
+        assertEquals(1, countOccurrences(xml, "<description"));
+        assertEquals(1, countOccurrences(xml, "</description>"));
+        assertTrue(xml.contains("<title-info>"));
+        assertTrue(xml.contains("<genre>sf</genre>"));
+        assertWellFormedXml(xml);
+    }
+
+    @Test
+    public void fb2WriteKeepsTitleTagWhenOnlyGenreChangesAndTitleIsNull() throws Exception {
+        final File fb2 = writeFb2Fixture();
+
+        MetaData md = metaAllStringsNull();
+        md.genres = genres("sf");
+        assertTrue(MetaWriter.write(fb2, md));
+        String xml = new String(readAll(fb2), "UTF-8");
+        assertTrue(xml.contains("<title>Original Title</title>"));
+        assertFalse(xml.contains("<book-title>"));
+        assertTrue(xml.contains("<last-name>Petrov</last-name>"));
+    }
+
+    @Test
+    public void fb2WriteStillUsesTitleTagWhenTitleIsSent() throws Exception {
+        final File fb2 = writeFb2Fixture();
+
+        MetaData md = metaAllStringsNull();
+        md.title = "Renamed In Place";
+        assertTrue(MetaWriter.write(fb2, md));
+        String xml = new String(readAll(fb2), "UTF-8");
+        assertTrue(xml.contains("<title>Renamed In Place</title>"));
+        assertFalse(xml.contains("<book-title>Renamed In Place</book-title>"));
+    }
+
+    @Test
+    public void fb2WriteUpdatesBookTitleWhenThereIsNoTitleTag() throws Exception {
+        File fb2 = folder.newFile("book-title-only.fb2");
+        String source = FB2_FIXTURE.replace("<title>Original Title</title>",
+                "<book-title>Original Title</book-title>");
+        writeFb2Bytes(fb2, text(source));
+
+        MetaData md = metaAllStringsNull();
+        md.title = "New Book Title";
+        assertTrue(MetaWriter.write(fb2, md));
+        String xml = new String(readAll(fb2), "UTF-8");
+        assertTrue(xml.contains("<book-title>New Book Title</book-title>"));
+        assertFalse(xml.contains("<title>New Book Title</title>"));
+    }
+
+    @Test
+    public void fb2WriteReplacesGenresOnlyInsideTitleInfoNotSrcTitleInfo() throws Exception {
+        File fb2 = folder.newFile("src-title-info.fb2");
+        String source = FB2_FIXTURE.replace("</title-info>",
+                "    </title-info>\n"
+                        + "    <src-title-info>\n"
+                        + "      <genre>poetry</genre>\n"
+                        + "    </src-title-info>");
+        writeFb2Bytes(fb2, text(source));
+
+        MetaData md = metaAllStringsNull();
+        md.genres = genres("sf", "history");
+        assertTrue(MetaWriter.write(fb2, md));
+        String xml = new String(readAll(fb2), "UTF-8");
+        assertTrue(xml.contains("<genre>poetry</genre>"));
+        assertTrue(xml.contains("<genre>sf</genre>"));
+        assertTrue(xml.contains("<genre>history</genre>"));
+        assertFalse(xml.contains("<genre>prose</genre>"));
+    }
+
+    @Test
+    public void fb2WriteLeavesGenresUntouchedWhenGenresIsNull() throws Exception {
+        final File fb2 = writeFb2Fixture();
+
+        MetaData md = metaAllStringsNull();
+        md.title = "New Title";
+        assertTrue(MetaWriter.write(fb2, md));
+        String xml = new String(readAll(fb2), "UTF-8");
+        assertTrue(xml.contains("<genre>prose</genre>"));
+        assertTrue(xml.contains("<title>New Title</title>"));
+    }
+
+    @Test
+    public void epubWriteGenreOnlyLeavesOtherDcFieldsUntouched() throws Exception {
+        final File epub = writeEpubFixture(OPF_FULL);
+        Map<String, byte[]> before = readZip(epub);
+
+        MetaData md = metaAllStringsNull();
+        md.genres = genres("Mystery");
+        assertTrue(MetaWriter.write(epub, md));
+
+        Map<String, byte[]> after = readZip(epub);
+        assertTrue(Arrays.equals(before.get("OEBPS/ch1.xhtml"), after.get("OEBPS/ch1.xhtml")));
+        assertTrue(Arrays.equals(before.get("OEBPS/images/cover.jpg"),
+                after.get("OEBPS/images/cover.jpg")));
+        assertTrue(Arrays.equals(before.get("META-INF/container.xml"),
+                after.get("META-INF/container.xml")));
+
+        String opf = new String(after.get("OEBPS/content.opf"), "UTF-8");
+        assertTrue(opf.contains("<dc:title>Original Title</dc:title>"));
+        assertTrue(opf.contains("<dc:language>en</dc:language>"));
+        assertFalse(opf.contains("<dc:language></dc:language>"));
+        assertFalse(opf.contains("<dc:language/>"));
+        assertTrue(opf.contains("<dc:subject>Mystery</dc:subject>"));
+        assertNoLeftovers(folder.getRoot());
+    }
+
+    @Test
+    public void epubWriteCreatesMetadataBetweenPackageAndManifest() throws Exception {
+        String opf = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+                + "<package xmlns=\"http://www.idpf.org/2009/opf\" version=\"2.0\""
+                + " xmlns:dc=\"http://purl.org/dc/elements/1.1/\">\n"
+                + "  <manifest>\n"
+                + "    <item id=\"ch1\" href=\"ch1.xhtml\" media-type=\"application/xhtml+xml\"/>\n"
+                + "  </manifest>\n"
+                + "</package>\n";
+        final File epub = writeEpubFixture(opf);
+        String packageOpen = openingPackageTag(opf);
+
+        MetaData md = metaAllStringsNull();
+        md.genres = genres("mystery");
+        assertTrue(MetaWriter.write(epub, md));
+
+        String written = new String(readZip(epub).get("OEBPS/content.opf"), "UTF-8");
+        int packageAt = written.indexOf("<package");
+        assertTrue(packageAt >= 0);
+        assertEquals(packageOpen, written.substring(packageAt, packageAt + packageOpen.length()));
+        int metaAt = written.indexOf("<metadata>");
+        int manifestAt = written.indexOf("<manifest>");
+        assertTrue(metaAt > 0);
+        assertTrue(manifestAt > metaAt);
+        assertTrue(written.contains("<dc:subject>mystery</dc:subject>"));
+        assertEquals(1, countOccurrences(written, "xmlns:dc=\"http://purl.org/dc/elements/1.1/\""));
+    }
+
+    @Test
+    public void epubWriteCreatesMetadataWithXmlnsDcWhenPackageLacksIt() throws Exception {
+        String opf = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+                + "<package xmlns=\"http://www.idpf.org/2009/opf\" version=\"2.0\">\n"
+                + "  <spine toc=\"ncx\">\n"
+                + "    <itemref idref=\"ch1\"/>\n"
+                + "  </spine>\n"
+                + "</package>\n";
+        final File epub = writeEpubFixture(opf);
+        String packageTag = openingPackageTag(opf);
+
+        MetaData md = metaAllStringsNull();
+        md.genres = genres("prose");
+        assertTrue(MetaWriter.write(epub, md));
+
+        String written = new String(readZip(epub).get("OEBPS/content.opf"), "UTF-8");
+        int packageAt = written.indexOf("<package");
+        assertTrue(packageAt >= 0);
+        assertEquals(packageTag, written.substring(packageAt, packageAt + packageTag.length()));
+        assertTrue(written.contains("xmlns:dc=\"http://purl.org/dc/elements/1.1/\""));
+        assertTrue(written.contains("<dc:subject>prose</dc:subject>"));
+    }
+
+    @Test
+    public void epubWriteReturnsFalseWhenMetadataTagIsUnclosed() throws Exception {
+        String opf = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+                + "<package xmlns=\"http://www.idpf.org/2009/opf\" version=\"2.0\""
+                + " xmlns:dc=\"http://purl.org/dc/elements/1.1/\">\n"
+                + "  <metadata>\n"
+                + "    <dc:title>T</dc:title>\n"
+                + "  <manifest>\n"
+                + "    <item id=\"ch1\" href=\"ch1.xhtml\" media-type=\"application/xhtml+xml\"/>\n"
+                + "  </manifest>\n"
+                + "</package>\n";
+        final File epub = writeEpubFixture(opf);
+        Map<String, byte[]> before = readZip(epub);
+
+        MetaData md = metaAllStringsNull();
+        md.genres = genres("mystery");
+        assertFalse(MetaWriter.write(epub, md));
+        assertZipEntriesByteIdentical(before, readZip(epub));
+        assertNoLeftovers(folder.getRoot());
+    }
+
+    @Test
+    public void epubWriteExpandsSelfClosingMetadataWithSubject() throws Exception {
+        String opf = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+                + "<package xmlns=\"http://www.idpf.org/2009/opf\" version=\"2.0\""
+                + " xmlns:dc=\"http://purl.org/dc/elements/1.1/\">\n"
+                + "  <metadata/>\n"
+                + "  <manifest>\n"
+                + "    <item id=\"ch1\" href=\"ch1.xhtml\" media-type=\"application/xhtml+xml\"/>\n"
+                + "  </manifest>\n"
+                + "</package>\n";
+        final File epub = writeEpubFixture(opf);
+
+        MetaData md = metaAllStringsNull();
+        md.genres = genres("mystery");
+        assertTrue(MetaWriter.write(epub, md));
+
+        String written = new String(readZip(epub).get("OEBPS/content.opf"), "UTF-8");
+        assertEquals(1, countOccurrences(written, "<metadata"));
+        assertEquals(1, countOccurrences(written, "</metadata>"));
+        assertTrue(written.contains("<dc:subject>mystery</dc:subject>"));
+    }
+
+    @Test
+    public void epubWriteReturnsFalseWhenPackageRootIsMissing() throws Exception {
+        String opf = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+                + "<dc:subject>Keep</dc:subject>\n";
+        final File epub = writeEpubFixture(opf);
+        Map<String, byte[]> before = readZip(epub);
+
+        MetaData md = metaAllStringsNull();
+        md.genres = genres("mystery");
+        assertFalse(MetaWriter.write(epub, md));
+        assertZipEntriesByteIdentical(before, readZip(epub));
+        assertNoLeftovers(folder.getRoot());
+    }
+
+    @Test
+    public void epubWriteLeavesDcSubjectAndTitleUntouchedWhenGenresAndStringsAreNull() throws Exception {
+        String opfWithSubject = OPF_FULL.replace("    <dc:language>en</dc:language>\n",
+                "    <dc:language>en</dc:language>\n"
+                        + "    <dc:subject>Keep</dc:subject>\n");
+        final File epub = writeEpubFixture(opfWithSubject);
+
+        MetaData md = metaAllStringsNull();
+        assertTrue(MetaWriter.write(epub, md));
+
+        String opf = new String(readZip(epub).get("OEBPS/content.opf"), "UTF-8");
+        assertTrue(opf.contains("<dc:subject>Keep</dc:subject>"));
+        assertTrue(opf.contains("<dc:title>Original Title</dc:title>"));
+    }
+
+    private static void assertZipEntriesByteIdentical(Map<String, byte[]> before,
+            Map<String, byte[]> after) {
+        assertEquals(before.keySet(), after.keySet());
+        for (Map.Entry<String, byte[]> e : before.entrySet()) {
+            assertTrue(e.getKey() + " changed",
+                    Arrays.equals(e.getValue(), after.get(e.getKey())));
+        }
+    }
+
+    private static int countOccurrences(String haystack, String needle) {
+        int count = 0;
+        int at = 0;
+        while (true) {
+            int found = haystack.indexOf(needle, at);
+            if (found < 0) break;
+            count++;
+            at = found + needle.length();
+        }
+        return count;
     }
 
     private static ArrayList<String> genres(String... names) {

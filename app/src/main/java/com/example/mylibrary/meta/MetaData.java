@@ -22,7 +22,13 @@ public class MetaData {
     public String firstName;
     public String middleName;
     public String lastName;
-    public boolean found; // true if we successfully read any metadata from the file
+    /**
+     * Canonical title that {@code applyUpdate} may copy into {@code works.title}.
+     * For FB2 this is a non-empty {@code book-title} or {@code title} in
+     * {@code title-info}, not the file name. TXT and HTML still set {@code found}
+     * from the file name.
+     */
+    public boolean found;
 
     /**
      * Normalizes a genre list for catalog storage: trim, drop blanks,

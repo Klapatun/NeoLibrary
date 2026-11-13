@@ -39,7 +39,28 @@ public class LibraryScanner {
     }
 
     public static ScanResult scanDetailed(List<File> roots, Progress onProgress) {
+        return scanDetailed(roots, onProgress, null);
+    }
+
+    public static ScanResult scanDetailed(List<File> roots, Progress onProgress,
+            Set<String> skipAbsolutePaths) {
+        return scanDetailed(roots, onProgress, skipAbsolutePaths, null);
+    }
+
+    /**
+     * @param skipTree a directory the walk must not enter (the app external
+     *        files directory, which holds private book copies). Null skips nothing.
+     *        Matching uses the canonical path, so another mount of the same
+     *        directory is skipped too. Refusing to enter it does not mark the
+     *        root incomplete.
+     */
+    public static ScanResult scanDetailed(List<File> roots, Progress onProgress,
+            Set<String> skipAbsolutePaths, File skipTree) {
         if (roots == null || roots.isEmpty()) roots = defaultRoots(null);
+        Set<String> canonicalSkip = canonicalSkipSet(skipAbsolutePaths);
+        String treeAbsolute = skipTree == null ? null : skipTree.getAbsolutePath();
+        String treeCanonical = skipTree == null ? null : identity(skipTree);
+        String treeName = skipTree == null ? null : skipTree.getName();
         List<RootScanResult> rootResults = new ArrayList<RootScanResult>();
         List<Book> books = new ArrayList<Book>();
         List<String> normalizedRoots = new ArrayList<String>();
@@ -48,16 +69,20 @@ public class LibraryScanner {
             String rootPath = root.getAbsolutePath();
             if (containsRoot(normalizedRoots, rootPath)) continue;
             normalizedRoots.add(rootPath);
-            RootScanResult result = scanRoot(root, onProgress);
+            RootScanResult result = scanRoot(root, onProgress, canonicalSkip,
+                    treeAbsolute, treeCanonical, treeName);
             rootResults.add(result);
             addUniqueBooks(books, result.books);
         }
         return new ScanResult(rootResults, books);
     }
 
-    private static RootScanResult scanRoot(File root, Progress onProgress) {
+    private static RootScanResult scanRoot(File root, Progress onProgress,
+            Set<String> canonicalSkip, String treeAbsolute, String treeCanonical,
+            String treeName) {
         List<Book> found = new ArrayList<Book>();
-        boolean complete = walk(root, found, onProgress);
+        boolean complete = walk(root, found, onProgress, canonicalSkip,
+                treeAbsolute, treeCanonical, treeName);
         return new RootScanResult(root.getAbsolutePath(), found, complete);
     }
 
@@ -82,8 +107,12 @@ public class LibraryScanner {
         return scan(defaultRoots(context), onProgress);
     }
 
-    private static boolean walk(File dir, List<Book> out, Progress onProgress) {
+    private static boolean walk(File dir, List<Book> out, Progress onProgress,
+            Set<String> canonicalSkip, String treeAbsolute, String treeCanonical,
+            String treeName) {
         if (dir == null || !dir.exists() || !dir.isDirectory()) return false;
+        // Chosen exclusion, not a failed listing: the parent root stays complete.
+        if (isExcludedDirectory(dir, treeAbsolute, treeCanonical, treeName)) return true;
         File[] children;
         try {
             children = dir.listFiles();
@@ -94,14 +123,70 @@ public class LibraryScanner {
         boolean complete = true;
         for (File f : children) {
             if (f.isDirectory()) {
-                if (!walk(f, out, onProgress)) complete = false;
+                if (isExcludedDirectory(f, treeAbsolute, treeCanonical, treeName)) continue;
+                if (!walk(f, out, onProgress, canonicalSkip,
+                        treeAbsolute, treeCanonical, treeName)) {
+                    complete = false;
+                }
             } else if (f.isFile() && Formats.isSupported(f.getName())) {
+                String id = identity(f);
+                if (canonicalSkip.contains(id)) continue;
+                if (isInside(id, treeCanonical) || isInside(f.getAbsolutePath(), treeAbsolute)) {
+                    continue;
+                }
                 if (onProgress != null) onProgress.onScan(f.getAbsolutePath());
                 Book b = buildBook(f);
                 if (b != null) out.add(b);
             }
         }
         return complete;
+    }
+
+    /** Canonical path, or the absolute path when the filesystem refuses. */
+    private static String identity(File f) {
+        if (f == null) return null;
+        try {
+            return f.getCanonicalPath();
+        } catch (Exception e) {
+            return f.getAbsolutePath();
+        }
+    }
+
+    private static Set<String> canonicalSkipSet(Set<String> skipAbsolutePaths) {
+        HashSet<String> out = new HashSet<String>();
+        if (skipAbsolutePaths == null) return out;
+        for (String p : skipAbsolutePaths) {
+            if (p == null || p.length() == 0) continue;
+            String id = identity(new File(p));
+            if (id != null) out.add(id);
+        }
+        return out;
+    }
+
+    /**
+     * True when {@code dir} is the excluded tree or lies inside it.
+     * The absolute prefix is enough when both paths share a mount. A directory
+     * whose name matches the excluded directory is also compared canonically,
+     * so the same folder reached through another prefix is not entered.
+     */
+    private static boolean isExcludedDirectory(File dir, String treeAbsolute,
+            String treeCanonical, String treeName) {
+        if (dir == null || (treeAbsolute == null && treeCanonical == null)) return false;
+        String abs = dir.getAbsolutePath();
+        if (isInside(abs, treeAbsolute) || isInside(abs, treeCanonical)) return true;
+        if (treeCanonical == null || treeName == null || !treeName.equals(dir.getName())) {
+            return false;
+        }
+        return isInside(identity(dir), treeCanonical);
+    }
+
+    /** {@code path} equals {@code root} or is a file inside it. A shared prefix
+     *  without a separator ({@code files} vs {@code files-backup}) does not count. */
+    private static boolean isInside(String path, String root) {
+        if (path == null || root == null || root.length() == 0) return false;
+        if (path.equals(root)) return true;
+        String prefix = root.endsWith(File.separator) ? root : root + File.separator;
+        return path.startsWith(prefix);
     }
 
     public static final class ScanResult {

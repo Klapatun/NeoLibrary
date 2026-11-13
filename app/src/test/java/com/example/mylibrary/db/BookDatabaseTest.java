@@ -12,10 +12,14 @@ import android.database.sqlite.SQLiteDatabase;
 
 import com.example.mylibrary.meta.MetaData;
 import com.example.mylibrary.model.Book;
+import com.example.mylibrary.scan.LibraryScanner;
+import com.example.mylibrary.testutil.TestFixtures;
 import com.example.mylibrary.util.CoverCache;
 
 import org.junit.Before;
+import org.junit.Rule;
 import org.junit.Test;
+import org.junit.rules.TemporaryFolder;
 import org.junit.runner.RunWith;
 import org.robolectric.RobolectricTestRunner;
 import org.robolectric.RuntimeEnvironment;
@@ -38,6 +42,9 @@ import java.util.Set;
 @RunWith(RobolectricTestRunner.class)
 @Config(sdk = 19)
 public class BookDatabaseTest {
+
+    @Rule
+    public TemporaryFolder folder = new TemporaryFolder();
 
     private Context context;
     private BookDatabase db;
@@ -1026,6 +1033,118 @@ public class BookDatabaseTest {
         assertTrue(got.metaDone);     // but the book is marked enriched
     }
 
+    /** {@code found=false} with genres and author in meta must still reach the catalog
+     *  (skeleton title from scan is not overwritten by the file-name hint in {@code md}). */
+    @Test
+    public void updateMetadataWritesAuthorAndGenresWithoutFoundTitle() {
+        long id = db.upsertBasic(book("/x/novel.fb2", "FB2", "Skeleton", null));
+        db.markRead(id);
+        long lastRead = lastReadOf(id);
+
+        MetaData md = new MetaData();
+        md.found = false;
+        md.title = "novel";
+        md.author = "Author";
+        md.genres = genres("sf");
+        db.updateMetadata(id, md, true);
+
+        Book got = db.getById(id);
+        assertEquals("Skeleton", got.title);
+        assertEquals("Author", got.author);
+        assertGenresEquals(new String[]{"sf"}, got.genres);
+        assertTrue(got.metaDone);
+        assertEquals(lastRead, lastReadOf(id));
+    }
+
+    @Test
+    public void updateMetadataWithoutFoundKeepsUserTitleAndAuthorButFillsGenres() {
+        long id = db.upsert(book("/x/user.fb2", "FB2", "User Title", "User Author"));
+        db.markUserEdited(id);
+
+        MetaData md = new MetaData();
+        md.found = false;
+        md.title = "user";
+        md.author = "File Author";
+        md.genres = genres("sf");
+        db.updateMetadata(id, md, true);
+
+        Book got = db.getById(id);
+        assertEquals("User Title", got.title);
+        assertEquals("User Author", got.author);
+        assertGenresEquals(new String[]{"sf"}, got.genres);
+        assertTrue(got.metaDone);
+    }
+
+  @Test
+  public void updateMetadataWithEmptyMetaDataKeepsExistingFieldsAndMarksDone() {
+    Book seeded = book("/x/keep.fb2", "FB2", "Keep Title", "Keep Author");
+    seeded.genres = genres("prose");
+    long id = db.upsert(seeded);
+
+    MetaData md = new MetaData();
+    md.found = false;
+    db.updateMetadata(id, md, true);
+
+    Book got = db.getById(id);
+    assertEquals("Keep Title", got.title);
+    assertEquals("Keep Author", got.author);
+    assertGenresEquals(new String[]{"prose"}, got.genres);
+    assertTrue(got.metaDone);
+  }
+
+  @Test
+  public void updateMetadataWithFoundTitleButNullGenresKeepsCatalogGenres() {
+    Book seeded = book("/x/real.epub", "EPUB", "Old", "A");
+    seeded.genres = genres("mystery");
+    long id = db.upsert(seeded);
+
+    MetaData md = new MetaData();
+    md.found = true;
+    md.title = "Real";
+    db.updateMetadata(id, md, true);
+
+    Book got = db.getById(id);
+    assertEquals("Real", got.title);
+    assertGenresEquals(new String[]{"mystery"}, got.genres);
+    assertTrue(got.metaDone);
+  }
+
+  @Test
+  public void updateMetadataWithEmptyGenreListReplacesCatalogGenres() {
+    Book seeded = book("/x/clear.epub", "EPUB", "T", "A");
+    seeded.genres = genres("old");
+    long id = db.upsert(seeded);
+
+    MetaData md = new MetaData();
+    md.found = true;
+    md.title = "T";
+    md.genres = new ArrayList<String>();
+    db.updateMetadata(id, md, true);
+
+    assertGenresEquals(new String[]{}, db.getById(id).genres);
+    assertTrue(db.getById(id).metaDone);
+  }
+
+  @Test
+  public void updateMetadataWhenFileMissingLeavesCatalogUntouched() {
+    Book seeded = book("/x/missing.fb2", "FB2", "Catalog", "Auth");
+    seeded.genres = genres("prose");
+    long id = db.upsert(seeded);
+
+    MetaData md = new MetaData();
+    md.found = true;
+    md.title = "File";
+    md.author = "New";
+    md.genres = genres("sf");
+    db.updateMetadata(id, md, false);
+
+    Book got = db.getById(id);
+    assertEquals("Catalog", got.title);
+    assertEquals("Auth", got.author);
+    assertGenresEquals(new String[]{"prose"}, got.genres);
+    assertTrue(got.metaDone);
+  }
+
     /** upsert must not clobber the stage flags from a stale in-memory model:
      *  meta_done / user_edited are row-owned state, like last_read. */
     @Test
@@ -1692,5 +1811,330 @@ public class BookDatabaseTest {
         db.upsert(b);
         db.clear();
         assertEquals(0, rowCount(db.getReadableDatabase(), "work_genres"));
+    }
+
+    // ------------------------------------------------------------------
+    // schema v8 / adopted_from (fix edit-private-copy)
+    // ------------------------------------------------------------------
+
+    private static final String V7_WORKS_CREATE =
+            "CREATE TABLE works ("
+            + "_id INTEGER PRIMARY KEY AUTOINCREMENT, "
+            + "title TEXT, "
+            + "author TEXT, "
+            + "publisher TEXT, "
+            + "description TEXT, "
+            + "series TEXT, "
+            + "user_edited INTEGER NOT NULL DEFAULT 0, "
+            + "last_read INTEGER, "
+            + "remote_id TEXT, "
+            + "revision INTEGER NOT NULL DEFAULT 0, "
+            + "deleted INTEGER NOT NULL DEFAULT 0"
+            + ")";
+
+    /** v7 {@code files} shape — no {@code adopted_from} column yet. */
+    private static final String V7_FILES_CREATE =
+            "CREATE TABLE files ("
+            + "_id INTEGER PRIMARY KEY AUTOINCREMENT, "
+            + "work_id INTEGER NOT NULL REFERENCES works(_id), "
+            + "format TEXT, "
+            + "path TEXT UNIQUE, "
+            + "remote_key TEXT, "
+            + "size_bytes INTEGER, "
+            + "content_hash TEXT, "
+            + "exported INTEGER DEFAULT 0, "
+            + "meta_done INTEGER NOT NULL DEFAULT 0, "
+            + "meta_failed INTEGER NOT NULL DEFAULT 0, "
+            + "availability TEXT NOT NULL DEFAULT 'local'"
+            + ")";
+
+    private static final String V7_WORK_GENRES_CREATE =
+            "CREATE TABLE work_genres ("
+            + "work_id INTEGER NOT NULL REFERENCES works(_id), "
+            + "position INTEGER NOT NULL, "
+            + "name TEXT NOT NULL"
+            + ")";
+
+    private String adoptedFromOf(long workId) {
+        SQLiteDatabase raw = db.getReadableDatabase();
+        Cursor c = raw.rawQuery("SELECT adopted_from FROM files WHERE work_id=?",
+                new String[]{String.valueOf(workId)});
+        try {
+            c.moveToFirst();
+            return c.isNull(0) ? null : c.getString(0);
+        } finally {
+            c.close();
+        }
+    }
+
+    /** v8 {@code files} — same as v7 plus {@code adopted_from} (already on disk at v8). */
+    private static final String V8_FILES_CREATE =
+            "CREATE TABLE files ("
+            + "_id INTEGER PRIMARY KEY AUTOINCREMENT, "
+            + "work_id INTEGER NOT NULL REFERENCES works(_id), "
+            + "format TEXT, "
+            + "path TEXT UNIQUE, "
+            + "remote_key TEXT, "
+            + "size_bytes INTEGER, "
+            + "content_hash TEXT, "
+            + "exported INTEGER DEFAULT 0, "
+            + "meta_done INTEGER NOT NULL DEFAULT 0, "
+            + "meta_failed INTEGER NOT NULL DEFAULT 0, "
+            + "availability TEXT NOT NULL DEFAULT 'local', "
+            + "adopted_from TEXT"
+            + ")";
+
+    private static void assertFileMetaFlags(SQLiteDatabase raw, long workId,
+                                            int expectedDone, int expectedFailed) {
+        Cursor c = raw.rawQuery(
+                "SELECT meta_done, meta_failed FROM files WHERE work_id=?",
+                new String[]{String.valueOf(workId)});
+        try {
+            assertTrue(c.moveToFirst());
+            assertEquals(expectedDone, c.getInt(0));
+            assertEquals(expectedFailed, c.getInt(1));
+        } finally {
+            c.close();
+        }
+    }
+
+    @Test
+    public void upgradeFromV8ResetsMetaDoneForEligibleFormatsWithoutGenres() {
+        db.close();
+        java.io.File f = context.getDatabasePath("library.db");
+        if (f.getParentFile() != null) f.getParentFile().mkdirs();
+        SQLiteDatabase rawDb = SQLiteDatabase.openOrCreateDatabase(f.getAbsolutePath(), null);
+        try {
+            rawDb.execSQL(V7_WORKS_CREATE);
+            rawDb.execSQL(V8_FILES_CREATE);
+            rawDb.execSQL(V7_WORK_GENRES_CREATE);
+            rawDb.execSQL("INSERT INTO works (_id, title, last_read, user_edited,"
+                    + " revision, deleted) VALUES"
+                    + " (1, 'Fb2 No Genre', 1001, 0, 0, 0),"
+                    + " (2, 'Epub No Genre', 1002, 0, 0, 0),"
+                    + " (3, 'Fb2 User', 1003, 1, 0, 0),"
+                    + " (4, 'Fb2 Has Genre', 1004, 0, 0, 0),"
+                    + " (5, 'Mobi No Genre', 1005, 0, 0, 0)");
+            rawDb.execSQL("INSERT INTO files (work_id, path, format, size_bytes, meta_done,"
+                    + " meta_failed, availability, adopted_from) VALUES"
+                    + " (1, '/x/a.fb2', 'FB2', 10, 1, 1, 'local', NULL),"
+                    + " (2, '/x/b.epub', 'EPUB', 10, 1, 1, 'local', NULL),"
+                    + " (3, '/x/c.fb2', 'FB2', 10, 1, 1, 'local', NULL),"
+                    + " (4, '/x/d.fb2', 'FB2', 10, 1, 1, 'local', '/old.fb2'),"
+                    + " (5, '/x/e.mobi', 'MOBI', 10, 1, 1, 'local', NULL)");
+            rawDb.execSQL("INSERT INTO work_genres (work_id, position, name) VALUES (4, 0, 'prose')");
+            rawDb.execSQL("PRAGMA user_version = 8");
+        } finally {
+            rawDb.close();
+        }
+
+        BookDatabase upgraded = new BookDatabase(context);
+        SQLiteDatabase raw = upgraded.getReadableDatabase();
+
+        assertFileMetaFlags(raw, 1L, 0, 0);
+        assertFileMetaFlags(raw, 2L, 0, 0);
+        assertFileMetaFlags(raw, 3L, 1, 1);
+        assertFileMetaFlags(raw, 4L, 1, 1);
+        assertFileMetaFlags(raw, 5L, 1, 1);
+
+        Cursor w = raw.rawQuery(
+                "SELECT _id, title, last_read FROM works ORDER BY _id", null);
+        try {
+            assertEquals(5, w.getCount());
+            while (w.moveToNext()) {
+                long wid = w.getLong(0);
+                if (wid == 1L) {
+                    assertEquals("Fb2 No Genre", w.getString(1));
+                    assertEquals(1001L, w.getLong(2));
+                } else if (wid == 2L) {
+                    assertEquals("Epub No Genre", w.getString(1));
+                    assertEquals(1002L, w.getLong(2));
+                }
+            }
+        } finally {
+            w.close();
+        }
+
+        Cursor a1 = raw.rawQuery(
+                "SELECT adopted_from FROM files WHERE work_id=1", null);
+        try {
+            assertTrue(a1.moveToFirst());
+            assertTrue(a1.isNull(0));
+        } finally {
+            a1.close();
+        }
+        Cursor a4 = raw.rawQuery(
+                "SELECT adopted_from FROM files WHERE work_id=4", null);
+        try {
+            assertTrue(a4.moveToFirst());
+            assertEquals("/old.fb2", a4.getString(0));
+        } finally {
+            a4.close();
+        }
+    }
+
+    @Test
+    public void upgradeFromV7AddsAdoptedFromKeepingRow() {
+        db.close();
+        java.io.File f = context.getDatabasePath("library.db");
+        if (f.getParentFile() != null) f.getParentFile().mkdirs();
+        SQLiteDatabase rawDb = SQLiteDatabase.openOrCreateDatabase(f.getAbsolutePath(), null);
+        try {
+            rawDb.execSQL(V7_WORKS_CREATE);
+            rawDb.execSQL(V7_FILES_CREATE);
+            rawDb.execSQL(V7_WORK_GENRES_CREATE);
+            rawDb.execSQL("INSERT INTO works (_id, title, last_read, user_edited,"
+                    + " revision, deleted) VALUES (5, 'V7 Title', 424242, 0, 0, 0)");
+            rawDb.execSQL("INSERT INTO files (work_id, path, format, size_bytes, meta_done,"
+                    + " meta_failed, availability, remote_key, content_hash) VALUES "
+                    + "(5, '/x/v7.fb2', 'FB2', 50, 0, 0, 'local', NULL, NULL)");
+            rawDb.execSQL("PRAGMA user_version = 7");
+        } finally {
+            rawDb.close();
+        }
+
+        BookDatabase upgraded = new BookDatabase(context);
+        SQLiteDatabase raw = upgraded.getReadableDatabase();
+        assertFalse(tableExists(raw, "books"));
+        assertTrue(columnExists(raw, "files", "adopted_from"));
+
+        Cursor w = raw.rawQuery(
+                "SELECT title, last_read FROM works WHERE _id=5", null);
+        try {
+            assertTrue(w.moveToFirst());
+            assertEquals("V7 Title", w.getString(0));
+            assertEquals(424242L, w.getLong(1));
+        } finally {
+            w.close();
+        }
+
+        Cursor file = raw.rawQuery(
+                "SELECT path, remote_key, content_hash, adopted_from FROM files WHERE work_id=5",
+                null);
+        try {
+            assertTrue(file.moveToFirst());
+            assertEquals("/x/v7.fb2", file.getString(0));
+            assertTrue(file.isNull(1));
+            assertTrue(file.isNull(2));
+            assertTrue(file.isNull(3));
+        } finally {
+            file.close();
+        }
+
+        assertEquals(5L, upgraded.getIdForPath("/x/v7.fb2"));
+    }
+
+    @Test
+    public void saveUserEditAtNewPathUpdatesPathAdoptedFromAndGenres() {
+        Book b = book("/x/old.fb2", "FB2", "Old", "Auth");
+        b.genres = genres("prose");
+        long id = db.upsert(b);
+        db.markRead(id);
+        long lastRead = lastReadOf(id);
+        String newPath = "/x/app-copy.fb2";
+
+        Book edited = db.getById(id);
+        edited.title = "New Title";
+        edited.author = "New Auth";
+        edited.genres = genres("Mystery", "prose");
+
+        assertTrue(db.saveUserEditAtNewPath(edited, newPath));
+        assertEquals(newPath, edited.path);
+
+        assertEquals(id, db.getIdForPath(newPath));
+        assertEquals(-1, db.getIdForPath("/x/old.fb2"));
+        assertEquals(1, rowCount(db.getReadableDatabase(), "works"));
+        assertEquals(1, rowCount(db.getReadableDatabase(), "files"));
+        assertEquals("/x/old.fb2", adoptedFromOf(id));
+        assertEquals(lastRead, lastReadOf(id));
+
+        Book got = db.getById(id);
+        assertTrue(got.userEdited);
+        assertEquals("New Title", got.title);
+        assertGenresEquals(new String[]{"mystery", "prose"}, got.genres);
+
+        SQLiteDatabase raw = db.getReadableDatabase();
+        Cursor sync = raw.rawQuery(
+                "SELECT remote_key, content_hash FROM files WHERE work_id=?",
+                new String[]{String.valueOf(id)});
+        try {
+            assertTrue(sync.moveToFirst());
+            assertTrue(sync.isNull(0));
+            assertTrue(sync.isNull(1));
+        } finally {
+            sync.close();
+        }
+    }
+
+    @Test
+    public void saveUserEditAtNewPathReturnsFalseWhenRowMissing() {
+        Book b = book("/x/real.fb2", "FB2", "T", "A");
+        long id = db.upsert(b);
+        int worksBefore = rowCount(db.getReadableDatabase(), "works");
+
+        Book edited = db.getById(id);
+        edited.path = "/x/ghost.fb2";
+        assertFalse(db.saveUserEditAtNewPath(edited, "/x/new.fb2"));
+        assertEquals(worksBefore, rowCount(db.getReadableDatabase(), "works"));
+        assertNull(adoptedFromOf(id));
+    }
+
+    @Test
+    public void saveUserEditAtNewPathReturnsFalseWhenNewPathEqualsOld() {
+        Book b = book("/x/same.fb2", "FB2", "T", "A");
+        long id = db.upsert(b);
+        Book edited = db.getById(id);
+        assertFalse(db.saveUserEditAtNewPath(edited, edited.path));
+        assertNull(adoptedFromOf(id));
+    }
+
+    @Test
+    public void upsertBasicAfterAdoptDoesNotCreateSecondWorkOrClearAdoptedFrom() {
+        String oldPath = "/x/original.fb2";
+        String copyPath = "/x/private.fb2";
+        Book b = book(oldPath, "FB2", "Title", "Auth");
+        long id = db.upsert(b);
+        Book edited = db.getById(id);
+        assertTrue(db.saveUserEditAtNewPath(edited, copyPath));
+        String adopted = adoptedFromOf(id);
+
+        Book scan = book(copyPath, "FB2", "Scan name", null);
+        scan.sizeBytes = 9999;
+        long again = db.upsertBasic(scan);
+        assertEquals(id, again);
+        assertEquals(1, rowCount(db.getReadableDatabase(), "works"));
+        assertEquals(1, rowCount(db.getReadableDatabase(), "files"));
+        assertEquals(adopted, adoptedFromOf(id));
+        assertEquals(copyPath, db.getById(id).path);
+    }
+
+    @Test
+    public void scanWithAdoptedFromSkipDoesNotCreateSecondBook() throws Exception {
+        File root = folder.newFolder("scan-root");
+        File original = new File(root, "original.fb2");
+        File copy = new File(root, "adopted.fb2");
+        TestFixtures.writeText(original, TestFixtures.FB2_FULL);
+        TestFixtures.writeText(copy, TestFixtures.FB2_FULL);
+
+        Book b = book(original.getAbsolutePath(), "FB2", "Title", "Auth");
+        long id = db.upsert(b);
+        db.markRead(id);
+        long lastRead = lastReadOf(id);
+
+        Book edited = db.getById(id);
+        assertTrue(db.saveUserEditAtNewPath(edited, copy.getAbsolutePath()));
+
+        java.util.Set<String> skip = db.adoptedFromPaths();
+        LibraryScanner.ScanResult result = LibraryScanner.scanDetailed(
+                Arrays.asList(root), null, skip);
+        Catalog catalog = new Catalog(context, db);
+        catalog.saveScanBatch(result.books);
+
+        assertEquals(1, rowCount(db.getReadableDatabase(), "works"));
+        assertEquals(id, db.getIdForPath(copy.getAbsolutePath()));
+        assertEquals(original.getAbsolutePath(), adoptedFromOf(id));
+        assertEquals(lastRead, lastReadOf(id));
+        assertTrue(original.exists());
+        assertTrue(copy.exists());
     }
 }

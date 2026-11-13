@@ -222,12 +222,12 @@ public final class CoverExtractor {
     // FB2
     // -------------------------------------------------------------------
 
-    /** The closing tag of the FB2 description block (all metadata and the cover
-     *  reference live before it; per the FB2 XSD the {@code <binary>} blocks sit
-     *  between the description and the body, and the body is the bulk of a file). */
+    /** Closing {@code </description>}. Bytes through this tag are the description
+     *  buffer. FictionBook order is stylesheet*, description, body+, binary*. */
     private static final byte[] FB2_DESC_END = ascii("</description>");
-    /** The start of the book body: the header region (description + binary blocks)
-     *  ends where the body begins, so the streaming read stops there. */
+    /** Opening {@code <body}. When the description names a cover id, body bytes
+     *  are read and discarded so a later cover {@code <binary>} can be appended;
+     *  they are not stored in the returned buffer. */
     private static final byte[] FB2_BODY_START = ascii("<body");
     /** Hard cap on the header region buffered for the cover: beyond it the cover is
      *  abandoned (logged) rather than risking an OOM on a pathological document. */
@@ -239,6 +239,7 @@ public final class CoverExtractor {
     private static final byte[] TAG_COVERPAGE_OPEN_HYPHEN = ascii("<cover-page");
     private static final byte[] TAG_COVERPAGE_CLOSE = ascii("</coverpage");
     private static final byte[] TAG_COVERPAGE_CLOSE_HYPHEN = ascii("</cover-page");
+    private static final byte[] TAG_BINARY_OPEN = ascii("<binary");
     private static final byte[] TAG_BINARY_CLOSE = ascii("</binary");
 
     /**
@@ -258,10 +259,9 @@ public final class CoverExtractor {
     }
 
     private static byte[] extractFb2(File file) throws Exception {
-        // One streaming pass over the header region only: the <description> block and
-        // the <binary> blocks that follow it (both precede the body). The book body —
-        // the bulk of a real FB2 — is never read, and the data never becomes a String
-        // (no char[] copies): a 100 MB book costs a few MB of buffer, not hundreds.
+        // One pass: the description, plus the cover <binary> when that description
+        // names an id. Body text is read only to reach the element and is not kept.
+        // The bytes stay a byte[] (no char[] copy).
         byte[] header = readFb2Header(file);
         return coverFromFb2Bytes(header);
     }
@@ -290,15 +290,18 @@ public final class CoverExtractor {
     }
 
     /**
-     * Streams an FB2 file up to the end of its header region and returns the region's
-     * bytes: from the start of the file through {@code </description>} and on to
-     * {@code <body} (or end-of-file). The {@code <binary>} blocks — where the cover's
-     * base64 lives — sit between the two, per the FB2 XSD order.
+     * Streams an FB2 document and returns the description bytes through
+     * {@code </description>}, plus the cover {@code <binary>} element when that
+     * description names an id. FictionBook order is stylesheet*, description, body+,
+     * binary*: the element may sit after the body or, in older files, before it.
+     * Body bytes and any other {@code <binary>} are not part of the result. When a
+     * cover id is present they are read and discarded; with no cover id the read
+     * stops at the description.
      *
-     * <p>The read is bounded by {@link #FB2_HEADER_CAP}: when a (pathological or
-     * non-conformant) file's header region exceeds it, a warning is logged and the
-     * cover is abandoned — the partial bytes are still returned, so a caller that only
-     * needs the metadata can use whatever is complete.</p>
+     * <p>Bounded by {@link #effectiveCoverLimit()} (at most {@link #FB2_HEADER_CAP}).
+     * A description longer than that returns {@code null}; no partial description
+     * is returned. A cover image over that limit is left out of the result, and
+     * the description bytes are still returned.</p>
      *
      * <p>Package-private so the single-pass enricher (and the tests) share the reader.</p>
      */
@@ -312,50 +315,218 @@ public final class CoverExtractor {
     }
 
     private static byte[] readFb2Header(InputStream in) throws IOException {
-            byte[] chunk = new byte[FB2_READ_CHUNK];
-            int cap = effectiveCoverLimit();
-            byte[] data = new byte[Math.min(16 * 1024, cap)];
-            int size = 0;
-            // One streaming pass with a two-phase marker search: first the end of the
-            // description block, then the start of the body. Each chunk is scanned only
-            // once (from the last searched offset, plus the overlap a marker split across
-            // the chunk seam needs), so a 100 MB book costs the header region, not the file.
-            byte[] marker = FB2_DESC_END;
-            int searchFrom = 0;
-            boolean descClosed = false;
-            int n;
-            while ((n = in.read(chunk)) > 0) {
-                if (size + n > cap) {
-                    Log.w(TAG, "FB2 header exceeds cover limit; giving up");
-                    return null;
-                }
-                if (size + n > data.length) {
-                    int next = Math.min(cap, Math.max(data.length * 2, size + n));
-                    data = Arrays.copyOf(data, next);
-                }
-                int before = size;
-                System.arraycopy(chunk, 0, data, size, n);
-                size += n;
-                // Scan the freshly added region: a marker straddling the seam with the
-                // previous data starts within its last (marker.length - 1) bytes.
-                int from = Math.max(searchFrom, before - (marker.length - 1));
-                int at = indexOf(data, from, size, marker);
-                if (at >= 0) {
-                    if (!descClosed) {
-                        // The description is over: the binary blocks (if any) follow,
-                        // and the region ends where the body starts.
-                        descClosed = true;
-                        marker = FB2_BODY_START;
-                        searchFrom = at + FB2_DESC_END.length;
-                                if (searchFrom < size
-                                && indexOf(data, searchFrom, size, FB2_BODY_START) >= 0) break;
-                    } else {
-                        break; // the body has started: the header region is complete
-                    }
-                }
-
+        byte[] chunk = new byte[FB2_READ_CHUNK];
+        int cap = effectiveCoverLimit();
+        byte[] data = new byte[Math.min(16 * 1024, cap)];
+        int size = 0;
+        // Bytes are kept only through </description>. The overlap covers a marker
+        // split across the 8 KB chunk seam. A cover id then keeps one <binary>
+        // element when its decoded bytes fit the cover limit. Body bytes are
+        // discarded and do not count toward that limit.
+        int n;
+        while ((n = in.read(chunk)) > 0) {
+            if (size + n > cap) {
+                Log.w(TAG, "FB2 header exceeds cover limit; giving up");
+                return null;
             }
-            return Arrays.copyOf(data, size);
+            if (size + n > data.length) {
+                int next = Math.min(cap, Math.max(data.length * 2, size + n));
+                data = Arrays.copyOf(data, next);
+            }
+            int before = size;
+            System.arraycopy(chunk, 0, data, size, n);
+            size += n;
+            int from = Math.max(0, before - (FB2_DESC_END.length - 1));
+            int at = indexOf(data, from, size, FB2_DESC_END);
+            if (at >= 0) {
+                int end = at + FB2_DESC_END.length;
+                byte[] tail = null;
+                int extra = size - end;
+                if (extra > 0) {
+                    tail = new byte[extra];
+                    System.arraycopy(data, end, tail, 0, extra);
+                }
+                return finishFb2Header(in, chunk, Arrays.copyOf(data, end), tail, cap);
+            }
+        }
+        return Arrays.copyOf(data, size);
+    }
+
+    /**
+     * Cover id from the description, using the same coverpage / href rules as
+     * {@link #coverFromFb2Bytes}: {@code coverpage} or {@code cover-page}, either
+     * quote, a leading {@code #} stripped. No cover reference returns {@code null}
+     * and the caller stops without reading the book text.
+     */
+    private static String coverBinaryId(byte[] xml, int len) {
+        int coverStart = indexOf(xml, 0, len, TAG_COVERPAGE_OPEN);
+        if (coverStart < 0) coverStart = indexOf(xml, 0, len, TAG_COVERPAGE_OPEN_HYPHEN);
+        if (coverStart < 0) return null;
+        int coverEnd = indexOf(xml, coverStart, len, TAG_COVERPAGE_CLOSE);
+        if (coverEnd < 0) coverEnd = indexOf(xml, coverStart, len, TAG_COVERPAGE_CLOSE_HYPHEN);
+        if (coverEnd < 0) coverEnd = Math.min(len, coverStart + 2000);
+        String binaryId = findHrefValue(xml, coverStart, coverEnd);
+        if (binaryId == null || binaryId.length() == 0) return null;
+        if (binaryId.charAt(0) == '#') binaryId = binaryId.substring(1);
+        if (binaryId.length() == 0) return null;
+        return binaryId;
+    }
+
+    /** Tail kept so a {@code <binary>}, {@code </binary>} or {@code <body} split
+     *  across two reads is still visible. Body bytes themselves are not kept. */
+    private static int discardOverlap() {
+        int n = TAG_BINARY_OPEN.length;
+        if (TAG_BINARY_CLOSE.length > n) n = TAG_BINARY_CLOSE.length;
+        if (FB2_BODY_START.length > n) n = FB2_BODY_START.length;
+        return n - 1;
+    }
+
+    private static byte[] finishFb2Header(InputStream in, byte[] chunk, byte[] desc,
+            byte[] tail, int cap) throws IOException {
+        String binaryId = coverBinaryId(desc, desc.length);
+        if (binaryId == null) return desc;
+
+        byte[] idDouble = ascii("id=\"" + binaryId + "\"");
+        byte[] idSingle = ascii("id='" + binaryId + "'");
+        int overlap = discardOverlap();
+        int rawLimit = coverElementRawLimit(cap);
+        byte[] hold = new byte[FB2_READ_CHUNK + overlap];
+        int holdLen = 0;
+        if (tail != null && tail.length > 0) {
+            hold = ensureCapacity(hold, tail.length);
+            System.arraycopy(tail, 0, hold, 0, tail.length);
+            holdLen = tail.length;
+        }
+
+        // 0 = scan for <binary>, 1 = skip a foreign binary, 2 = keep our element.
+        int mode = 0;
+        byte[] element = null;
+        int elementLen = 0;
+        int binaryScan = 0;
+        while (true) {
+            boolean needRead = false;
+            while (!needRead) {
+                if (mode == 0) {
+                    int at = indexOf(hold, 0, holdLen, TAG_BINARY_OPEN);
+                    if (at < 0) {
+                        holdLen = retainTail(hold, holdLen, overlap);
+                        needRead = true;
+                    } else {
+                        int gt = indexOfByte(hold, at + TAG_BINARY_OPEN.length, holdLen, '>');
+                        if (gt < 0) {
+                            holdLen = shiftDown(hold, holdLen, at);
+                            if (holdLen > 4096) {
+                                holdLen = shiftDown(hold, holdLen, 1);
+                            } else {
+                                needRead = true;
+                            }
+                        } else if (indexOf(hold, at, gt, idDouble) < 0
+                                && indexOf(hold, at, gt, idSingle) < 0) {
+                            holdLen = shiftDown(hold, holdLen, gt + 1);
+                            mode = 1;
+                        } else {
+                            int piece = holdLen - at;
+                            if ((long) piece > (long) rawLimit) return desc;
+                            int alloc = piece < 256 ? 256 : piece;
+                            if (alloc > rawLimit) alloc = rawLimit;
+                            element = new byte[alloc];
+                            System.arraycopy(hold, at, element, 0, piece);
+                            elementLen = piece;
+                            holdLen = 0;
+                            mode = 2;
+                        }
+                    }
+                } else if (mode == 1) {
+                    int close = indexOf(hold, 0, holdLen, TAG_BINARY_CLOSE);
+                    if (close < 0) {
+                        holdLen = retainTail(hold, holdLen, overlap);
+                        needRead = true;
+                    } else {
+                        holdLen = shiftDown(hold, holdLen, close + TAG_BINARY_CLOSE.length);
+                        mode = 0;
+                    }
+                } else {
+                    int close = indexOf(element, binaryScan, elementLen, TAG_BINARY_CLOSE);
+                    if (close >= 0) {
+                        return joinCoverElement(desc, element,
+                                close + TAG_BINARY_CLOSE.length);
+                    }
+                    binaryScan = elementLen - (TAG_BINARY_CLOSE.length - 1);
+                    if (binaryScan < 0) binaryScan = 0;
+                    needRead = true;
+                }
+            }
+            int n = in.read(chunk);
+            if (n <= 0) return desc;
+            if (mode == 2) {
+                if ((long) elementLen + (long) n > (long) rawLimit) return desc;
+                if (elementLen + n > element.length) {
+                    int next = element.length * 2;
+                    if (next < elementLen + n) next = elementLen + n;
+                    if (next > rawLimit) next = rawLimit;
+                    element = Arrays.copyOf(element, next);
+                }
+                System.arraycopy(chunk, 0, element, elementLen, n);
+                elementLen += n;
+            } else {
+                hold = ensureCapacity(hold, holdLen + n);
+                System.arraycopy(chunk, 0, hold, holdLen, n);
+                holdLen += n;
+            }
+        }
+    }
+
+    /** Description plus the cover element when its base64 decodes within
+     *  {@link #effectiveCoverLimit()}. A payload over that limit, or an empty
+     *  one, is dropped and the description is returned alone. {@code keep}
+     *  ends at {@code </binary>}. */
+    private static byte[] joinCoverElement(byte[] desc, byte[] element, int keep) {
+        int gt = indexOfByte(element, 0, keep, '>');
+        int payloadEnd = keep - TAG_BINARY_CLOSE.length;
+        if (gt < 0 || payloadEnd <= gt) return desc;
+        byte[] decoded = decodeBase64(element, gt + 1, payloadEnd - gt - 1);
+        if (decoded == null || decoded.length == 0) return desc;
+        byte[] out = new byte[desc.length + keep];
+        System.arraycopy(desc, 0, out, 0, desc.length);
+        System.arraycopy(element, 0, out, desc.length, keep);
+        return out;
+    }
+
+    /** Raw-byte ceiling for one cover {@code <binary>} element: base64 is larger
+     *  than the decoded image, plus slack for line breaks and the tags. Past this
+     *  the decoded image cannot fit {@link #effectiveCoverLimit()}. */
+    private static int coverElementRawLimit(int cap) {
+        long raw = ((long) cap * 4L) / 3L + ((long) cap / 16L) + 65536L;
+        if (raw > Integer.MAX_VALUE - 8) return Integer.MAX_VALUE - 8;
+        return (int) raw;
+    }
+
+    private static byte[] ensureCapacity(byte[] buf, int needed) {
+        if (needed <= buf.length) return buf;
+        int next = buf.length * 2;
+        if (next < needed) next = needed;
+        return Arrays.copyOf(buf, next);
+    }
+
+    private static int retainTail(byte[] buf, int len, int overlap) {
+        if (len <= overlap) return len;
+        int start = len - overlap;
+        System.arraycopy(buf, start, buf, 0, overlap);
+        return overlap;
+    }
+
+    private static int shiftDown(byte[] buf, int len, int drop) {
+        int keep = len - drop;
+        if (keep <= 0) return 0;
+        System.arraycopy(buf, drop, buf, 0, keep);
+        return keep;
+    }
+
+    private static int indexOfByte(byte[] buf, int from, int end, int c) {
+        for (int i = from; i < end; i++) {
+            if ((buf[i] & 0xFF) == (c & 0xFF)) return i;
+        }
+        return -1;
     }
 
     /**

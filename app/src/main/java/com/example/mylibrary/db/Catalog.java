@@ -47,6 +47,17 @@ public final class Catalog {
         BookProvider.notifyChangeAll(context);
     }
 
+    /**
+     * User edit that also retargets the existing file row. One
+     * {@link BookProvider#notifyChangeAll} when the update commits; silence
+     * when it does not (no insert).
+     */
+    public boolean saveUserEditAtNewPath(Book book, String newPath) {
+        if (!db.saveUserEditAtNewPath(book, newPath)) return false;
+        BookProvider.notifyChangeAll(context);
+        return true;
+    }
+
     public void markRead(long workId) {
         db.markRead(workId);
         BookProvider.notifyChangeAll(context);
