@@ -1,5 +1,6 @@
 package com.example.mylibrary;
 
+import static org.junit.Assert.assertArrayEquals;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
@@ -22,6 +23,7 @@ import com.example.mylibrary.db.BookDatabase;
 import com.example.mylibrary.db.BookProvider;
 import com.example.mylibrary.model.Book;
 import com.example.mylibrary.testutil.TestFixtures;
+import com.example.mylibrary.util.CoverCache;
 
 import org.junit.Before;
 import org.junit.Rule;
@@ -40,7 +42,8 @@ import java.util.ArrayList;
 
 /**
  * Robolectric smoke tests for {@link DetailActivity}: the fields it shows, the
- * on-screen "Edit metadata" button, resume refresh, and the "open in reader"
+ * on-screen "Edit metadata" button, resume refresh, live absent-file mark
+ * ({@code detail_missing} via {@code FileLocator}), and the "open in reader"
  * intent (+ mark-as-read side effect). Kebab-driven edit/remove on the main
  * screen remain covered by {@link MainActivityTest}.
  *
@@ -297,6 +300,144 @@ public class DetailActivityTest {
         c.resume();
 
         assertTrue("the detail screen must close when the catalog row is gone", a.isFinishing());
+    }
+
+    // ------------------------------------------------------------------
+    // absent-file mark (FileLocator on detail screen, not Open)
+    // ------------------------------------------------------------------
+
+    @Test
+    public void detailHidesMissingMarkWhenFileExists() {
+        markMetaDone(bookId);
+        DetailActivity a = launch(bookId);
+
+        View missing = a.findViewById(R.id.detail_missing);
+        assertNotNull("detail_missing must exist in the layout", missing);
+        assertEquals(View.GONE, missing.getVisibility());
+        assertFalse("activity must stay open", a.isFinishing());
+    }
+
+    @Test
+    public void detailShowsMissingMarkWhenFileAbsentWithoutOpen() {
+        markMetaDone(bookId);
+        assertTrue(bookFile.delete());
+        DetailActivity a = launch(bookId);
+
+        TextView missing = (TextView) a.findViewById(R.id.detail_missing);
+        assertNotNull(missing);
+        assertEquals(View.VISIBLE, missing.getVisibility());
+        assertEquals(a.getString(R.string.file_not_found), missing.getText().toString());
+
+        assertNotNull("catalog row must remain", db.getById(bookId));
+        android.database.Cursor c = db.getReadableDatabase().rawQuery(
+                "SELECT last_read FROM works WHERE _id=?", new String[]{String.valueOf(bookId)});
+        try {
+            assertTrue(c.moveToFirst());
+            assertEquals(0L, c.getLong(0));
+        } finally {
+            c.close();
+        }
+    }
+
+    @Test
+    public void detailMissingMarkTracksFileOnResume() throws Exception {
+        markMetaDone(bookId);
+
+        Intent i = new Intent();
+        i.putExtra(DetailActivity.EXTRA_BOOK_ID, bookId);
+        ActivityController<DetailActivity> c = Robolectric.buildActivity(DetailActivity.class, i);
+        DetailActivity a = c.setup().get();
+        TextView missing = (TextView) a.findViewById(R.id.detail_missing);
+
+        assertEquals(View.GONE, missing.getVisibility());
+
+        assertTrue(bookFile.delete());
+        c.pause();
+        c.resume();
+        assertEquals(View.VISIBLE, missing.getVisibility());
+        assertEquals(a.getString(R.string.file_not_found), missing.getText().toString());
+        assertNotNull(db.getById(bookId));
+
+        TestFixtures.writeText(bookFile, "hello again\n");
+        c.pause();
+        c.resume();
+        assertEquals(View.GONE, missing.getVisibility());
+    }
+
+    @Test
+    public void detailHidesMissingMarkWhenAvailabilityIsDownloading() {
+        markMetaDone(bookId);
+        setAvailabilityForWork(bookId, "downloading");
+        assertTrue(bookFile.delete());
+        DetailActivity a = launch(bookId);
+
+        View missing = a.findViewById(R.id.detail_missing);
+        assertNotNull(missing);
+        assertEquals(View.GONE, missing.getVisibility());
+    }
+
+    @Test
+    public void detailHidesMissingMarkWhenAvailabilityIsFailed() {
+        markMetaDone(bookId);
+        setAvailabilityForWork(bookId, "failed");
+        assertTrue(bookFile.delete());
+        DetailActivity a = launch(bookId);
+
+        View missing = a.findViewById(R.id.detail_missing);
+        assertNotNull(missing);
+        assertEquals(View.GONE, missing.getVisibility());
+    }
+
+    @Test
+    public void viewingAbsentFileDoesNotTouchCatalogOrCoverCache() {
+        markMetaDone(bookId);
+        final byte[] coverBytes = new byte[]{1, 2, 3, 4};
+        CoverCache.save(app, bookFile.getAbsolutePath(), coverBytes);
+
+        FiringObserver onBooks = new FiringObserver();
+        FiringObserver onRecent = new FiringObserver();
+        app.getContentResolver().registerContentObserver(BookProvider.CONTENT_URI, true, onBooks);
+        app.getContentResolver().registerContentObserver(BookProvider.RECENT_URI, true, onRecent);
+
+        int filesBefore = countFileRowsForWork(bookId);
+        int worksBefore = countWorkRows(bookId);
+
+        assertTrue(bookFile.delete());
+        launch(bookId);
+        shadowOf(Looper.getMainLooper()).idle();
+
+        assertFalse("detail view must not notify all-books", onBooks.fired);
+        assertFalse("detail view must not notify recent", onRecent.fired);
+        assertArrayEquals(coverBytes, CoverCache.load(app, bookFile.getAbsolutePath()));
+        assertEquals(filesBefore, countFileRowsForWork(bookId));
+        assertEquals(worksBefore, countWorkRows(bookId));
+
+        app.getContentResolver().unregisterContentObserver(onBooks);
+        app.getContentResolver().unregisterContentObserver(onRecent);
+    }
+
+    private int countWorkRows(long workId) {
+        android.database.Cursor c = db.getReadableDatabase().rawQuery(
+                "SELECT COUNT(*) FROM works WHERE _id=?",
+                new String[]{String.valueOf(workId)});
+        try {
+            assertTrue(c.moveToFirst());
+            return c.getInt(0);
+        } finally {
+            c.close();
+        }
+    }
+
+    private int countFileRowsForWork(long workId) {
+        android.database.Cursor c = db.getReadableDatabase().rawQuery(
+                "SELECT COUNT(*) FROM files WHERE work_id=?",
+                new String[]{String.valueOf(workId)});
+        try {
+            assertTrue(c.moveToFirst());
+            return c.getInt(0);
+        } finally {
+            c.close();
+        }
     }
 
     // ------------------------------------------------------------------

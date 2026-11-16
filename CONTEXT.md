@@ -40,7 +40,7 @@ Every book's metadata is stored in **two places**:
 |---|---|
 | `MainActivity` | catalog: 3-stage load (fast scan → display → background enrich), browse, the filter modal opened by the funnel header icon (`ic_filter`/`ic_filter_active`, empty selection = All) — framework **`TabHost`** (API 19, no ViewPager) with two `FilterTab` pages: **Formats** (static `Formats.ALL` vocabulary) and **Genres** (dynamic vocabulary — `db.distinctGenres()` on open; **locked while the stage-2 worker runs**: checkboxes untouchable, search/select-all/clear disabled, "Enriching metadata…" hint; unlocked with a fresh reference on `onFinished()`/`onCancelled()`); draft semantics (OK commits both tabs + resets `recentView`, Cancel discards, re-open lands on Genres if the draft has genres); each tab label carries an 8dp oval `#E74C3C` (`filter_tab_applied`) on the right while at least one item is checked in that tab's draft; the funnel dot remains `isActive()` of the committed state; "Recently read" — checkable item in the kebab menu (popup composition: `develop` skill `references/icons.md`), SAF import; list is cursor-driven (framework `LoaderManager` + `CursorLoader`) |
 | `FilterState` | the single "state → query" conversion point for the catalog: `selectedFormats` (canonical `Formats.ALL` values) + `selectedGenres` (dynamic reference, first-added order — genres have no canonical list) + `recentView` (wins over both in the query: `RECENT_URI`, no selection); `querySelection()`/`queryArgs()` → the provider grammar (`format IN (…)`, `genre IS NOT NULL AND genre IN (…)`, both AND-ed, formats first), `formatFilterArgs()`/`genreFilterArgs()` for the direct `BookDatabase.cursorAll(String[], String[])` path (initial cursor / rescan / remove rebinds bypass the provider); session-only: `save()`/`restore()` via the instance state (survives rotation, not the app closing), `copy()` = the dialog's draft, `isActive()` drives the funnel dot |
-| `DetailActivity` | book details and open in Neo Reader; the "other" block lists all genres comma-separated (or an em dash when none); fast-path enrichment of a not-yet-enriched book on open refreshes that block; the Edit metadata button (`@string/edit_meta`) above Open opens `EditMetaActivity` with `EXTRA_BOOK`; `onResume` re-reads the book by id |
+| `DetailActivity` | book details and open in Neo Reader; the "other" block lists all genres comma-separated (or an em dash when none); fast-path enrichment of a not-yet-enriched book on open refreshes that block; the Edit metadata button (`@string/edit_meta`) above Open opens `EditMetaActivity` with `EXTRA_BOOK`; `onResume` re-reads the book by id; when `FileLocator.locateWork` is `ABSENT`, the `detail_missing` line with `file_not_found` is visible; `READY`, `DOWNLOADING`, and `FAILED` leave it hidden; the check runs on first show, in `onResume`, and after the fast-path update; the catalog and the cover cache are not written |
 | `EditMetaActivity` | metadata form (title, author, publisher, dynamic genre fields + "Add genre", a `\u2715` on each row: several rows removes that row, the only non-empty row clears the text, the only empty row hides it; "Add genre" is disabled while any row is empty after trim, description) → writes file (EPUB/FB2) + always updates catalog (`userEdited = true`); genres normalized to `Locale.ROOT` lower case on save; empty fields drop out of the list |
 | `Book` | Parcelable model (`genres` — ordered list from `work_genres`, empty list = no genre; cursor rows leave it empty until `getById`; plus `metaDone`, `metaFailed`, `userEdited` flags) |
 | `db/Catalog` | the **only** write entry for the catalog from screens and `MetaEnricher`. One-shot doors (`saveScanBatch`, `removeMissing`, `importFile`, `saveUserEdit`, `saveUserEditAtNewPath` (user edit and `files.path` change by work id, one `notifyChangeAll`, no INSERT), `markRead`, `deleteByPath`, `clear`, `applyEnrichmentBatch`, `applyEnrichmentOne`, `markMetaFailed`) end in `BookProvider.notifyChangeAll` (list + recently read). The stage-2 loop writes through `persistEnrichmentBatch` / `persistMetaFailed` (no notify) and announces with throttled `announceChangeAll` (both URIs, no write). Reads stay on `BookDatabase` |
@@ -86,6 +86,13 @@ pagination is on, a horizontal swipe also turns pages.
   file is still the original) and does not become a second book while the original
   file is still in shared storage. The walk does not enter the app external-files
   directory, so a private copy there is not discovered as a new book.
+  `removeMissing` still runs only for a root whose walk finished (`complete`) and
+  only for paths under that root that the walk did not see and that are not a
+  file. Paths outside those roots are not deleted: an unmounted volume is not
+  distinguishable from a deletion. A rename without a scan does not move the
+  work: until the next full scan of that root the old row stays, and the detail
+  mark shows `ABSENT` when the file is gone; after the scan the new path is a
+  new work. There is no full `File.exists()` pass over the `files` table on a scan.
 - **Enrich (stage 2, background)** → `MetaEnricher.start()` — a single worker over
   `db.needMeta()`, which is split by format type and worked cheapest-first
   (EPUB, FB2 → FB2ZIP → MOBI → the rest; the un-enriched/timed-out books stay last
@@ -107,11 +114,12 @@ pagination is on, a horizontal swipe also turns pages.
   first. Only `READY` continues to `Openers.openFile()` → `ACTION_VIEW` →
   `Catalog.markRead()` (last_read is set only after the viewer actually launches).
   `ABSENT` shows the same "File not found" toast as a missing file. `DOWNLOADING`
-  and `FAILED` show a short toast and stop. Those three do not call `Openers` and
-  do not set last_read. There is no Download button: this screen does not start a
-  download and does not put one on a queue. Fast path: a book still not enriched (opened
-  before stage 2 reached it) is enriched on open, off the UI thread, and the detail
-  screen refreshes itself.
+  and `FAILED` show a short toast and stop. The toast on the Open button is not
+  replaced by the on-screen mark. `ABSENT`, `DOWNLOADING`, and `FAILED` still do
+  not call `Openers` and do not set last_read. There is no Download button: this
+  screen does not start a download and does not put one on a queue. Fast path: a
+  book still not enriched (opened before stage 2 reached it) is enriched on open,
+  off the UI thread, and the detail screen refreshes itself.
 - **Edit** → `EditMetaActivity`: for EPUB/FB2, if the file's directory accepts a
   create-and-delete probe, `MetaWriter.write` on that file (full genre list: EPUB
   `dc:subject`, FB2 `<genre>`). If the probe fails, the book is copied into
