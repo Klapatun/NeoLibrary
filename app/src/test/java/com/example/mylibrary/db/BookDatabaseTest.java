@@ -2024,6 +2024,111 @@ public class BookDatabaseTest {
         assertEquals(5L, upgraded.getIdForPath("/x/v7.fb2"));
     }
 
+    // ------------------------------------------------------------------
+    // saveUserEdit (UPDATE by work id — no INSERT when row is gone)
+    // ------------------------------------------------------------------
+
+    @Test
+    public void saveUserEditUpdatesExistingRowByIdAndSetsUserEdited() {
+        Book b = book("/x/user-edit.fb2", "FB2", "Old Title", "Old Author");
+        b.genres = genres("prose");
+        long id = db.upsert(b);
+        db.markRead(id);
+        long lastRead = lastReadOf(id);
+        SQLiteDatabase raw = db.getWritableDatabase();
+        raw.execSQL("UPDATE files SET meta_done = 1 WHERE work_id = " + id);
+
+        Book edited = db.getById(id);
+        edited.title = "Edited Title";
+        edited.author = "Edited Author";
+        edited.publisher = "Edited Publisher";
+        edited.description = "Edited description";
+        edited.series = "Edited Series";
+        edited.genres = genres("Mystery");
+        edited.format = "EPUB";
+        edited.sizeBytes = 54321;
+        edited.exported = false;
+        db.saveUserEdit(edited);
+
+        assertEquals(id, edited.id);
+        assertEquals(id, db.getIdForPath("/x/user-edit.fb2"));
+        SQLiteDatabase readable = db.getReadableDatabase();
+        assertEquals(1, rowCount(readable, "works"));
+        assertEquals(1, rowCount(readable, "files"));
+
+        Book got = db.getById(id);
+        assertNotNull(got);
+        assertTrue(got.userEdited);
+        assertEquals("Edited Title", got.title);
+        assertEquals("Edited Author", got.author);
+        assertEquals("Edited Publisher", got.publisher);
+        assertEquals("Edited description", got.description);
+        assertEquals("Edited Series", got.series);
+        assertEquals("EPUB", got.format);
+        assertEquals(54321, got.sizeBytes);
+        assertFalse(got.exported);
+        assertGenresEquals(new String[]{"mystery"}, got.genres);
+        assertEquals(lastRead, lastReadOf(id));
+        assertTrue("meta_done must stay 1", got.metaDone);
+        assertEquals("/x/user-edit.fb2", got.path);
+
+        Book clearNullGenres = db.getById(id);
+        clearNullGenres.genres = null;
+        db.saveUserEdit(clearNullGenres);
+        assertEquals(0, workGenreRowCount(readable, id));
+
+        Book clearEmptyGenres = db.getById(id);
+        clearEmptyGenres.genres = new ArrayList<String>();
+        db.saveUserEdit(clearEmptyGenres);
+        assertEquals(0, workGenreRowCount(readable, id));
+    }
+
+    @Test
+    public void saveUserEditDoesNotInsertWhenWorkIsGone() {
+        Book b = book("/x/deleted-edit.fb2", "FB2", "Title", "Author");
+        long id = db.upsert(b);
+        Book edited = db.getById(id);
+        long oldId = edited.id;
+        String path = edited.path;
+        db.deleteByPath(path);
+
+        edited.title = "Ghost Title";
+        db.saveUserEdit(edited);
+
+        assertTrue(db.all(null).isEmpty());
+        assertNull(db.getById(oldId));
+        assertEquals(-1, db.getIdForPath(path));
+        SQLiteDatabase raw = db.getReadableDatabase();
+        assertEquals(0, rowCount(raw, "works"));
+        assertEquals(0, rowCount(raw, "files"));
+        assertEquals(0, rowCount(raw, "work_genres"));
+        assertEquals(oldId, edited.id);
+    }
+
+    @Test
+    public void saveUserEditDoesNotTouchAnotherWorkOnTheSamePath() {
+        String path = "/x/shared-path.epub";
+        Book bookA = book(path, "EPUB", "Title A", "Author A");
+        long idA = db.upsert(bookA);
+        Book snapshotA = db.getById(idA);
+        snapshotA.title = "Stale Edit Title";
+
+        db.deleteByPath(path);
+        Book bookB = book(path, "EPUB", "Title B", "Author B");
+        long idB = db.upsert(bookB);
+        assertFalse(db.getById(idB).userEdited);
+
+        db.saveUserEdit(snapshotA);
+
+        assertEquals(1, db.all(null).size());
+        assertEquals(idB, db.getIdForPath(path));
+        assertNull(db.getById(idA));
+
+        Book gotB = db.getById(idB);
+        assertEquals("Title B", gotB.title);
+        assertFalse(gotB.userEdited);
+    }
+
     @Test
     public void saveUserEditAtNewPathUpdatesPathAdoptedFromAndGenres() {
         Book b = book("/x/old.fb2", "FB2", "Old", "Auth");
