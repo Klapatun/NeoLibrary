@@ -111,8 +111,9 @@ lint 0 errors.
   (`upsertBasicBatch`), enricher (`updateMetadataBatch`), импорт файла
   (`Catalog.importFile`).
 - **Сделано (PR #14, `17a8c65`, 2026-10-17):** scan и stage-2 — батчи в
-  транзакциях, BATCH_SIZE=5. **Сверка 2026-11-14:** схема v7, prod-импорт —
-  через `Catalog`, не голый `upsertBasic` из UI.
+  транзакциях, BATCH_SIZE=5. **Сверка 2026-11-18:** схема v9 (`DB_VERSION = 9`,
+  `BookDatabase.java:32`, `f0ec059`), prod-импорт — через `Catalog`, не голый
+  `upsertBasic` из UI.
 - **Осталось:** публичный `upsertBasic()` без обёртки (в основном тесты и
   редкие прямые вызовы) — при падении посередине теоретически половинчатое
   `works`/`files`.
@@ -152,8 +153,8 @@ lint 0 errors.
   закрыт фиксом `185d95b`, см. 7.4 в истории git) —
   отдельная чистовая задача по категориям [ ] (низкий).
   К ним добавились hardcoded-строки в `MainActivity`/`DetailActivity`/`EditMetaActivity`
-  («Found N book(s)», «File not found», «No books read yet.» и т.п.) и `#FFF3CD`
-  в `activity_main.xml`.
+  («Found N book(s)», «No books read yet.», «Format:», «Saving metadata…» и т.п.) и `#FFF3CD`
+  в `activity_main.xml`. «File not found» уже ресурс `R.string.file_not_found`.
 - **`UnknownIssueId`-шум из `app/lint.xml`** (2 шт. на каждый вариант;
   контекст — в вынесенном разделе 14, полный текст — в истории git) [ ]
   (низкий, найдено 2026-10-08): `ObsoleteApi` (строка 21,
@@ -425,20 +426,21 @@ View → ViewGroup → целевой вью.
 
 ## [REFAC] 2026-10-17: декомпозиция `CoverExtractor` (~800 строк) — [ ] (средний)
 
-**Создано:** 2026-10-17. **Актуальность сверена:** 2026-11-14 (~798 строк).
+**Создано:** 2026-10-17. **Актуальность сверена:** 2026-11-18 (862 строки в редакторе, непустых 798; файл не менялся с `c1aef32`, 2026-11-13).
 Естественный наследник закрытого [REFAC] «Разрастание `MetaExtractor` и
 `CoverExtractor`» (вынесен из файла 2026-10-21, полный текст — в истории
 git). Тикет согласован к работе после сверки с текущим кодом; изменений в
 production-код не внесено.
-- **Где:** `meta/CoverExtractor` — ~798 строк (на 2026-09-30 было 448;
+- **Где:** `meta/CoverExtractor` — 862 строки в редакторе, непустых 798 (на 2026-09-30 было 448;
   на 2026-10-17 — 651; рост связан с потоковым чтением FB2-шапки, base64 по
   байтам и ограничителями памяти, `f4264f9`, `edec9c8`, `7486c32`, `55d19f8`).
 - **Проблема:** в классе сосредоточены все byte-level FB2-логики и общие
   ZIP/byte helpers:
-  `readFb2EntryBytes` (`CoverExtractor.java:529`),
-  `readFb2Header`/`coverFromFb2Bytes`, base64-декодер по байтам,
-  `readEntryBytes`/`readEntryAsString`/`readToEndBytes`
-  (`CoverExtractor.java:649-690`). Одновременно здесь остаётся логика EPUB,
+  `readFb2Header` (`CoverExtractor.java:308`, поток `:317`),
+  `coverFromFb2Bytes` (`:540`), base64-декодер по байтам,
+  `readFb2EntryBytes` (`:700`),
+  `readEntryBytes` / `readEntryAsString` / `readToEndBytes`
+  (`CoverExtractor.java:822-847`). Одновременно здесь остаётся логика EPUB,
   FB2, FB2ZIP и MOBI.
 - **Доработка:** вынести byte-level FB2-логику в отдельный package-private
   класс (например `meta/Fb2ZipReader`) по прецеденту `MobiParser`;
@@ -446,10 +448,14 @@ production-код не внесено.
   `readFb2EntryBytes` для `MetaExtractor`/`MetaEnricher` — без изменений.
   Рефакторинг без изменения поведения, шаг = коммит, safety net —
   `CoverExtractorTest` + полный сьют.
-- **Уточнение поведения:** после превышения эффективного лимита памяти
-  `readFb2Header` возвращает `null` и cover/meta-путь обрабатывает это как
-  отсутствие результата; частичный буфер не возвращается (`55d19f8`). Это
-  поведение сохраняется при рефакторинге.
+- **Уточнение поведения:** описание длиннее `effectiveCoverLimit()` —
+  `readFb2Header` возвращает `null`, частичный буфер не отдаётся
+  (`CoverExtractor.java:328-330`). Элемент обложки, который не влезает в лимит,
+  из результата выкидывается, байты description возвращаются
+  (`finishFb2Header` / `joinCoverElement`, `c1aef32`). Оба исхода сохраняются
+  при рефакторинге. Класса `Fb2ZipReader` в дереве нет. Публичные `extract(File)`
+  (`:71`) и `canHaveCover` (`:87`) и шов `readFb2EntryBytes` для `MetaExtractor`
+  (`:214`) / `MetaEnricher` (`:249`) на месте.
 - **Ограничения:** анти-рекомендации (no единый `BookReader`, no
   interface-стратегия, no субпакеджи, pre-lambda, no новые зависимости) —
   раздел 3 вынесенного закрытого тикета (полный текст — в истории git);
@@ -493,12 +499,13 @@ git-историей; полновесного ревью PR #14 ещё не б�
   кооперативная отмена или вынос cap/таймаута в настройки.
 
 ### 15.3 Доки: `docs/architecture.md` vs `CONTEXT.md` — [ ] (низкий)
-- **Где:** `docs/architecture.md` (~1230 строк, шапка ссылается на
+- **Где:** `docs/architecture.md` (1481 строка в редакторе, непустых ~1233; шапка ссылается на
   `CONTEXT.md` как «быстрый контекст»), `CONTEXT.md`, `README.md`.
 - **Проблема:** формального разведения ролей нет: `CONTEXT.md` шлёт за
   архитектурой в **`README.md`**, а не в `docs/architecture.md`; `README` не
   ссылается на `architecture.md`. Два длинных текста дублируют знания;
-  `architecture.md` местами отстаёт от кода (см. **7.6** — `user_edited`).
+  `architecture.md` местами отстаёт от кода (см. **7.6** — `user_edited`;
+  в `architecture.md:428` всё ещё `DB_VERSION = 7`, в коде v9).
 - **Доработка:** явно прописать иерархию (напр. CONTEXT — сессия / class map,
   README — сборка и workflows, `architecture.md` — учебное развёрнутое
-  описание) + перекрёстные ссылки; сверить устаревшие абзацы с v7/`Catalog`.
+  описание) + перекрёстные ссылки; сверить устаревшие абзацы с v9/`Catalog`.
