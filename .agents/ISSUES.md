@@ -73,6 +73,10 @@ lint 0 errors.
 `saveUserEditDoesNotInsertWhenWorkIsGone`,
 `saveUserEditDoesNotTouchAnotherWorkOnTheSamePath`,
 `saveUserEditWhenRowMissingDoesNotInsertButStillNotifies`.
+Обновление 2026-11-18: 7.6 закрыт и вынесен из этого файла (полный текст — в
+истории git). Абзац «Защищённые поля» и строка таблицы решений больше не
+называют `user_edited` монотонным; в 0 его ставит повторный импорт уже
+известного пути (`markMetaPending` / `importSkeleton`, фикс 7.1 `cf94ae8`).
 
 ### 7.5 `startEnrichment()` на UI-потоке при каждой ротации — [ ] (низкий)
 - **Где:** `MainActivity.onCreate` (фикс 6.3, `9987668`).
@@ -81,12 +85,6 @@ lint 0 errors.
   (`fromCursor` на каждую строку), хотя нужен только ответ «пусто/не пусто».
 - **Доработка:** дешёвый `SELECT COUNT(*) WHERE meta_done=0` (новый
   `hasPendingMeta()`) либо перенос проверки внутрь воркера.
-
-### 7.6 `architecture.md` называет `user_edited` монотонным — [ ] (низкий)
-- **Где:** `docs/architecture.md`, раздел 7.1, абзац «Защищённые поля».
-- **Проблема:** текст говорит, что `user_edited` никогда не идёт из 1 в 0.
-  `markMetaPending` сбрасывает его в 0 (фикс 7.1, `cf94ae8`).
-- **Доработка:** поправить абзац под текущий контракт `markMetaPending`.
 
 ---
 
@@ -502,8 +500,8 @@ git-историей; полновесного ревью PR #14 ещё не б�
 - **Проблема:** формального разведения ролей нет: `CONTEXT.md` шлёт за
   архитектурой в **`README.md`**, а не в `docs/architecture.md`; `README` не
   ссылается на `architecture.md`. Два длинных текста дублируют знания;
-  `architecture.md` местами отстаёт от кода (см. **7.6** — `user_edited`;
-  в `architecture.md:428` всё ещё `DB_VERSION = 7`, в коде v9).
+  `architecture.md` местами отстаёт от кода (7.6 закрыт, в истории git; в строке
+  ~428 всё ещё `DB_VERSION = 7`, в коде v9).
 - **Доработка:** явно прописать иерархию (напр. CONTEXT — сессия / class map,
   README — сборка и workflows, `architecture.md` — учебное развёрнутое
   описание) + перекрёстные ссылки; сверить устаревшие абзацы с v9/`Catalog`.
