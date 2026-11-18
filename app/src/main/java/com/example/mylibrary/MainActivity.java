@@ -1106,7 +1106,7 @@ public class MainActivity extends Activity
      *  (see {@link #startScan}) and stage-2 announces itself via {@code notifyChange}. */
     private void startEnrichment() {
         if (isFinishing()) return;
-        if (db.needMeta().isEmpty()) return;
+        if (!db.hasPendingMeta()) return;
         // The strip takes height away from the list — the bookContainer layout
         // listener re-measures the list page size once the new height is laid out.
         // NOTE the order: start() first CANCELS any previous pass, and that
