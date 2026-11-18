@@ -1206,6 +1206,75 @@ public class BookDatabaseTest {
         assertEquals(pending, pendingBooks.get(0).id);
     }
 
+    @Test
+    public void hasPendingMetaIsFalseWhenNothingIsPending() {
+        assertFalse(db.hasPendingMeta());
+
+        long id = db.upsertBasic(book("/x/done.epub", "EPUB", "Done", null));
+        MetaData md = new MetaData();
+        md.title = "Enriched";
+        md.found = true;
+        db.updateMetadata(id, md, true);
+        assertFalse(db.hasPendingMeta());
+
+        long pendingId = db.upsertBasic(book("/x/gone.epub", "EPUB", "Gone", null));
+        db.getWritableDatabase().execSQL(
+                "UPDATE works SET deleted=1 WHERE _id=" + pendingId);
+        assertFalse("deleted works are not in the queue predicate",
+                db.hasPendingMeta());
+    }
+
+    @Test
+    public void hasPendingMetaIsTrueWhenAtLeastOneFileIsPending() {
+        long id = db.upsertBasic(book("/x/fresh.fb2", "FB2", "Fresh", null));
+        assertTrue(db.hasPendingMeta());
+
+        db.markMetaFailed(id);
+        assertTrue("meta_failed rows stay pending", db.hasPendingMeta());
+
+        long doneId = db.upsertBasic(book("/x/other.fb2", "FB2", "Other", null));
+        MetaData md = new MetaData();
+        md.title = "Other";
+        md.found = true;
+        db.updateMetadata(doneId, md, true);
+        assertTrue(db.hasPendingMeta());
+    }
+
+    @Test
+    public void hasPendingMetaAgreesWithNeedMetaEmptiness() {
+        long done = db.upsertBasic(book("/x/done.txt", "TXT", "Done", null));
+        MetaData md = new MetaData();
+        md.title = "Done";
+        md.found = true;
+        db.updateMetadata(done, md, true);
+
+        long pending = db.upsertBasic(book("/x/pending.txt", "TXT", "Pending", null));
+        long failed = db.upsertBasic(book("/x/failed.epub", "EPUB", "Failed", null));
+        db.markMetaFailed(failed);
+
+        long deletedPending = db.upsertBasic(
+                book("/x/deleted.mobi", "MOBI", "Deleted", null));
+        db.getWritableDatabase().execSQL(
+                "UPDATE works SET deleted=1 WHERE _id=" + deletedPending);
+
+        assertEquals(!db.needMeta().isEmpty(), db.hasPendingMeta());
+    }
+
+    @Test
+    public void hasPendingMetaDoesNotBuildTheBookQueue() {
+        BookDatabase probe = new BookDatabase(context) {
+            @Override
+            public List<Book> needMeta() {
+                throw new AssertionError("hasPendingMeta must not materialize the queue");
+            }
+        };
+
+        assertFalse(probe.hasPendingMeta());
+
+        db.upsertBasic(book("/x/queued.txt", "TXT", "Queued", null));
+        assertTrue(probe.hasPendingMeta());
+    }
+
     /** A timed-out parse must leave the book in the stage-2 queue (meta_done stays 0)
      *  so that every rescan retries it — the flag only changes its priority. */
     @Test
