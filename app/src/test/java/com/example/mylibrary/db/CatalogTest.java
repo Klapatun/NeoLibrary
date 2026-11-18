@@ -370,4 +370,28 @@ public class CatalogTest {
         assertEquals(worksBefore, db.all(null).size());
         obs.unregister(context);
     }
+
+    @Test
+    public void saveUserEditWhenRowMissingDoesNotInsertButStillNotifies() {
+        Book b = book("/x/deleted-facade.epub", "EPUB", "Title");
+        long id = db.upsert(b);
+        Book edited = db.getById(id);
+        long oldId = edited.id;
+        String path = edited.path;
+        db.deleteByPath(path);
+        edited.title = "Ghost";
+
+        UriNotifyCounter obs = new UriNotifyCounter();
+        obs.register(context);
+
+        catalog.saveUserEdit(edited);
+
+        obs.idle();
+        assertTrue(db.all(null).isEmpty());
+        assertEquals(-1, db.getIdForPath(path));
+        assertEquals(1, obs.content.get());
+        assertEquals(1, obs.recent.get());
+        assertEquals(oldId, edited.id);
+        obs.unregister(context);
+    }
 }

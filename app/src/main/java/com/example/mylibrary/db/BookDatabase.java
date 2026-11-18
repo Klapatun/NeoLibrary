@@ -437,18 +437,63 @@ public class BookDatabase extends SQLiteOpenHelper {
         }
     }
 
-    /** Full metadata upsert plus {@code user_edited=1} in one transaction. */
+    /**
+     * Updates the existing work ({@code b.id}) and its file (matched by that
+     * id and {@code b.path}) and sets {@code user_edited=1}, in one transaction.
+     * Does not insert a work or a file. A missing work row writes nothing and
+     * leaves {@code b.id} unchanged.
+     */
     public void saveUserEdit(Book b) {
         synchronized (WRITE_LOCK) {
             SQLiteDatabase db = getWritableDatabase();
             db.beginTransaction();
             try {
-                long workId = upsertWorkAndFile(db, b, true);
-                ContentValues cv = new ContentValues();
-                cv.put("user_edited", 1);
-                db.update("works", cv, "_id=?", new String[]{String.valueOf(workId)});
+                boolean workExists = false;
+                Cursor work = db.rawQuery(
+                        "SELECT _id FROM works WHERE _id=?",
+                        new String[]{String.valueOf(b.id)});
+                try {
+                    workExists = work.moveToFirst();
+                } finally {
+                    work.close();
+                }
+                if (!workExists) {
+                    db.setTransactionSuccessful();
+                    return;
+                }
+
+                ContentValues wv = new ContentValues();
+                wv.put("title", b.title);
+                wv.put("author", b.author);
+                wv.put("publisher", b.publisher);
+                wv.put("description", b.description);
+                wv.put("series", b.series);
+                wv.put("user_edited", 1);
+                db.update("works", wv, "_id=?", new String[]{String.valueOf(b.id)});
+
+                ArrayList<String> genreList = b.genres == null
+                        ? new ArrayList<String>() : b.genres;
+                replaceGenresOn(db, b.id, MetaData.normalizeGenres(genreList));
+
+                long fileId = -1;
+                Cursor file = db.rawQuery(
+                        "SELECT _id FROM files WHERE work_id=? AND path=?",
+                        new String[]{String.valueOf(b.id), b.path});
+                try {
+                    if (file.moveToFirst()) fileId = file.getLong(0);
+                } finally {
+                    file.close();
+                }
+                if (fileId >= 0) {
+                    ContentValues fv = new ContentValues();
+                    fv.put("format", b.format);
+                    fv.put("size_bytes", b.sizeBytes);
+                    fv.put("exported", b.exported ? 1 : 0);
+                    db.update("files", fv, "_id=?",
+                            new String[]{String.valueOf(fileId)});
+                }
+
                 db.setTransactionSuccessful();
-                b.id = workId;
             } finally {
                 db.endTransaction();
             }
