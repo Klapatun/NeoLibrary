@@ -65,16 +65,14 @@ lint 0 errors.
 Обновление 2026-11-12: 7.2 закрыт фасадом 16.2 и вынесен из этого файла.
 `MetaEnricher.start` объявляет оба URI через `Catalog.announceChangeAll`
 (троттлинг 300 мс сохранён). Полный текст — в истории git.
-
-### 7.3 Узкая resurrect-гонка в `EditMetaActivity` → `Catalog.saveUserEdit` — [ ] (низкий)
-- **Где:** `EditMetaActivity` (`SaveTask`), `BookDatabase.saveUserEdit` →
-  `upsertWorkAndFile` (фикс 6.2, `8d5995a`; запись через `Catalog` в `master`).
-- **Проблема:** фикс закрыл широкий случай (строка удалена до `getById`), но если
-  файл/работу удалят **между** `db.getById(book.id)` и `catalog.saveUserEdit(updated)`,
-  `upsertWorkAndFile` по **path** может снова INSERT и поставить `user_edited=1`:
-  книга воскресает под новым id. Окно — миллисекунды.
-- **Доработка:** сохранять правку пользователя только через id-based update
-  (`UPDATE works` / `files` … `WHERE _id=?`, без INSERT-ветки).
+Обновление 2026-11-18: 7.3 закрыт и вынесен из этого файла (полный текст — в
+истории git). Фикс `c193120` (ветка `fix/7.3_save_user_edit_by_id`, план
+`.agents/plans/fix_7.3_save_user_edit_by_id/PLAN.md`): `saveUserEdit` обновляет
+работу по id и не вставляет строку, если её уже нет. Тесты `d253321`:
+`saveUserEditUpdatesExistingRowByIdAndSetsUserEdited`,
+`saveUserEditDoesNotInsertWhenWorkIsGone`,
+`saveUserEditDoesNotTouchAnotherWorkOnTheSamePath`,
+`saveUserEditWhenRowMissingDoesNotInsertButStillNotifies`.
 
 ### 7.5 `startEnrichment()` на UI-потоке при каждой ротации — [ ] (низкий)
 - **Где:** `MainActivity.onCreate` (фикс 6.3, `9987668`).
