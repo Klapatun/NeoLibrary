@@ -77,14 +77,15 @@ lint 0 errors.
 истории git). Абзац «Защищённые поля» и строка таблицы решений больше не
 называют `user_edited` монотонным; в 0 его ставит повторный импорт уже
 известного пути (`markMetaPending` / `importSkeleton`, фикс 7.1 `cf94ae8`).
-
-### 7.5 `startEnrichment()` на UI-потоке при каждой ротации — [ ] (низкий)
-- **Где:** `MainActivity.onCreate` (фикс 6.3, `9987668`).
-- **Проблема:** `startEnrichment()` → `db.needMeta()`: при каждом пересоздании
-  (ротация) на UI-потоке материализуется весь список pending-книг
-  (`fromCursor` на каждую строку), хотя нужен только ответ «пусто/не пусто».
-- **Доработка:** дешёвый `SELECT COUNT(*) WHERE meta_done=0` (новый
-  `hasPendingMeta()`) либо перенос проверки внутрь воркера.
+Обновление 2026-11-18: 7.5 закрыт и вынесен из этого файла (полный текст — в
+истории git). Фикс `ba3283b` (ветка `fix/7.5_has_pending_meta`, план
+`.agents/plans/fix_7.5_has_pending_meta/PLAN.md`): `hasPendingMeta` считает
+очередь через `SELECT COUNT(*)` с тем же фильтром, что `needMeta`, без сборки
+`Book`. `startEnrichment` выходит до `MetaEnricher.start`, если очередь пуста.
+Тесты `39d1215`: `hasPendingMetaIsFalseWhenNothingIsPending`,
+`hasPendingMetaIsTrueWhenAtLeastOneFileIsPending`,
+`hasPendingMetaAgreesWithNeedMetaEmptiness`,
+`hasPendingMetaDoesNotBuildTheBookQueue`.
 
 ---
 
@@ -92,8 +93,8 @@ lint 0 errors.
 
 **Создано:** 2026-10-01. **Статус:** закрытые пункты (1.1, 1.2, 2.1 — сделаны
 2026-10-02; 3.1 — реализовано в фиче cursor UI) вынесены из этого файла
-(полный текст — в истории git). Осталось: 1.3 (частично), 2.2, 3.2;
-плюс раздел [FIX] 7.x (7.4 закрыт, в истории git).
+(полный текст — в истории git). Осталось: 1.3 (частично), 2.2, 3.2.
+Раздел [FIX] 7.x закрыт (7.1–7.6 в истории git).
 Источник: журнал `.agents/scaner/PLAN_CONTEXT.md` (8 коммитов, 130/130 тестов) +
 обзор кода. Приоритет: **высокий** — до масштабирования библиотеки (тысячи+
 книг) или до релиза; **средний** — заметное улучшение; **низкий** — nice-to-have.
