@@ -20,6 +20,7 @@ import android.view.MenuItem;
 import android.view.MotionEvent;
 import android.view.View;
 import android.view.ViewConfiguration;
+import android.widget.AbsListView;
 import android.widget.Button;
 import android.widget.CompoundButton;
 import android.widget.FrameLayout;
@@ -71,6 +72,12 @@ public class MainActivity extends Activity
     private static final int GRID_PAGE_SIZE = 6;
     /** SharedPreferences key: the pagination on/off choice (persists like view_mode). */
     private static final String PREF_KEY_PAGINATION = "pagination_enabled";
+    /** Instance state: 0-based catalog page. Not written to library_prefs. */
+    private static final String STATE_CATALOG_PAGE = "catalog_page";
+    /** Instance state: first visible row when pagination is off. */
+    private static final String STATE_CATALOG_SCROLL_POSITION = "catalog_scroll_position";
+    /** Instance state: top of that row when pagination is off. */
+    private static final String STATE_CATALOG_SCROLL_TOP = "catalog_scroll_top";
 
     private BookDatabase db;
     private Catalog catalog;
@@ -96,6 +103,14 @@ public class MainActivity extends Activity
     /** Pixel height of an unbound list row, measured once per activity.
      *  Zero until the first positive measure; not persisted. */
     private int listRowHeightPx;
+    /** One-shot: after recreation, the first loader delivery restores the
+     *  catalog place. Cold start leaves this false, so pause/stop/start/resume
+     *  never move the page or the scroll. */
+    private boolean restoreCatalogPlace;
+    /** First visible row to restore when pagination is off. */
+    private int restoreScrollPosition;
+    /** Top of that row to restore when pagination is off. */
+    private int restoreScrollTop;
     /** The view's touch slop; the swipe threshold is a multiple of it. */
     private int swipeSlop;
     /** The header kebab's popup last built by {@link #showHeaderMenu}; exposed for
@@ -297,7 +312,23 @@ public class MainActivity extends Activity
         paginationEnabled = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
                 .getBoolean(PREF_KEY_PAGINATION, false);
         if (paginationEnabled) {
-            adapter.setPagination(true, pageSizeForCurrentMode(), 0);
+            int page = 0;
+            if (savedInstanceState != null) {
+                page = savedInstanceState.getInt(STATE_CATALOG_PAGE, 0);
+            }
+            adapter.setPagination(true, pageSizeForCurrentMode(), page);
+        }
+        if (savedInstanceState != null) {
+            // Page top (pagination on) or the saved scroll (pagination off).
+            // Applied once from the first loader delivery, not from here:
+            // the cursor is not the loader's result yet, and view-state
+            // restore would otherwise put the old window's offset on page 0.
+            restoreCatalogPlace = true;
+            if (!paginationEnabled) {
+                restoreScrollPosition = savedInstanceState.getInt(
+                        STATE_CATALOG_SCROLL_POSITION, 0);
+                restoreScrollTop = savedInstanceState.getInt(STATE_CATALOG_SCROLL_TOP, 0);
+            }
         }
         updatePageIndicator();
         // The list's page size ("as many rows as fit the screen") is a function of
@@ -350,14 +381,27 @@ public class MainActivity extends Activity
         }
     }
 
-    /** Rotation / configuration change: remember the filter state. The view
-     *  mode and the pagination toggle already survive via SharedPreferences;
-     *  the filter is session-only, so it goes to the instance state, not
-     *  there. */
+    /** Rotation / configuration change: remember the filter state and the
+     *  catalog place. The view mode and the pagination toggle already survive
+     *  via SharedPreferences; the filter, the page, and the scroll are
+     *  session-only, so they go to the instance state, not there. A cold
+     *  start stays page 0 at the top of the list. */
     @Override
     protected void onSaveInstanceState(Bundle outState) {
         super.onSaveInstanceState(outState);
         filters.save(outState);
+        outState.putInt(STATE_CATALOG_PAGE, adapter.getPage());
+        if (!paginationEnabled) {
+            AbsListView visible = visibleCatalog();
+            outState.putInt(STATE_CATALOG_SCROLL_POSITION, visible.getFirstVisiblePosition());
+            View first = visible.getChildAt(0);
+            outState.putInt(STATE_CATALOG_SCROLL_TOP, first == null ? 0 : first.getTop());
+        }
+    }
+
+    /** The list or the grid that currently holds the adapter. */
+    private AbsListView visibleCatalog() {
+        return viewMode == BookAdapter.MODE_GRID ? grid : list;
     }
 
     @Override
@@ -671,6 +715,57 @@ public class MainActivity extends Activity
     public void onLoadFinished(Loader<Cursor> loader, Cursor cursor) {
         adapter.changeCursor(cursor);
         updateEmptyView();
+        restoreCatalogPlaceAfterLoad(cursor);
+    }
+
+    /** Applies the recreated catalog place once. Pagination on: the top of
+     *  the restored page ({@code setSelection(0)}), so it wins over the old
+     *  window's view-state. Pagination off: the saved row and its top.
+     *  {@code AbsListView.setSelectionFromTop} is API 21, so on minSdk 19 the
+     *  row is placed with {@code setSelection} and then {@code scrollListBy}
+     *  until the first child's top matches. A later delivery (enrichment)
+     *  does not repeat it. The posted runnable checks the flag first and
+     *  never turns it back on, so two posts in a row scroll once. An empty
+     *  non-null cursor is the loader's empty catalog: drop the flag and do
+     *  not scroll. A null cursor leaves the flag, in case rows are still
+     *  coming. */
+    private void restoreCatalogPlaceAfterLoad(Cursor cursor) {
+        if (!restoreCatalogPlace) return;
+        final AbsListView visible = visibleCatalog();
+        if (paginationEnabled) {
+            visible.post(new Runnable() {
+                @Override public void run() {
+                    if (!restoreCatalogPlace) return;
+                    restoreCatalogPlace = false;
+                    visible.setSelection(0);
+                }
+            });
+            return;
+        }
+        final int count = adapter.getCount();
+        if (count > 0) {
+            final int position = Math.min(restoreScrollPosition, count - 1);
+            final int top = restoreScrollTop;
+            visible.post(new Runnable() {
+                @Override public void run() {
+                    if (!restoreCatalogPlace) return;
+                    restoreCatalogPlace = false;
+                    visible.setSelection(position);
+                    visible.post(new Runnable() {
+                        @Override public void run() {
+                            View child = visible.getChildAt(0);
+                            if (child == null) return;
+                            int delta = child.getTop() - top;
+                            if (delta != 0) visible.scrollListBy(delta);
+                        }
+                    });
+                }
+            });
+            return;
+        }
+        if (cursor != null) {
+            restoreCatalogPlace = false;
+        }
     }
 
     @Override

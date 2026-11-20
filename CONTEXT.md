@@ -76,7 +76,11 @@ persistence, the `changeCursor` page-clamp), and the horizontal swipe
 (`PagedListView`/`PagedGridView` → `PageSwipeControl` → `PageSwipeTracker`, posted `showPage` via the view's `post`, the API-19
 row-prepress intercept pitfalls). One-liners kept here: **tiles are the default view**;
 the view mode and the pagination on/off toggle **persist in `library_prefs`**; when
-pagination is on, a horizontal swipe also turns pages.
+pagination is on, a horizontal swipe also turns pages. The current page (pagination
+on) and the scroll position (pagination off: the first visible row and its top)
+live in the instance state, like `FilterState`; they survive rotation and a return
+from details or the editor after the catalog is recreated; they are not written to
+`library_prefs`; a cold start is still page 0 and the top of the list.
 
 ## Main workflows
 
