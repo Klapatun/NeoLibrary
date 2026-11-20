@@ -799,6 +799,22 @@ public class BookDatabase extends SQLiteOpenHelper {
         }
     }
 
+    /** Whether the stage-2 queue is non-empty. Same rows as {@link #needMeta()},
+     *  without building {@link Book} rows. */
+    public boolean hasPendingMeta() {
+        synchronized (WRITE_LOCK) {
+            SQLiteDatabase db = readableDb();
+            String sql = "SELECT COUNT(*) " + LIST_FROM + " AND f.meta_done=0";
+            Cursor c = db.rawQuery(sql, null);
+            try {
+                c.moveToFirst();
+                return c.getInt(0) > 0;
+            } finally {
+                c.close();
+            }
+        }
+    }
+
     public Cursor cursorAll(String formatFilter) {
         if (formatFilter == null || formatFilter.length() == 0) {
             return cursorAll((String[]) null);
