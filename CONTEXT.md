@@ -48,7 +48,7 @@ Every book's metadata is stored in **two places**:
 | `db/BookProvider` | read-only `ContentProvider` — the `ContentObserver` channel for the `CursorLoader` (all / recent / `format IN (?,…)` / `genre IS NOT NULL AND genre IN (?,…)` / both combined — the combined selection args are split on the format-count boundary: `FilterState.queryArgs()` = formats in `Formats.ALL` order, then genres in first-added order) |
 | `scan/Formats` | canonical formats + ext→id map (handles `.fb2.zip`) |
 | `scan/LibraryScanner` | stage-1 fast scan (skeleton books, no in-file meta) + `scanSingle()`; the stage-1 walk does not add a path already stored in `files.adopted_from` (canonical match, the set is passed by `ScanTask`) and does not enter the app external-files directory (`ScanTask` passes `getExternalFilesDir(null)`); `scanSingle()` does not hide paths |
-| `meta/MetaEnricher` | stage-2 background worker: per-book `MetaExtractor` + `CoverExtractor` → `Catalog` (persist batch + throttled `announceChangeAll`, both URIs) + `CoverCache`; `enrichOne` for import/fast path; **per-file parse budget of 2 min** — a parse that overruns it is abandoned and the book is marked un-enriched (`meta_failed=1`, stays `meta_done=0`, retried last on every rescan); the pass **works the queue cheapest-format-first** (EPUB/FB2 → FB2ZIP → MOBI → the rest, `Formats.enrichmentPriority`; un-enriched books still last of all); the `OnProgress` contract: `onFinished()` fires on a finished pass and is **never** sent after `cancel()` — a cancel fires `onCancelled()` instead (the listener is held weakly, a fresh `start()` reassigns it, so a `start()`-internal cancel can't clear the new pass's state) |
+| `meta/MetaEnricher` | stage-2 background worker: per-book `MetaExtractor` + `CoverExtractor` → `Catalog` (persist batch + throttled `announceChangeAll`, both URIs) + `CoverCache`; `enrichOne` for import/fast path; the fast path joins an id already inside `enrichOneBook` (waits and may persist that result itself); import calls `enrichOne(..., false)` and still parses when that id is busy; the bulk loop skips a claimed id and does not mark that skip failed; **per-file parse budget of 2 min** — a parse that overruns it is abandoned and the book is marked un-enriched (`meta_failed=1`, stays `meta_done=0`, retried last on every rescan); the pass **works the queue cheapest-format-first** (EPUB/FB2 → FB2ZIP → MOBI → the rest, `Formats.enrichmentPriority`; un-enriched books still last of all); the `OnProgress` contract: `onFinished()` fires on a finished pass and is **never** sent after `cancel()` — a cancel fires `onCancelled()` instead (the listener is held weakly, a fresh `start()` reassigns it, so a `start()`-internal cancel can't clear the new pass's state) |
 | `meta/XmlText` | package-private FB2/OPF bytes: BOM, otherwise the prologue `encoding` attribute, otherwise UTF-8; a decode or encode failure returns null; the declaration is left as it is and the file is not converted to UTF-8 |
 | `meta/MetaExtractor` | read meta: EPUB/FB2/FB2ZIP (inner `.fb2` entry)/MOBI/TXT/HTML; FB2 and OPF bytes go through `XmlText`; FB2 all `<genre>` in `title-info` (or until `</description>` when unclosed), EPUB all `dc:subject` → normalized `md.genres`; FB2 takes the first `book-title` in `title-info`, otherwise the first `title` there, and does not take a `<title>` after `<body>` or a `book-title` from `src-title-info`; FB2 `found` is that non-empty tag; after a finished parse the file name is written into `md.title` and is not part of `found` |
 | `meta/MobiParser` | shared MOBI/AZW binary reader (package-private): PalmDB record table + MOBI header + EXTH |
@@ -109,7 +109,9 @@ pagination is on, a horizontal swipe also turns pages.
   budget**: a parse that overruns it is abandoned, the book is marked un-enriched
   (`Catalog.persistMetaFailed`, `meta_done` stays 0) and the worker moves on to the
   next file. On every rescan the un-enriched books are retried but taken last
-  (`needMeta()` orders `meta_failed` last).
+  (`needMeta()` orders `meta_failed` last). The bulk loop does not start a second
+  parse for an id already inside `enrichOneBook`; that skip is not a failure and
+  does not set `meta_failed`.
 - **Open** → `DetailActivity` / list confirmation → `FileLocator.locateWork()`
   first. Only `READY` continues to `Openers.openFile()` → `ACTION_VIEW` →
   `Catalog.markRead()` (last_read is set only after the viewer actually launches).
@@ -119,7 +121,9 @@ pagination is on, a horizontal swipe also turns pages.
   not call `Openers` and do not set last_read. There is no Download button: this
   screen does not start a download and does not put one on a queue. Fast path: a
   book still not enriched (opened before stage 2 reached it) is enriched on open,
-  off the UI thread, and the detail screen refreshes itself.
+  off the UI thread, and the detail screen refreshes itself. If that id is already
+  being parsed, this path does not read the file again; it waits for that parse
+  and writes the single-book result so the screen does not wait for the bulk batch.
 - **Edit** → `EditMetaActivity`: for EPUB/FB2, if the file's directory accepts a
   create-and-delete probe, `MetaWriter.write` on that file (full genre list: EPUB
   `dc:subject`, FB2 `<genre>`). If the probe fails, the book is copied into

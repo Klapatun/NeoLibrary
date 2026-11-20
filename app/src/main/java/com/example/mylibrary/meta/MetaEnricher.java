@@ -19,6 +19,7 @@ import java.util.ArrayList;
 import java.util.zip.ZipFile;
 import java.util.Collections;
 import java.util.Comparator;
+import java.util.HashMap;
 import java.util.List;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
@@ -68,11 +69,14 @@ import java.util.concurrent.atomic.AtomicInteger;
  * error on one book can never kill the worker loop or the import/detail fast paths —
  * the pass always moves on to the next book.</p>
  *
- * <p>{@link #enrichOne} is the single-book variant used by the import flow and by
- * the detail screen's fast path; it is safe to call from any background thread,
- * idempotent (a book whose metadata was already extracted simply gets the same
- * values written again) and exception-safe (parse/persist errors are contained and
- * logged, never rethrown).</p>
+ * <p>{@link #enrichOne(Context, BookDatabase, Book)} is the single-book variant used
+ * by the detail screen's fast path: if that id is already inside {@code enrichOneBook},
+ * it waits for that parse and may persist the result itself. Import calls
+ * {@link #enrichOne(Context, BookDatabase, Book, boolean)} with {@code false} and still
+ * parses when the id is busy, because the file bytes were just replaced. The bulk
+ * loop skips a claimed id and does not mark that skip failed. Both calls are safe
+ * from any background thread. A second call after the first has returned parses
+ * again. Parse and persist errors are contained and logged, never rethrown.</p>
  */
 public final class MetaEnricher {
 
@@ -126,6 +130,31 @@ public final class MetaEnricher {
 
     static volatile int maxLiveParseThreads = 2;
     private static final AtomicInteger liveParseThreads = new AtomicInteger(0);
+
+    /** One id's in-flight parse. Not a class-map type. */
+    private static final class InFlight {
+        final CountDownLatch done = new CountDownLatch(1);
+        /** Set by the owner before {@code done.countDown()}, then never changed.
+         *  Null when the owner had nothing to commit. */
+        BookDatabase.MetaUpdate update;
+    }
+
+    /** Guards {@link #CLAIMS} only. A parse and a join wait stay outside this lock,
+     *  and this is not the catalog write lock — holding that across a parse would
+     *  stall every writer on one file. */
+    private static final Object CLAIM_LOCK = new Object();
+    private static final HashMap<Long, InFlight> CLAIMS = new HashMap<Long, InFlight>();
+
+    /** Busy id: wait for the owner's result and do not read the file. */
+    private static final int CLAIM_JOIN = 1;
+    /** Busy id: return immediately. Not a failure and not a wait. */
+    private static final int CLAIM_SKIP = 2;
+    /** Busy id: parse anyway and do not touch the owner's claim. Import. */
+    private static final int CLAIM_ALONE = 3;
+
+    /** Test seam. Null in production. Counted down on the JOIN wait path
+     *  before {@code await}. */
+    static volatile CountDownLatch claimWaitEntered;
 
     /** The timed unit of work for one book: fills {@link Parsed} with the in-file
      *  metadata and (when the format can carry a cover) the cover bytes. Runs on a
@@ -380,7 +409,10 @@ public final class MetaEnricher {
                     for (int j = i; j < to; j++) {
                         if (isCancelled()) break;
                         Book book = pending.get(j);
-                        BookDatabase.MetaUpdate update = enrichOneBook(appContext, catalog, book);
+                        // Claimed by the fast path or import: skip. The owner writes
+                        // the result; this pass must not wait or mark the skip failed.
+                        BookDatabase.MetaUpdate update = enrichWithClaim(
+                                appContext, catalog, book, CLAIM_SKIP);
                         if (update != null) batch.add(update);
                         done++;
                         long now = System.currentTimeMillis();
@@ -444,17 +476,103 @@ public final class MetaEnricher {
 
     /**
      * Extracts metadata (and the cover, if the format can carry one) for a single
-     * book and persists the result — a single-book commit (the import/detail fast
-     * path; the bulk worker uses the batch commit). Call from a background thread;
-     * idempotent.
+     * book and persists the result — a single-book commit. The detail fast path
+     * uses this form: a busy id is joined, not parsed again. Call from a background
+     * thread. A second call after the first has returned parses again.
      */
     public static void enrichOne(Context app, BookDatabase db, Book book) {
-        Catalog catalog = new Catalog(app.getApplicationContext(), db);
-        BookDatabase.MetaUpdate update =
-                enrichOneBook(app.getApplicationContext(), catalog, book);
+        enrichOne(app, db, book, true);
+    }
+
+    /**
+     * @param joinInFlight {@code true} waits for an id that is already being parsed
+     *        and persists that result; {@code false} (import) parses even then,
+     *        because the bytes were just replaced and the in-flight result may
+     *        describe the previous file. A free id is claimed either way, so the
+     *        bulk loop will not start a second read.
+     */
+    public static void enrichOne(Context app, BookDatabase db, Book book,
+            boolean joinInFlight) {
+        Context appContext = app.getApplicationContext();
+        Catalog catalog = new Catalog(appContext, db);
+        BookDatabase.MetaUpdate update = enrichWithClaim(appContext, catalog, book,
+                joinInFlight ? CLAIM_JOIN : CLAIM_ALONE);
         if (update != null) {
             persistMetadata(catalog, update.id, update.meta, update.fileReadable);
         }
+    }
+
+    /** Package-private test seam. Reads the claim map under its own lock. */
+    static boolean isParseClaimed(long id) {
+        synchronized (CLAIM_LOCK) {
+            return CLAIMS.containsKey(Long.valueOf(id));
+        }
+    }
+
+    /**
+     * One id, one owner. The claim is taken only while {@code enrichOneBook} runs
+     * for that owner — not until the bulk batch, and not until a timed-out parse
+     * thread finishes. {@code book.id <= 0} is never entered in the map, so two
+     * such calls do not collapse onto id 0. A missing file is returned before any
+     * claim: its contents are not read.
+     */
+    private static BookDatabase.MetaUpdate enrichWithClaim(
+            Context app, Catalog catalog, Book book, int mode) {
+        File file = new File(book.path);
+        if (!file.isFile()) {
+            return new BookDatabase.MetaUpdate(book.id, new MetaData(), false);
+        }
+        if (book.id <= 0) {
+            return enrichOneBook(app, catalog, book);
+        }
+
+        Long key = Long.valueOf(book.id);
+        InFlight owned = null;
+        InFlight busy;
+        synchronized (CLAIM_LOCK) {
+            busy = CLAIMS.get(key);
+            if (busy == null) {
+                owned = new InFlight();
+                CLAIMS.put(key, owned);
+            }
+        }
+        if (owned != null) {
+            BookDatabase.MetaUpdate update = null;
+            try {
+                update = enrichOneBook(app, catalog, book);
+                return update;
+            } finally {
+                // Publish, then open the latch: a waiter that sees countDown
+                // also sees this update. Then drop the claim. A later edit of
+                // the published object would race the waiter.
+                owned.update = update;
+                owned.done.countDown();
+                synchronized (CLAIM_LOCK) {
+                    if (CLAIMS.get(key) == owned) CLAIMS.remove(key);
+                }
+            }
+        }
+        if (mode == CLAIM_SKIP) return null;
+        if (mode == CLAIM_JOIN) return waitForInFlight(busy);
+        // ALONE. The owner's finally is the only one that clears the claim
+        // and the only one that publishes the owner's update.
+        return enrichOneBook(app, catalog, book);
+    }
+
+    /** JOIN. Does not take a live-parse slot, does not mark the book failed,
+     *  and does not release the owner's claim. */
+    private static BookDatabase.MetaUpdate waitForInFlight(InFlight flight) {
+        CountDownLatch entered = claimWaitEntered;
+        if (entered != null) entered.countDown();
+        boolean finished;
+        try {
+            finished = flight.done.await(extractTimeoutMs, TimeUnit.MILLISECONDS);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return null;
+        }
+        if (!finished) return null;
+        return flight.update;
     }
 
     /** Stops the running worker (idempotent). Call from the UI lifecycle (onDestroy).

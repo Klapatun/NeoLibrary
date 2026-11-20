@@ -1013,4 +1013,766 @@ public class MetaEnricherTest {
                 jpeg.length, out.coverLen);
         assertArrayEquals(jpeg, Arrays.copyOfRange(out.cover, 0, out.coverLen));
     }
+
+    // ------------------------------------------------------------------
+    // in-flight claim: one id is not parsed by two owners at once
+    // (JOIN waits, bulk skips, import parses alone)
+    // ------------------------------------------------------------------
+
+    /** Two fast paths (3-arg {@code enrichOne}) on one id: the second waits and
+     *  does not enter {@code parseTask}. A screen rotation. */
+    @Test
+    public void secondEnrichOneJoinsTheInFlightParseAndDoesNotReadTheFileAgain()
+            throws Exception {
+        File f = new File(folder.getRoot(), "one.txt");
+        TestFixtures.writeText(f, "x\n");
+        long id = seedStageOne(f, "TXT", "one");
+        final Book book = get(id);
+
+        final java.util.concurrent.CountDownLatch releaseParse =
+                new java.util.concurrent.CountDownLatch(1);
+        final java.util.concurrent.CountDownLatch entered =
+                new java.util.concurrent.CountDownLatch(1);
+        final java.util.concurrent.CountDownLatch claimWait =
+                new java.util.concurrent.CountDownLatch(1);
+        final java.util.concurrent.atomic.AtomicInteger parses =
+                new java.util.concurrent.atomic.AtomicInteger(0);
+        final java.util.concurrent.atomic.AtomicBoolean ownerDone =
+                new java.util.concurrent.atomic.AtomicBoolean(false);
+        final java.util.concurrent.atomic.AtomicBoolean waiterDone =
+                new java.util.concurrent.atomic.AtomicBoolean(false);
+        final long savedTimeout = MetaEnricher.extractTimeoutMs;
+        final int savedCap = MetaEnricher.maxLiveParseThreads;
+        final MetaEnricher.ParseTask savedTask = MetaEnricher.parseTask;
+        Thread owner = null;
+        Thread waiter = null;
+        try {
+            MetaEnricher.claimWaitEntered = claimWait;
+            MetaEnricher.parseTask = new MetaEnricher.ParseTask() {
+                @Override
+                public void parse(File file, String format, MetaEnricher.Parsed out) {
+                    parses.incrementAndGet();
+                    entered.countDown();
+                    try {
+                        releaseParse.await();
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                    }
+                    out.meta = new MetaData();
+                }
+            };
+
+            owner = new Thread(new Runnable() {
+                @Override public void run() {
+                    MetaEnricher.enrichOne(app, db, book);
+                    ownerDone.set(true);
+                }
+            });
+            owner.start();
+            assertTrue("the owner parse must enter",
+                    entered.await(WAIT_MS, java.util.concurrent.TimeUnit.MILLISECONDS));
+            assertEquals(1, parses.get());
+            assertTrue(MetaEnricher.isParseClaimed(id));
+
+            waiter = new Thread(new Runnable() {
+                @Override public void run() {
+                    MetaEnricher.enrichOne(app, db, book);
+                    waiterDone.set(true);
+                }
+            });
+            waiter.start();
+            assertTrue("the second enrichOne must be waiting, not still on its way in",
+                    claimWait.await(WAIT_MS, java.util.concurrent.TimeUnit.MILLISECONDS));
+            assertEquals("the joined call must not read the file while the latch is held",
+                    1, parses.get());
+            assertFalse(ownerDone.get());
+            assertFalse(waiterDone.get());
+
+            releaseParse.countDown();
+            owner.join(WAIT_MS);
+            waiter.join(WAIT_MS);
+            assertTrue("the owner enrichOne must return", ownerDone.get());
+            assertTrue("the waiting enrichOne must return", waiterDone.get());
+            assertEquals(1, parses.get());
+            assertTrue(get(id).metaDone);
+            assertFalse(MetaEnricher.isParseClaimed(id));
+        } finally {
+            releaseParse.countDown();
+            try {
+                if (owner != null) owner.join(WAIT_MS);
+                if (waiter != null) waiter.join(WAIT_MS);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+            MetaEnricher.cancel();
+            MetaEnricher.parseTask = savedTask;
+            MetaEnricher.extractTimeoutMs = savedTimeout;
+            MetaEnricher.maxLiveParseThreads = savedCap;
+            MetaEnricher.claimWaitEntered = null;
+        }
+    }
+
+    /** Bulk owns the only book's parse. The detail fast path waits for that parse,
+     *  does not read the file again, and still persists so the screen is not left
+     *  on the file-name title. The bulk batch may write the same result afterwards. */
+    @Test
+    public void enrichOneWaitsForTheBulkOwnerAndPersistsWithoutASecondRead() throws Exception {
+        File f = new File(folder.getRoot(), "bulk.txt");
+        TestFixtures.writeText(f, "x\n");
+        long id = seedStageOne(f, "TXT", "bulk");
+        final Book book = get(id);
+
+        final java.util.concurrent.CountDownLatch releaseParse =
+                new java.util.concurrent.CountDownLatch(1);
+        final java.util.concurrent.CountDownLatch entered =
+                new java.util.concurrent.CountDownLatch(1);
+        final java.util.concurrent.CountDownLatch claimWait =
+                new java.util.concurrent.CountDownLatch(1);
+        final java.util.concurrent.atomic.AtomicInteger parses =
+                new java.util.concurrent.atomic.AtomicInteger(0);
+        final java.util.concurrent.atomic.AtomicBoolean waiterDone =
+                new java.util.concurrent.atomic.AtomicBoolean(false);
+        final java.util.concurrent.atomic.AtomicBoolean workerDone =
+                new java.util.concurrent.atomic.AtomicBoolean(false);
+        final long savedTimeout = MetaEnricher.extractTimeoutMs;
+        final int savedCap = MetaEnricher.maxLiveParseThreads;
+        final MetaEnricher.ParseTask savedTask = MetaEnricher.parseTask;
+        Thread waiter = null;
+        try {
+            MetaEnricher.claimWaitEntered = claimWait;
+            MetaEnricher.parseTask = new MetaEnricher.ParseTask() {
+                @Override
+                public void parse(File file, String format, MetaEnricher.Parsed out) {
+                    parses.incrementAndGet();
+                    entered.countDown();
+                    try {
+                        releaseParse.await();
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                    }
+                    out.meta = new MetaData();
+                }
+            };
+
+            // The listener is kept in a STRONG local for the whole test: the enricher
+            // holds it only weakly, so an unheld one could be collected before the
+            // worker's tail check and the onFinished post would be skipped (8.4).
+            final MetaEnricher.OnProgress listener = new MetaEnricher.OnProgress() {
+                @Override public void onProgress(int done, int total) { }
+                @Override public void onFinished() { workerDone.set(true); }
+                @Override public void onCancelled() { /* not expected here */ }
+            };
+            MetaEnricher.start(app, db, listener);
+            assertTrue("the bulk parse must enter",
+                    entered.await(WAIT_MS, java.util.concurrent.TimeUnit.MILLISECONDS));
+            assertEquals(1, parses.get());
+            assertTrue(MetaEnricher.isParseClaimed(id));
+
+            waiter = new Thread(new Runnable() {
+                @Override public void run() {
+                    MetaEnricher.enrichOne(app, db, book);
+                    waiterDone.set(true);
+                }
+            });
+            waiter.start();
+            assertTrue("the fast path must be waiting on the bulk parse before it is released",
+                    claimWait.await(WAIT_MS, java.util.concurrent.TimeUnit.MILLISECONDS));
+            assertEquals(1, parses.get());
+            assertFalse("the fast path must not return before the in-flight parse finishes",
+                    waiterDone.get());
+
+            releaseParse.countDown();
+            waiter.join(WAIT_MS);
+            assertTrue("the waiting enrichOne must return", waiterDone.get());
+            assertTrue("the joined fast path persists the single-book result",
+                    get(id).metaDone);
+            assertEquals(1, parses.get());
+            assertFalse(MetaEnricher.isParseClaimed(id));
+
+            ShadowLooper looper = shadowOf(Looper.getMainLooper());
+            long deadline = System.currentTimeMillis() + WAIT_MS;
+            while (System.currentTimeMillis() < deadline && !workerDone.get()) {
+                looper.idle();
+                Thread.sleep(10);
+            }
+            looper.idle();
+            assertTrue("the bulk pass must finish", workerDone.get());
+            assertNotNull(listener);
+        } finally {
+            releaseParse.countDown();
+            try {
+                if (waiter != null) waiter.join(WAIT_MS);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+            MetaEnricher.cancel();
+            MetaEnricher.parseTask = savedTask;
+            MetaEnricher.extractTimeoutMs = savedTimeout;
+            MetaEnricher.maxLiveParseThreads = savedCap;
+            MetaEnricher.claimWaitEntered = null;
+        }
+    }
+
+    /** The smaller id is claimed by a fast path, so bulk must enrich the next book
+     *  without waiting and without flagging the skip as a timeout. */
+    @Test
+    public void bulkSkipsAClaimedIdAndEnrichesTheNextBook() throws Exception {
+        File first = new File(folder.getRoot(), "first.txt");
+        File second = new File(folder.getRoot(), "second.txt");
+        TestFixtures.writeText(first, "x\n");
+        TestFixtures.writeText(second, "x\n");
+        long firstId = seedStageOne(first, "TXT", "first");
+        long secondId = seedStageOne(second, "TXT", "second");
+        assertTrue("the first seed is the smaller id, so bulk would take it first",
+                firstId < secondId);
+        final Book firstBook = get(firstId);
+
+        final java.util.concurrent.CountDownLatch releaseParse =
+                new java.util.concurrent.CountDownLatch(1);
+        final java.util.concurrent.CountDownLatch entered =
+                new java.util.concurrent.CountDownLatch(1);
+        final java.util.concurrent.atomic.AtomicInteger firstParses =
+                new java.util.concurrent.atomic.AtomicInteger(0);
+        final java.util.concurrent.atomic.AtomicBoolean ownerDone =
+                new java.util.concurrent.atomic.AtomicBoolean(false);
+        final java.util.concurrent.atomic.AtomicBoolean workerDone =
+                new java.util.concurrent.atomic.AtomicBoolean(false);
+        final long savedTimeout = MetaEnricher.extractTimeoutMs;
+        final int savedCap = MetaEnricher.maxLiveParseThreads;
+        final MetaEnricher.ParseTask savedTask = MetaEnricher.parseTask;
+        Thread owner = null;
+        try {
+            MetaEnricher.parseTask = new MetaEnricher.ParseTask() {
+                @Override
+                public void parse(File file, String format, MetaEnricher.Parsed out) {
+                    if (file.getName().equals("first.txt")) {
+                        firstParses.incrementAndGet();
+                        entered.countDown();
+                        try {
+                            releaseParse.await();
+                        } catch (InterruptedException e) {
+                            Thread.currentThread().interrupt();
+                        }
+                    }
+                    out.meta = new MetaData();
+                }
+            };
+
+            owner = new Thread(new Runnable() {
+                @Override public void run() {
+                    MetaEnricher.enrichOne(app, db, firstBook);
+                    ownerDone.set(true);
+                }
+            });
+            owner.start();
+            assertTrue("the fast path must be inside the first file's parse",
+                    entered.await(WAIT_MS, java.util.concurrent.TimeUnit.MILLISECONDS));
+            assertEquals(1, firstParses.get());
+            assertTrue(MetaEnricher.isParseClaimed(firstId));
+
+            // The listener is kept in a STRONG local for the whole test: the enricher
+            // holds it only weakly, so an unheld one could be collected before the
+            // worker's tail check and the onFinished post would be skipped (8.4).
+            final MetaEnricher.OnProgress listener = new MetaEnricher.OnProgress() {
+                @Override public void onProgress(int done, int total) { }
+                @Override public void onFinished() { workerDone.set(true); }
+                @Override public void onCancelled() { /* not expected here */ }
+            };
+            MetaEnricher.start(app, db, listener);
+
+            ShadowLooper looper = shadowOf(Looper.getMainLooper());
+            long deadline = System.currentTimeMillis() + WAIT_MS;
+            while (System.currentTimeMillis() < deadline && !get(secondId).metaDone) {
+                looper.idle();
+                Thread.sleep(10);
+            }
+            Book held = get(firstId);
+            assertTrue("the next book must be enriched while the claimed parse is held",
+                    get(secondId).metaDone);
+            assertEquals("bulk must not read the claimed file", 1, firstParses.get());
+            assertFalse("a skip is not a timeout", held.metaFailed);
+            assertFalse(ownerDone.get());
+
+            deadline = System.currentTimeMillis() + WAIT_MS;
+            while (System.currentTimeMillis() < deadline && !workerDone.get()) {
+                looper.idle();
+                Thread.sleep(10);
+            }
+            assertTrue("the queue must not stall on the claimed id", workerDone.get());
+
+            releaseParse.countDown();
+            owner.join(WAIT_MS);
+            assertTrue("the owner enrichOne must return", ownerDone.get());
+            assertTrue(get(firstId).metaDone);
+            assertFalse(MetaEnricher.isParseClaimed(firstId));
+            assertEquals(1, firstParses.get());
+            assertTrue(workerDone.get());
+            assertNotNull(listener);
+        } finally {
+            releaseParse.countDown();
+            try {
+                if (owner != null) owner.join(WAIT_MS);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+            MetaEnricher.cancel();
+            MetaEnricher.parseTask = savedTask;
+            MetaEnricher.extractTimeoutMs = savedTimeout;
+            MetaEnricher.maxLiveParseThreads = savedCap;
+            MetaEnricher.claimWaitEntered = null;
+        }
+    }
+
+    /** A JOIN on the id that already holds the only live-parse slot must wait,
+     *  not take that slot and not mark the book failed. */
+    @Test
+    public void waitingJoinDoesNotTakeTheLiveParseSlot() throws Exception {
+        File f = new File(folder.getRoot(), "capped.txt");
+        TestFixtures.writeText(f, "x\n");
+        long id = seedStageOne(f, "TXT", "capped");
+        final Book book = get(id);
+
+        final java.util.concurrent.CountDownLatch releaseParse =
+                new java.util.concurrent.CountDownLatch(1);
+        final java.util.concurrent.CountDownLatch entered =
+                new java.util.concurrent.CountDownLatch(1);
+        final java.util.concurrent.CountDownLatch claimWait =
+                new java.util.concurrent.CountDownLatch(1);
+        final java.util.concurrent.atomic.AtomicInteger parses =
+                new java.util.concurrent.atomic.AtomicInteger(0);
+        final java.util.concurrent.atomic.AtomicBoolean ownerDone =
+                new java.util.concurrent.atomic.AtomicBoolean(false);
+        final java.util.concurrent.atomic.AtomicBoolean waiterDone =
+                new java.util.concurrent.atomic.AtomicBoolean(false);
+        final long savedTimeout = MetaEnricher.extractTimeoutMs;
+        final int savedCap = MetaEnricher.maxLiveParseThreads;
+        final MetaEnricher.ParseTask savedTask = MetaEnricher.parseTask;
+        Thread owner = null;
+        Thread waiter = null;
+        try {
+            MetaEnricher.maxLiveParseThreads = 1;
+            MetaEnricher.claimWaitEntered = claimWait;
+            MetaEnricher.parseTask = new MetaEnricher.ParseTask() {
+                @Override
+                public void parse(File file, String format, MetaEnricher.Parsed out) {
+                    parses.incrementAndGet();
+                    entered.countDown();
+                    try {
+                        releaseParse.await();
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                    }
+                    out.meta = new MetaData();
+                }
+            };
+
+            owner = new Thread(new Runnable() {
+                @Override public void run() {
+                    MetaEnricher.enrichOne(app, db, book);
+                    ownerDone.set(true);
+                }
+            });
+            owner.start();
+            assertTrue("the owner must have taken the only live-parse slot",
+                    entered.await(WAIT_MS, java.util.concurrent.TimeUnit.MILLISECONDS));
+            assertEquals(1, parses.get());
+
+            waiter = new Thread(new Runnable() {
+                @Override public void run() {
+                    MetaEnricher.enrichOne(app, db, book);
+                    waiterDone.set(true);
+                }
+            });
+            waiter.start();
+            assertTrue("the second call must wait instead of hitting the live-thread cap",
+                    claimWait.await(WAIT_MS, java.util.concurrent.TimeUnit.MILLISECONDS));
+            assertEquals(1, parses.get());
+            assertFalse("waiting must not flag the book the way the cap does",
+                    get(id).metaFailed);
+            assertFalse(waiterDone.get());
+
+            releaseParse.countDown();
+            owner.join(WAIT_MS);
+            waiter.join(WAIT_MS);
+            assertTrue(ownerDone.get());
+            assertTrue(waiterDone.get());
+            Book after = get(id);
+            assertTrue(after.metaDone);
+            assertFalse(after.metaFailed);
+            assertEquals(1, parses.get());
+            assertFalse(MetaEnricher.isParseClaimed(id));
+        } finally {
+            releaseParse.countDown();
+            try {
+                if (owner != null) owner.join(WAIT_MS);
+                if (waiter != null) waiter.join(WAIT_MS);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+            MetaEnricher.cancel();
+            MetaEnricher.parseTask = savedTask;
+            MetaEnricher.extractTimeoutMs = savedTimeout;
+            MetaEnricher.maxLiveParseThreads = savedCap;
+            MetaEnricher.claimWaitEntered = null;
+        }
+    }
+
+    /** The budget abandons the book and drops the claim while the parse thread may
+     *  still be inside {@code parseTask}. The zombie is released afterwards so the
+     *  next test does not inherit its live-parse slot. */
+    @Test
+    public void timedOutClaimIsReleasedWhileTheParseThreadMayStillRun() throws Exception {
+        File f = new File(folder.getRoot(), "zombie.txt");
+        TestFixtures.writeText(f, "x\n");
+        long id = seedStageOne(f, "TXT", "zombie");
+
+        final Book book = get(id);
+        final long savedTimeout = MetaEnricher.extractTimeoutMs;
+        final int savedCap = MetaEnricher.maxLiveParseThreads;
+        final MetaEnricher.ParseTask savedTask = MetaEnricher.parseTask;
+        final java.util.concurrent.CountDownLatch releaseSlow =
+                new java.util.concurrent.CountDownLatch(1);
+        final java.util.concurrent.CountDownLatch slowFinished =
+                new java.util.concurrent.CountDownLatch(1);
+        final long[] elapsed = new long[1];
+        final java.util.concurrent.atomic.AtomicBoolean ownerDone =
+                new java.util.concurrent.atomic.AtomicBoolean(false);
+        Thread owner = null;
+        try {
+            MetaEnricher.extractTimeoutMs = 200;
+            MetaEnricher.parseTask = new MetaEnricher.ParseTask() {
+                @Override
+                public void parse(File file, String format, MetaEnricher.Parsed out) {
+                    try {
+                        releaseSlow.await();
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                    } finally {
+                        slowFinished.countDown();
+                    }
+                }
+            };
+
+            owner = new Thread(new Runnable() {
+                @Override public void run() {
+                    long t0 = System.currentTimeMillis();
+                    MetaEnricher.enrichOne(app, db, book);
+                    elapsed[0] = System.currentTimeMillis() - t0;
+                    ownerDone.set(true);
+                }
+            });
+            owner.start();
+            owner.join(WAIT_MS);
+            assertTrue("enrichOne must return", ownerDone.get());
+            assertTrue("enrichOne must give up at the budget, not wait for the parse"
+                            + " (took " + elapsed[0] + "ms)",
+                    elapsed[0] < 5000);
+            Book b = get(id);
+            assertFalse(b.metaDone);
+            assertTrue(b.metaFailed);
+            assertFalse("the claim is dropped at the budget, before the zombie finishes",
+                    MetaEnricher.isParseClaimed(id));
+            assertEquals("the parse thread is still inside the task",
+                    1L, slowFinished.getCount());
+
+            releaseSlow.countDown();
+            assertTrue("the abandoned parser must finish so its slot is freed",
+                    slowFinished.await(WAIT_MS, java.util.concurrent.TimeUnit.MILLISECONDS));
+        } finally {
+            releaseSlow.countDown();
+            try {
+                if (owner != null) owner.join(WAIT_MS);
+                slowFinished.await(WAIT_MS, java.util.concurrent.TimeUnit.MILLISECONDS);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+            MetaEnricher.cancel();
+            MetaEnricher.parseTask = savedTask;
+            MetaEnricher.extractTimeoutMs = savedTimeout;
+            MetaEnricher.maxLiveParseThreads = savedCap;
+            MetaEnricher.claimWaitEntered = null;
+        }
+    }
+
+    /** {@code enrichOne(..., false)} is the import: it parses even when the id is
+     *  already claimed, and its return does not drop that other claim. */
+    @Test
+    public void enrichOneAloneParsesEvenWhenTheIdIsClaimed() throws Exception {
+        File f = new File(folder.getRoot(), "import.txt");
+        TestFixtures.writeText(f, "x\n");
+        long id = seedStageOne(f, "TXT", "import");
+        final Book book = get(id);
+
+        final java.util.concurrent.CountDownLatch releaseParse =
+                new java.util.concurrent.CountDownLatch(1);
+        final java.util.concurrent.CountDownLatch entered =
+                new java.util.concurrent.CountDownLatch(1);
+        final java.util.concurrent.atomic.AtomicInteger parses =
+                new java.util.concurrent.atomic.AtomicInteger(0);
+        final java.util.concurrent.atomic.AtomicBoolean ownerDone =
+                new java.util.concurrent.atomic.AtomicBoolean(false);
+        final java.util.concurrent.atomic.AtomicBoolean aloneDone =
+                new java.util.concurrent.atomic.AtomicBoolean(false);
+        final long savedTimeout = MetaEnricher.extractTimeoutMs;
+        final int savedCap = MetaEnricher.maxLiveParseThreads;
+        final MetaEnricher.ParseTask savedTask = MetaEnricher.parseTask;
+        Thread owner = null;
+        Thread alone = null;
+        try {
+            MetaEnricher.parseTask = new MetaEnricher.ParseTask() {
+                @Override
+                public void parse(File file, String format, MetaEnricher.Parsed out) {
+                    int n = parses.incrementAndGet();
+                    if (n == 1) {
+                        entered.countDown();
+                        try {
+                            releaseParse.await();
+                        } catch (InterruptedException e) {
+                            Thread.currentThread().interrupt();
+                        }
+                    }
+                    out.meta = new MetaData();
+                }
+            };
+
+            owner = new Thread(new Runnable() {
+                @Override public void run() {
+                    MetaEnricher.enrichOne(app, db, book);
+                    ownerDone.set(true);
+                }
+            });
+            owner.start();
+            assertTrue("the owner parse must enter",
+                    entered.await(WAIT_MS, java.util.concurrent.TimeUnit.MILLISECONDS));
+            assertEquals(1, parses.get());
+            assertTrue(MetaEnricher.isParseClaimed(id));
+
+            alone = new Thread(new Runnable() {
+                @Override public void run() {
+                    MetaEnricher.enrichOne(app, db, book, false);
+                    aloneDone.set(true);
+                }
+            });
+            alone.start();
+            alone.join(WAIT_MS);
+            assertTrue("import must finish without waiting for the owner's latch",
+                    aloneDone.get());
+            assertEquals(2, parses.get());
+            assertTrue("the alone parse must not drop the owner's claim",
+                    MetaEnricher.isParseClaimed(id));
+            assertFalse(ownerDone.get());
+
+            releaseParse.countDown();
+            owner.join(WAIT_MS);
+            assertTrue(ownerDone.get());
+            assertFalse("the claim is gone only after both calls have returned",
+                    MetaEnricher.isParseClaimed(id));
+        } finally {
+            releaseParse.countDown();
+            try {
+                if (owner != null) owner.join(WAIT_MS);
+                if (alone != null) alone.join(WAIT_MS);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+            MetaEnricher.cancel();
+            MetaEnricher.parseTask = savedTask;
+            MetaEnricher.extractTimeoutMs = savedTimeout;
+            MetaEnricher.maxLiveParseThreads = savedCap;
+            MetaEnricher.claimWaitEntered = null;
+        }
+    }
+
+    /** A free id makes {@code enrichOne(..., false)} the owner. Bulk then skips
+     *  that id: no second read, no failure flag, and the pass still finishes. */
+    @Test
+    public void enrichOneAloneBecomesOwnerWhenTheIdIsFree() throws Exception {
+        File f = new File(folder.getRoot(), "free.txt");
+        TestFixtures.writeText(f, "x\n");
+        long id = seedStageOne(f, "TXT", "free");
+        final Book book = get(id);
+
+        final java.util.concurrent.CountDownLatch releaseParse =
+                new java.util.concurrent.CountDownLatch(1);
+        final java.util.concurrent.CountDownLatch entered =
+                new java.util.concurrent.CountDownLatch(1);
+        final java.util.concurrent.atomic.AtomicInteger parses =
+                new java.util.concurrent.atomic.AtomicInteger(0);
+        final java.util.concurrent.atomic.AtomicBoolean aloneDone =
+                new java.util.concurrent.atomic.AtomicBoolean(false);
+        final java.util.concurrent.atomic.AtomicBoolean workerDone =
+                new java.util.concurrent.atomic.AtomicBoolean(false);
+        final long savedTimeout = MetaEnricher.extractTimeoutMs;
+        final int savedCap = MetaEnricher.maxLiveParseThreads;
+        final MetaEnricher.ParseTask savedTask = MetaEnricher.parseTask;
+        Thread alone = null;
+        try {
+            MetaEnricher.parseTask = new MetaEnricher.ParseTask() {
+                @Override
+                public void parse(File file, String format, MetaEnricher.Parsed out) {
+                    parses.incrementAndGet();
+                    entered.countDown();
+                    try {
+                        releaseParse.await();
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                    }
+                    out.meta = new MetaData();
+                }
+            };
+
+            alone = new Thread(new Runnable() {
+                @Override public void run() {
+                    MetaEnricher.enrichOne(app, db, book, false);
+                    aloneDone.set(true);
+                }
+            });
+            alone.start();
+            assertTrue("the import parse must enter",
+                    entered.await(WAIT_MS, java.util.concurrent.TimeUnit.MILLISECONDS));
+            assertEquals(1, parses.get());
+            assertTrue("a free id makes the alone call the owner",
+                    MetaEnricher.isParseClaimed(id));
+            assertFalse(aloneDone.get());
+
+            // The listener is kept in a STRONG local for the whole test: the enricher
+            // holds it only weakly, so an unheld one could be collected before the
+            // worker's tail check and the onFinished post would be skipped (8.4).
+            final MetaEnricher.OnProgress listener = new MetaEnricher.OnProgress() {
+                @Override public void onProgress(int done, int total) { }
+                @Override public void onFinished() { workerDone.set(true); }
+                @Override public void onCancelled() { /* not expected here */ }
+            };
+            MetaEnricher.start(app, db, listener);
+
+            ShadowLooper looper = shadowOf(Looper.getMainLooper());
+            long deadline = System.currentTimeMillis() + WAIT_MS;
+            while (System.currentTimeMillis() < deadline && !workerDone.get()) {
+                looper.idle();
+                Thread.sleep(10);
+            }
+            looper.idle();
+            assertTrue("bulk must finish the pass while the import still holds the parse",
+                    workerDone.get());
+            assertEquals("bulk must not read the id the import claimed", 1, parses.get());
+            assertFalse("the skip must not flag the book", get(id).metaFailed);
+            assertFalse(aloneDone.get());
+
+            releaseParse.countDown();
+            alone.join(WAIT_MS);
+            assertTrue(aloneDone.get());
+            assertTrue(get(id).metaDone);
+            assertEquals(1, parses.get());
+            assertFalse(MetaEnricher.isParseClaimed(id));
+            assertTrue(workerDone.get());
+            assertNotNull(listener);
+        } finally {
+            releaseParse.countDown();
+            try {
+                if (alone != null) alone.join(WAIT_MS);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+            MetaEnricher.cancel();
+            MetaEnricher.parseTask = savedTask;
+            MetaEnricher.extractTimeoutMs = savedTimeout;
+            MetaEnricher.maxLiveParseThreads = savedCap;
+            MetaEnricher.claimWaitEntered = null;
+        }
+    }
+
+    /** {@code cancel()} does not clear the map. The owner drops the claim when its
+     *  current book returns; the next fast path parses that id again. */
+    @Test
+    public void cancelDoesNotLeaveTheIdClaimed() throws Exception {
+        File f = new File(folder.getRoot(), "cancel.txt");
+        TestFixtures.writeText(f, "x\n");
+        long id = seedStageOne(f, "TXT", "cancel");
+
+        final java.util.concurrent.CountDownLatch releaseParse =
+                new java.util.concurrent.CountDownLatch(1);
+        final java.util.concurrent.CountDownLatch entered =
+                new java.util.concurrent.CountDownLatch(1);
+        final java.util.concurrent.atomic.AtomicInteger parses =
+                new java.util.concurrent.atomic.AtomicInteger(0);
+        final java.util.concurrent.atomic.AtomicBoolean againDone =
+                new java.util.concurrent.atomic.AtomicBoolean(false);
+        final long savedTimeout = MetaEnricher.extractTimeoutMs;
+        final int savedCap = MetaEnricher.maxLiveParseThreads;
+        final MetaEnricher.ParseTask savedTask = MetaEnricher.parseTask;
+        Thread again = null;
+        try {
+            MetaEnricher.parseTask = new MetaEnricher.ParseTask() {
+                @Override
+                public void parse(File file, String format, MetaEnricher.Parsed out) {
+                    parses.incrementAndGet();
+                    entered.countDown();
+                    try {
+                        releaseParse.await();
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                    }
+                    out.meta = new MetaData();
+                }
+            };
+
+            // The listener is kept in a STRONG local for the whole test: the enricher
+            // holds it only weakly, so an unheld one could be collected before the
+            // worker's tail check and the onFinished post would be skipped (8.4).
+            final MetaEnricher.OnProgress listener = new MetaEnricher.OnProgress() {
+                @Override public void onProgress(int done, int total) { }
+                @Override public void onFinished() { /* not expected after cancel */ }
+                @Override public void onCancelled() { /* cancel itself is the signal */ }
+            };
+            MetaEnricher.start(app, db, listener);
+            assertTrue("bulk must be inside the parse",
+                    entered.await(WAIT_MS, java.util.concurrent.TimeUnit.MILLISECONDS));
+            assertTrue(MetaEnricher.isParseClaimed(id));
+
+            MetaEnricher.cancel();
+            assertTrue("cancel does not drop the claim of the book already being parsed",
+                    MetaEnricher.isParseClaimed(id));
+            assertEquals(1, parses.get());
+
+            releaseParse.countDown();
+            ShadowLooper looper = shadowOf(Looper.getMainLooper());
+            long deadline = System.currentTimeMillis() + WAIT_MS;
+            while (System.currentTimeMillis() < deadline
+                    && MetaEnricher.isParseClaimed(id)) {
+                looper.idle();
+                Thread.sleep(10);
+            }
+            looper.idle();
+            assertFalse("the owner drops the claim when the current book returns",
+                    MetaEnricher.isParseClaimed(id));
+            assertEquals(1, parses.get());
+
+            final Book againBook = get(id);
+            again = new Thread(new Runnable() {
+                @Override public void run() {
+                    MetaEnricher.enrichOne(app, db, againBook);
+                    againDone.set(true);
+                }
+            });
+            again.start();
+            again.join(WAIT_MS);
+            assertTrue("the next fast path must return", againDone.get());
+            assertEquals("the id is parsed again once the claim is gone", 2, parses.get());
+            assertTrue(get(id).metaDone);
+            assertFalse(MetaEnricher.isParseClaimed(id));
+            assertNotNull(listener);
+        } finally {
+            releaseParse.countDown();
+            try {
+                if (again != null) again.join(WAIT_MS);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+            MetaEnricher.cancel();
+            MetaEnricher.parseTask = savedTask;
+            MetaEnricher.extractTimeoutMs = savedTimeout;
+            MetaEnricher.maxLiveParseThreads = savedCap;
+            MetaEnricher.claimWaitEntered = null;
+        }
+    }
 }

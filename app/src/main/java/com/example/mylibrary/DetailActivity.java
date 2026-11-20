@@ -75,11 +75,10 @@ public class DetailActivity extends Activity {
         }
 
         if (!book.metaDone) {
-            // Fast path: the background stage (running in MainActivity) may not have
-            // reached this book yet — extract it now on a background thread so the
-            // user sees real values instead of the file-name placeholder. The bulk
-            // worker and this call may parse the same file in parallel: both are
-            // read-only, and the DB update is idempotent.
+            // Fast path: the background stage may not have reached this book yet.
+            // enrichOne runs off the UI thread. If this id is already being parsed,
+            // there is no second read — the task waits for that result and re-reads
+            // the row. onResume still does not start another EnrichTask.
             new EnrichTask(this, book).execute();
         }
 

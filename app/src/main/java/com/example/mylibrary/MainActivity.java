@@ -1228,7 +1228,9 @@ public class MainActivity extends Activity
                         CoverCache.delete(appContext, dest.getAbsolutePath());
                     }
                     // Stage 2 for this single book — already off the UI thread.
-                    MetaEnricher.enrichOne(appContext, db, b);
+                    // The bytes were just replaced, so a foreign in-flight parse
+                    // must not be taken.
+                    MetaEnricher.enrichOne(appContext, db, b, false);
                 }
                 return b != null;
             } catch (Exception e) {
