@@ -5,7 +5,6 @@ import android.app.Activity;
 import android.app.AlertDialog;
 import android.app.LoaderManager;
 import android.app.ProgressDialog;
-import android.content.Context;
 import android.content.DialogInterface;
 import android.content.CursorLoader;
 import android.content.Intent;
@@ -13,35 +12,21 @@ import android.content.Loader;
 import android.database.Cursor;
 import android.database.DataSetObserver;
 import android.net.Uri;
-import android.os.AsyncTask;
 import android.os.Bundle;
-import android.text.Editable;
-import android.text.TextWatcher;
 import android.graphics.Color;
-import android.util.SparseBooleanArray;
-import android.util.TypedValue;
-import android.view.Gravity;
 import android.view.LayoutInflater;
 import android.view.MenuInflater;
 import android.view.MenuItem;
 import android.view.MotionEvent;
 import android.view.View;
 import android.view.ViewConfiguration;
-import android.view.ViewGroup;
-import android.widget.AdapterView;
-import android.widget.ArrayAdapter;
 import android.widget.Button;
-import android.widget.CheckBox;
 import android.widget.CompoundButton;
-import android.widget.EditText;
 import android.widget.FrameLayout;
 import android.widget.ImageButton;
 import android.widget.LinearLayout;
-import android.widget.ListView;
 import android.widget.PopupMenu;
 import android.widget.ProgressBar;
-import android.widget.TabHost;
-import android.widget.TabWidget;
 import android.widget.TextView;
 import android.widget.Toast;
 
@@ -50,19 +35,13 @@ import com.example.mylibrary.db.Catalog;
 import com.example.mylibrary.meta.MetaEnricher;
 import com.example.mylibrary.model.Book;
 import com.example.mylibrary.scan.Formats;
-import com.example.mylibrary.scan.LibraryScanner;
-import com.example.mylibrary.util.CoverCache;
 import com.example.mylibrary.util.FileLocator;
 import com.example.mylibrary.util.LocateResult;
 import com.example.mylibrary.util.Openers;
 
 import java.io.File;
-import java.lang.ref.WeakReference;
-import java.util.ArrayList;
 import java.util.Arrays;
-import java.util.HashSet;
 import java.util.List;
-import java.util.Set;
 
 /**
  * Home screen: loads the library in three stages and lets the user browse the catalog
@@ -283,7 +262,8 @@ public class MainActivity extends Activity
         // The funnel opens the filter dialog (the multi-choice format list).
         btnFilter.setOnClickListener(new View.OnClickListener() {
             @Override public void onClick(View v) {
-                showFilterDialog();
+                FilterTab.show(MainActivity.this, filters.copy(),
+                        db.distinctGenres().toArray(new String[0]), enriching);
             }
         });
 
@@ -624,179 +604,6 @@ public class MainActivity extends Activity
     // Filter modal (the funnel icon in the header)
     // -----------------------------------------------------------------
 
-    /** The funnel icon's filter dialog: a TabHost with the two filter
-     *  dimensions — "Formats" (the format ids, {@link Formats#ALL}, the single
-     *  source of truth) and "Genres" (the dynamic genre reference: the
-     *  catalog's distinct non-null genres). Each tab is a {@link FilterTab}
-     *  (search field, select-all/clear row, multi-choice list), and the dialog
-     *  works on a DRAFT copy of the filter state: the real state (and the dot
-     *  on the funnel) changes only on OK, and OK also resets the recent view —
-     *  the views are mutually exclusive, the filter view wins. Cancel throws
-     *  the draft away (nothing changes).
-     *
-     *  <p>While the stage-2 enrichment worker runs, the Genres tab is LOCKED
-     *  (its reference is still growing): the checkboxes are untouchable, the
-     *  search / select-all / clear are disabled and the hint says why. It
-     *  unlocks — with a fresh reference — on {@code onFinished()}/{@code
-     *  onCancelled()} (see {@link #openFilterGenresTab}).</p> */
-    private void showFilterDialog() {
-        final FilterState draft = filters.copy();
-
-        // The two tab pages (children of the tabcontent frame the TabHost
-        // swaps). The formats tab works on the static Formats.ALL vocabulary;
-        // the checked state is filled from the draft (cancel semantics: the
-        // real state changes only on OK).
-        final FilterTab formatsTab = new FilterTab(this, Formats.ALL,
-                R.string.filter_search_hint, R.id.formats_tab);
-        for (int i = 0; i < Formats.ALL.length; i++) {
-            if (draft.selectedFormats.contains(Formats.ALL[i])) {
-                formatsTab.checked.put(i, true);
-            }
-        }
-        // The constructor's rebuild ran BEFORE this fill: push the restored
-        // state into the list now (the checkmarks of the materialized rows,
-        // the select-all/clear row) — without this a re-opened dialog would
-        // show every box unticked even though the draft carries the selection.
-        formatsTab.rebuildVisible();
-
-        // The genre reference is DYNAMIC: the catalog's distinct non-null
-        // genres, read here on open and again whenever an enrichment pass
-        // stops (the finished/cancelled pass may have added genres).
-        final String[] genreNames = db.distinctGenres().toArray(new String[0]);
-        final FilterTab genreTab = new FilterTab(this, genreNames,
-                R.string.filter_search_hint_genres, R.id.genres_tab);
-        for (int i = 0; i < genreNames.length; i++) {
-            if (draft.selectedGenres.contains(genreNames[i])) {
-                genreTab.checked.put(i, true);
-            }
-        }
-        // Same re-push as the formats tab (see there): the draft's genre
-        // selection must be visible on the rows the moment the tab opens.
-        genreTab.rebuildVisible();
-        // Locked while the worker runs; the enrichment callbacks keep it in
-        // sync while the dialog is open (see openFilterGenresTab).
-        genreTab.setLoading(enriching);
-        openFilterGenresTab = genreTab;
-
-        // The TabHost (framework, API 19 — no ViewPager): the TabWidget on
-        // top, the tabcontent frame (holding the two pages) below it. setup()
-        // must run after the frame is in place; addTab() then swaps the pages
-        // by id (the first addTab selects the Formats tab).
-        final TabWidget tabs = new TabWidget(this);
-        tabs.setId(android.R.id.tabs);
-        final FrameLayout tabContent = new FrameLayout(this);
-        tabContent.setId(android.R.id.tabcontent);
-        tabContent.addView(formatsTab.page, new FrameLayout.LayoutParams(
-                FrameLayout.LayoutParams.MATCH_PARENT,
-                FrameLayout.LayoutParams.MATCH_PARENT));
-        tabContent.addView(genreTab.page, new FrameLayout.LayoutParams(
-                FrameLayout.LayoutParams.MATCH_PARENT,
-                FrameLayout.LayoutParams.MATCH_PARENT));
-
-        final LinearLayout tabLayout = new LinearLayout(this);
-        tabLayout.setOrientation(LinearLayout.VERTICAL);
-        tabLayout.addView(tabs, new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT));
-        tabLayout.addView(tabContent, new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, 0, 1.0f));
-
-        // (context, null) on purpose, NOT the single-arg constructor: the label
-        // indicator is inflated from an internal layout id that the attrs
-        // constructor resolves from the theme (tab_indicator_holo); the single-arg
-        // one leaves it 0, and the first addTab() would inflate resource #0x0
-        // and crash the dialog (Resources$NotFoundException).
-        final TabHost tabHost = new TabHost(this, null);
-        tabHost.addView(tabLayout, new FrameLayout.LayoutParams(
-                FrameLayout.LayoutParams.MATCH_PARENT,
-                FrameLayout.LayoutParams.MATCH_PARENT));
-        tabHost.setup();
-        tabHost.addTab(tabHost.newTabSpec("formats")
-                .setIndicator(getString(R.string.filter_tab_formats))
-                .setContent(R.id.formats_tab));
-        tabHost.addTab(tabHost.newTabSpec("genres")
-                .setIndicator(getString(R.string.filter_tab_genres))
-                .setContent(R.id.genres_tab));
-        // Not getTabWidget(): its shadow looks up android.R.id.tabs on the
-        // Activity, and this strip lives in the dialog. On a device addTab
-        // already installed the holo title; the fallback label only fills a
-        // strip that addTab left empty.
-        formatsTab.bindAppliedMarker(ensureFilterTabLabel(
-                tabs, 0, R.string.filter_tab_formats));
-        genreTab.bindAppliedMarker(ensureFilterTabLabel(
-                tabs, 1, R.string.filter_tab_genres));
-        // A re-open lands on the Genres tab when the draft carries a genre
-        // selection (the plan's step 8); otherwise on Formats (already
-        // selected by the first addTab).
-        tabHost.setCurrentTab(draft.selectedGenres.isEmpty() ? 0 : 1);
-        // addTab() hides a page only when the current tab changes. The Genres
-        // page is added while Formats is already current, so it stays VISIBLE
-        // and its "Select all" row is drawn on top of the Formats one.
-        if (tabHost.getCurrentTab() == 0) {
-            genreTab.page.setVisibility(View.GONE);
-        } else {
-            formatsTab.page.setVisibility(View.GONE);
-        }
-
-        new AlertDialog.Builder(this)
-                .setTitle(R.string.filter_dialog_title)
-                .setView(tabHost)
-                .setNegativeButton(R.string.cancel, null)
-                .setPositiveButton(R.string.filter_ok, new DialogInterface.OnClickListener() {
-                    @Override public void onClick(DialogInterface d, int w) {
-                        // OK adopts the draft of BOTH tabs: the selections
-                        // become the real state, and the recent view is reset
-                        // (the filter view wins over the "Recently read"
-                        // view).
-                        FilterState next = new FilterState();
-                        for (int i = 0; i < formatsTab.all.length; i++) {
-                            if (formatsTab.checked.get(i)) {
-                                next.selectedFormats.add(formatsTab.all[i]);
-                            }
-                        }
-                        for (int i = 0; i < genreTab.all.length; i++) {
-                            if (genreTab.checked.get(i)) {
-                                next.selectedGenres.add(genreTab.all[i]);
-                            }
-                        }
-                        next.recentView = false;
-                        filters = next;
-                        applyCurrentView();
-                    }
-                })
-                .setOnDismissListener(new DialogInterface.OnDismissListener() {
-                    @Override public void onDismiss(DialogInterface d) {
-                        // The dialog is gone: no open tab to lock/unlock
-                        // anymore.
-                        openFilterGenresTab = null;
-                    }
-                })
-                .show();
-    }
-
-    /** Tab label at {@code index}. Reuses the holo title when {@code addTab}
-     *  already put one there; otherwise installs a plain label (a child with
-     *  no title at that index is replaced). */
-    private TextView ensureFilterTabLabel(TabWidget tabs, int index, int labelRes) {
-        if (index < tabs.getChildCount()) {
-            TextView existing = (TextView) tabs.getChildAt(index)
-                    .findViewById(android.R.id.title);
-            if (existing != null) {
-                return existing;
-            }
-            tabs.removeViewAt(index);
-        }
-        LinearLayout row = new LinearLayout(this);
-        row.setOrientation(LinearLayout.HORIZONTAL);
-        row.setGravity(Gravity.CENTER_VERTICAL);
-        TextView title = new TextView(this);
-        title.setId(android.R.id.title);
-        title.setText(labelRes);
-        row.addView(title);
-        tabs.addView(row, index);
-        return title;
-    }
-
     /** Re-applies the current filter state to the catalog view: restarts the
      *  loader (the new query comes from {@code filters} in
      *  {@link #onCreateLoader}) and refreshes the funnel icon's dot. */
@@ -817,6 +624,30 @@ public class MainActivity extends Activity
      *  live state through it, same pattern as {@link #getLastHeaderMenu()}). */
     FilterState getFilterState() {
         return filters;
+    }
+
+    /** OK of the filter dialog: both tabs become {@link #filters}
+     *  with {@code recentView} false, then {@link #applyCurrentView()}. */
+    void commitFilterDraft(FilterTab formatsTab, FilterTab genreTab) {
+        FilterState next = new FilterState();
+        for (int i = 0; i < formatsTab.all.length; i++) {
+            if (formatsTab.checked.get(i)) {
+                next.selectedFormats.add(formatsTab.all[i]);
+            }
+        }
+        for (int i = 0; i < genreTab.all.length; i++) {
+            if (genreTab.checked.get(i)) {
+                next.selectedGenres.add(genreTab.all[i]);
+            }
+        }
+        next.recentView = false;
+        filters = next;
+        applyCurrentView();
+    }
+
+    /** The open dialog's Genres tab, or null after the dialog is gone. */
+    void setOpenFilterGenresTab(FilterTab tab) {
+        openFilterGenresTab = tab;
     }
 
     // -----------------------------------------------------------------
@@ -1003,107 +834,54 @@ public class MainActivity extends Activity
 
     private void startScan() {
         progressBar.setVisibility(View.VISIBLE);
-        new ScanTask(this).execute();
+        new ScanTask(catalog, db, this).execute();
     }
 
-    /** The stage-1 scan task. A STATIC nested class on purpose: an anonymous inner
-     *  class would carry a synthetic strong reference to the Activity (javac emits
-     *  it for every anonymous class inside an instance method, used or not), and a
-     *  storage walk can run for minutes — the screen must be collectible while it
-     *  is in flight. Holds the catalog for the writes, the database for the
-     *  adopted-path read, and the Activity weakly for the UI follow-up: the
-     *  catalog upserts complete even if the screen is gone by then. */
-    private static final class ScanTask extends AsyncTask<Void, Void, LibraryScanner.ScanResult> {
-        private final Catalog catalog;
-        private final BookDatabase db;
-        private final File privateFilesDir;
-        private final WeakReference<MainActivity> self;
+    /** Hides the scan progress bar before the catalog write. The caller has
+     *  already checked that the screen is alive. */
+    void onScanProgressDone() {
+        progressBar.setVisibility(View.GONE);
+    }
 
-        ScanTask(MainActivity host) {
-            this.catalog = host.catalog;
-            this.db = host.db; // safe: it holds the app context
-            File dir = null;
-            try {
-                dir = host.getExternalFilesDir(null);
-            } catch (Exception ignored) {}
-            this.privateFilesDir = dir;
-            this.self = new WeakReference<MainActivity>(host);
-        }
-
-        @Override protected LibraryScanner.ScanResult doInBackground(Void... v) {
-            // Fast by design: file walk only, no in-file metadata extraction
-            // (that is stage 2's job). Paths already recorded as adopted_from
-            // are matched canonically, so the original file still sitting in
-            // shared storage does not become a second book under another prefix.
-            // The app files directory is not entered: private copies live there
-            // and are already the catalog path.
-            Set<String> skip = db.adoptedFromPaths();
-            return LibraryScanner.scanDetailed(null, null, skip, privateFilesDir);
-        }
-
-        @Override protected void onPostExecute(LibraryScanner.ScanResult result) {
-            List<Book> found = result == null ? null : result.books;
-            MainActivity a = self.get();
-            boolean screenAlive = a != null && !a.isFinishing();
-            if (screenAlive) a.progressBar.setVisibility(View.GONE);
-            // Do NOT clear the whole table here: upsertBasic() already keeps
-            // metadata, enrichment state and last_read timestamps in sync. The
-            // catalog work completes even if the screen is gone — the upserts are
-            // the scan's actual result (the next launch only re-binds the UI).
-            // The rows go in as batch commits (groups of
-            // BookDatabase.BATCH_SIZE rows per transaction), not one autocommit
-            // per book.
-            if (found != null) {
-                catalog.saveScanBatch(found);
-                if (result != null) {
-                    for (LibraryScanner.RootScanResult root : result.roots) {
-                        if (root.complete) {
-                            Set<String> paths = new HashSet<String>();
-                            for (Book book : root.books) paths.add(book.path);
-                            catalog.removeMissing(root.rootPath, paths);
-                        }
-                    }
-                }
-                if (screenAlive) {
-                    // The upserts above were committed on this (UI) thread, just now —
-                    // so re-query the catalog ourselves and rebind the adapter.
-                    // Deterministic: it does not rely on the CursorLoader's
-                    // ContentObserver being alive (on API 19 it can be lost after a
-                    // loader cancel/restart cycle — without this rebind the list
-                    // would stay empty after a rescan that finds new books). The
-                    // loader's next delivery simply replaces this cursor.
-                    a.adapter.changeCursor(a.currentCatalogCursor());
-                    a.updateEmptyView();
-                    // Only now start the catalog loader (it is deliberately NOT
-                    // started in onCreate on a cold start — see there): its first
-                    // query must see the post-scan data, never the empty pre-scan
-                    // table whose stale delivery would otherwise race this rebind.
-                    // On a RE-SCAN the loader usually already runs (and may have
-                    // a PRE-scan query in flight): plain initLoader is then a
-                    // no-op, and that in-flight query would be DELIVERED after
-                    // this fresh rebind — a stale cursor that blanks the view
-                    // (the observer that would trigger a fresh re-query is
-                    // usually already dead after the first restart cycle on
-                    // API 19 — same hazard as the rebind above). restartLoader
-                    // cancels the in-flight query and re-queries the post-scan
-                    // data instead; initLoader creates the loader on a cold
-                    // start, where nothing is in flight yet.
-                    Loader<Cursor> existingLoader =
-                            a.getLoaderManager().getLoader(LOADER_BOOKS);
-                    if (existingLoader == null) {
-                        a.getLoaderManager().initLoader(LOADER_BOOKS, null, a);
-                    } else {
-                        a.getLoaderManager().restartLoader(LOADER_BOOKS, null, a);
-                    }
-                }
-            }
-            if (screenAlive) {
-                Toast.makeText(a,
-                        "Found " + (found == null ? 0 : found.size()) + " book(s)",
-                        Toast.LENGTH_SHORT).show();
-                a.startEnrichment();
+    /** Rebinds the list after a finished scan, then toasts and starts enrichment.
+     *  The caller has already checked that the screen is alive. */
+    void onScanPosted(List<Book> found) {
+        if (found != null) {
+            // The upserts above were committed on this (UI) thread, just now —
+            // so re-query the catalog ourselves and rebind the adapter.
+            // Deterministic: it does not rely on the CursorLoader's
+            // ContentObserver being alive (on API 19 it can be lost after a
+            // loader cancel/restart cycle — without this rebind the list
+            // would stay empty after a rescan that finds new books). The
+            // loader's next delivery simply replaces this cursor.
+            adapter.changeCursor(currentCatalogCursor());
+            updateEmptyView();
+            // Only now start the catalog loader (it is deliberately NOT
+            // started in onCreate on a cold start — see there): its first
+            // query must see the post-scan data, never the empty pre-scan
+            // table whose stale delivery would otherwise race this rebind.
+            // On a RE-SCAN the loader usually already runs (and may have
+            // a PRE-scan query in flight): plain initLoader is then a
+            // no-op, and that in-flight query would be DELIVERED after
+            // this fresh rebind — a stale cursor that blanks the view
+            // (the observer that would trigger a fresh re-query is
+            // usually already dead after the first restart cycle on
+            // API 19 — same hazard as the rebind above). restartLoader
+            // cancels the in-flight query and re-queries the post-scan
+            // data instead; initLoader creates the loader on a cold
+            // start, where nothing is in flight yet.
+            Loader<Cursor> existingLoader =
+                    getLoaderManager().getLoader(LOADER_BOOKS);
+            if (existingLoader == null) {
+                getLoaderManager().initLoader(LOADER_BOOKS, null, this);
+            } else {
+                getLoaderManager().restartLoader(LOADER_BOOKS, null, this);
             }
         }
+        Toast.makeText(this,
+                "Found " + (found == null ? 0 : found.size()) + " book(s)",
+                Toast.LENGTH_SHORT).show();
+        startEnrichment();
     }
 
     // -----------------------------------------------------------------
@@ -1186,371 +964,31 @@ public class MainActivity extends Activity
     private void importToLibrary(Uri uri, String displayName) {
         final File dest = new File(getExternalFilesDir("books"), displayName);
         final ProgressDialog pd = ProgressDialog.show(this, null, "Importing…", true, false);
-        new ImportTask(this, uri, displayName, dest, pd).execute();
+        new ImportTask(getApplicationContext(), catalog, db, uri, displayName, dest, pd, this).execute();
     }
 
-    /** Copies a picked document into the library and re-enriches the book. A STATIC
-     *  nested class for the same reason as {@link ScanTask}: an anonymous inner
-     *  class would carry a synthetic strong reference to the Activity, and copying
-     *  a big file can outlive the screen. Uses the app context for the background
-     *  work (the SAF read grant is process-wide — any ContentResolver in the
-     *  process can open the picked document) and holds the Activity and the
-     *  progress dialog weakly for the UI follow-up. */
-    private static final class ImportTask extends AsyncTask<Void, Void, Boolean> {
-        private final Uri uri;
-        private final String displayName;
-        private final File dest;
-        private final Context appContext;
-        private final BookDatabase db;
-        private final Catalog catalog;
-        private final WeakReference<ProgressDialog> dialog;
-        private final WeakReference<MainActivity> self;
-
-        ImportTask(MainActivity host, Uri uri, String displayName, File dest, ProgressDialog pd) {
-            this.uri = uri;
-            this.displayName = displayName;
-            this.dest = dest;
-            this.appContext = host.getApplicationContext();
-            this.db = host.db; // safe: it holds the app context
-            this.catalog = host.catalog;
-            this.dialog = new WeakReference<ProgressDialog>(pd);
-            this.self = new WeakReference<MainActivity>(host);
+    /** Toast and catalog rebind after a finished import. The caller has already
+     *  dismissed the progress dialog and checked that the screen is alive.
+     *  {@code ok} stays {@link Boolean} so a null result unboxes as before. */
+    void onImportPosted(Boolean ok, String displayName) {
+        if (ok) {
+            Toast.makeText(this, "Imported " + displayName, Toast.LENGTH_SHORT).show();
+            // The upsert above was committed on the background thread, just
+            // before this callback — so re-query the catalog ourselves and
+            // rebind the adapter. Deterministic: it does not rely on the
+            // CursorLoader's ContentObserver being alive (on API 19 it can be
+            // lost after a loader cancel/restart cycle — without this rebind
+            // the list could stay empty after an import, same class of bug as
+            // the rescan fix in startScan). The loader's next delivery simply
+            // replaces this cursor.
+            adapter.changeCursor(currentCatalogCursor());
+            updateEmptyView();
+        } else {
+            Toast.makeText(this, "Import failed", Toast.LENGTH_LONG).show();
         }
-
-        @Override protected Boolean doInBackground(Void... v) {
-            try {
-                if (!dest.getParentFile().exists()) dest.getParentFile().mkdirs();
-                java.io.InputStream in = appContext.getContentResolver().openInputStream(uri);
-                java.io.OutputStream out = new java.io.FileOutputStream(dest);
-                byte[] buf = new byte[8192];
-                int n;
-                while ((n = in.read(buf)) > 0) out.write(buf, 0, n);
-                in.close();
-                out.close();
-                Book b = LibraryScanner.scanSingle(dest);
-                if (b != null) {
-                    long existing = db.getIdForPath(dest.getAbsolutePath());
-                    catalog.importFile(b, existing >= 0, existing);
-                    if (existing >= 0) {
-                        // The import overwrote an existing file: drop the stale cover
-                        // cache — enrichOne below refreshes it.
-                        CoverCache.delete(appContext, dest.getAbsolutePath());
-                    }
-                    // Stage 2 for this single book — already off the UI thread.
-                    // The bytes were just replaced, so a foreign in-flight parse
-                    // must not be taken.
-                    MetaEnricher.enrichOne(appContext, db, b, false);
-                }
-                return b != null;
-            } catch (Exception e) {
-                return false;
-            }
-        }
-
-        @Override protected void onPostExecute(Boolean ok) {
-            ProgressDialog d = dialog.get();
-            if (d != null) d.dismiss();
-            MainActivity a = self.get();
-            if (a == null || a.isFinishing()) return;
-            if (ok) {
-                Toast.makeText(a, "Imported " + displayName, Toast.LENGTH_SHORT).show();
-                // The upsert above was committed on the background thread, just
-                // before this callback — so re-query the catalog ourselves and
-                // rebind the adapter. Deterministic: it does not rely on the
-                // CursorLoader's ContentObserver being alive (on API 19 it can be
-                // lost after a loader cancel/restart cycle — without this rebind
-                // the list could stay empty after an import, same class of bug as
-                // the rescan fix in startScan). The loader's next delivery simply
-                // replaces this cursor.
-                a.adapter.changeCursor(a.currentCatalogCursor());
-                a.updateEmptyView();
-            } else {
-                Toast.makeText(a, "Import failed", Toast.LENGTH_LONG).show();
-            }
-            // The notifyChange in doInBackground still goes out for the other
-            // listeners (e.g. the "recently read" view); this rebind only
-            // guarantees that the list in front of the user catches up.
-        }
+        // The notifyChange in doInBackground still goes out for the other
+        // listeners (e.g. the "recently read" view); this rebind only
+        // guarantees that the list in front of the user catches up.
     }
 
-    /** One tab of the filter dialog: the search field, the select-all/clear
-     *  row and the multi-choice list of ONE vocabulary (the format ids or the
-     *  genre names). The checked state lives in {@link #checked} indexed over
-     *  the ORIGINAL vocabulary, so search filtering (a visible subset) never
-     *  loses it. The genres tab is this same class with a DYNAMIC vocabulary:
-     *  its reference can be rebuilt in place via {@link #refresh} while the
-     *  dialog is open (the unlock after an enrichment pass adds the newly
-     *  enriched genres).
-     *
-     *  <p>While {@link #loading} is on (the genres tab only, while the stage-2
-     *  worker runs) the whole tab is locked: the checkboxes are untouchable,
-     *  the search / select-all / clear are disabled, and the hint explains
-     *  why. STATIC on purpose: the tab views outlive the dialog's local
-     *  variables, and a non-static inner class would pin the Activity.</p> */
-    private static final class FilterTab {
-
-        /** The tab's page view (a child of the tabcontent frame). */
-        final LinearLayout page;
-        final EditText search;
-        final TextView loadingHint;
-        final CheckBox selectAll;
-        final TextView clear;
-        final ListView list;
-        final ArrayAdapter<String> adapter;
-
-        /** The vocabulary (Formats.ALL or the catalog's distinct genres). */
-        String[] all;
-        /** The checked state indexed over the ORIGINAL {@link #all} positions. */
-        SparseBooleanArray checked;
-        /** The visible (search-filtered) subset of {@link #all}. */
-        final ArrayList<String> visible = new ArrayList<String>();
-        /** visible[i] -> its index in {@link #all} (grown on demand). */
-        int[] visibleToOriginal = new int[0];
-        /** True while the stage-2 worker runs (the genres tab): the tab is
-         *  locked (see the class javadoc). */
-        boolean loading;
-        /** The framework tab label. Null until {@link #bindAppliedMarker}
-         *  (the constructor rebuilds before the TabWidget exists). The draft
-         *  dot is this view's right compound drawable. */
-        TextView appliedMarker;
-
-        FilterTab(Context context, String[] all, int searchHintRes, int pageId) {
-            this.all = all;
-            this.checked = new SparseBooleanArray();
-
-            page = new LinearLayout(context);
-            page.setOrientation(LinearLayout.VERTICAL);
-            page.setId(pageId);
-            page.setPadding(16, 8, 16, 16);
-
-            search = new EditText(context);
-            search.setHint(searchHintRes);
-            search.setSingleLine(true);
-            page.addView(search);
-
-            // The lock indicator: shown while the reference is being rebuilt
-            // (the genres tab only — the formats tab never sets loading).
-            loadingHint = new TextView(context);
-            loadingHint.setText(R.string.filter_genres_loading);
-            loadingHint.setTextColor(0xFF757575);
-            loadingHint.setVisibility(View.GONE);
-            page.addView(loadingHint);
-
-            final LinearLayout selectAllRow = new LinearLayout(context);
-            selectAllRow.setOrientation(LinearLayout.HORIZONTAL);
-            selectAllRow.setPadding(0, 16, 0, 8);
-            selectAllRow.setGravity(Gravity.CENTER_VERTICAL);
-
-            selectAll = new CheckBox(context);
-            selectAll.setText(R.string.filter_select_all);
-            // Checkbox takes remaining space, pushes clear button to the right.
-            selectAll.setLayoutParams(new LinearLayout.LayoutParams(
-                    0, ViewGroup.LayoutParams.WRAP_CONTENT, 1.0f));
-            selectAllRow.addView(selectAll);
-
-            // The clear button: visible only when at least one item is
-            // selected (a small cross, aligned right).
-            clear = new TextView(context);
-            clear.setText("\u2715");
-            clear.setTextSize(TypedValue.COMPLEX_UNIT_SP, 20);
-            clear.setTextColor(0xFF757575);
-            clear.setPadding(12, 4, 12, 4);
-            clear.setVisibility(View.GONE);
-            LinearLayout.LayoutParams clearParams = new LinearLayout.LayoutParams(
-                    ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-            clearParams.setMargins(8, 0, 16, 0);
-            clear.setLayoutParams(clearParams);
-            clear.setClickable(true);
-            clear.setFocusable(true);
-            selectAllRow.addView(clear);
-
-            page.addView(selectAllRow);
-
-            list = new ListView(context);
-            list.setChoiceMode(ListView.CHOICE_MODE_MULTIPLE);
-            list.setLayoutParams(new LinearLayout.LayoutParams(
-                    ViewGroup.LayoutParams.MATCH_PARENT, 0, 1.0f));
-            page.addView(list);
-
-            // The adapter holds the VISIBLE list: the search rebuilds it in
-            // place (notifyDataSetChanged), while the checked state stays
-            // indexed over the full vocabulary.
-            adapter = new ArrayAdapter<String>(context,
-                    android.R.layout.simple_list_item_multiple_choice, visible);
-            list.setAdapter(adapter);
-
-            // Search filtering (ignored while the reference is being rebuilt).
-            search.addTextChangedListener(new TextWatcher() {
-                @Override public void beforeTextChanged(CharSequence s, int start, int count, int after) {}
-                @Override public void onTextChanged(CharSequence s, int start, int before, int count) {}
-                @Override public void afterTextChanged(Editable s) {
-                    if (loading) return;
-                    rebuildVisible();
-                }
-            });
-
-            // Select All / Deselect All: check (and re-show the full list) or
-            // uncheck the WHOLE vocabulary — the visible rows are just a
-            // subset of it.
-            selectAll.setOnClickListener(new View.OnClickListener() {
-                @Override public void onClick(View v) {
-                    if (loading) return;
-                    boolean isChecked = selectAll.isChecked();
-                    for (int i = 0; i < all.length; i++) {
-                        checked.put(i, isChecked);
-                    }
-                    if (isChecked) {
-                        // Select All re-shows the full list (search reset).
-                        search.setText("");
-                    }
-                    reapplyRowStates();
-                    updateSelectAllState();
-                }
-            });
-
-            clear.setOnClickListener(new View.OnClickListener() {
-                @Override public void onClick(View v) {
-                    if (loading) return;
-                    for (int i = 0; i < all.length; i++) {
-                        checked.put(i, false);
-                    }
-                    reapplyRowStates();
-                    updateSelectAllState();
-                }
-            });
-
-            // List item click toggles the checked state for that entry.
-            list.setOnItemClickListener(new AdapterView.OnItemClickListener() {
-                @Override public void onItemClick(AdapterView<?> parent, View view, int position, long id) {
-                    if (loading) return;
-                    int originalIndex = visibleToOriginal[position];
-                    boolean newChecked = !checked.get(originalIndex);
-                    checked.put(originalIndex, newChecked);
-                    list.setItemChecked(position, newChecked);
-                    updateSelectAllState();
-                }
-            });
-
-            rebuildVisible();
-            applyLoading();
-        }
-
-        /** Rebuilds the visible subset from the current search text and
-         *  re-applies the checked state and the select-all/clear row. */
-        void rebuildVisible() {
-            String query = search.getText().toString().toLowerCase();
-            visible.clear();
-            int idx = 0;
-            for (int i = 0; i < all.length; i++) {
-                if (query.isEmpty() || all[i].toLowerCase().contains(query)) {
-                    if (idx >= visibleToOriginal.length) {
-                        visibleToOriginal = new int[all.length];
-                    }
-                    visible.add(all[i]);
-                    visibleToOriginal[idx] = i;
-                    idx++;
-                }
-            }
-            adapter.notifyDataSetChanged();
-            reapplyRowStates();
-            updateSelectAllState();
-        }
-
-        /** Re-applies the checked state to the visible rows (the rows are the
-         *  searchable subset; the state itself lives over the full
-         *  vocabulary). */
-        void reapplyRowStates() {
-            for (int i = 0; i < visible.size(); i++) {
-                list.setItemChecked(i, checked.get(visibleToOriginal[i]));
-            }
-        }
-
-        /** Refreshes the select-all label and the clear button's visibility to
-         *  match the current checked state. The only place the tab-label dot
-         *  turns on or off: on while this tab's draft has any check, off
-         *  otherwise. A null marker (before {@link #bindAppliedMarker}) leaves
-         *  the label untouched. {@code setLoading} does not call this and does
-         *  not hide the dot. */
-        void updateSelectAllState() {
-            boolean allChecked = all.length > 0;
-            boolean anyChecked = false;
-            for (int i = 0; i < all.length; i++) {
-                if (checked.get(i)) {
-                    anyChecked = true;
-                } else {
-                    allChecked = false;
-                }
-            }
-            selectAll.setChecked(allChecked && anyChecked);
-            selectAll.setText(allChecked && anyChecked
-                    ? R.string.filter_deselect_all : R.string.filter_select_all);
-            clear.setVisibility(anyChecked ? View.VISIBLE : View.GONE);
-            if (appliedMarker == null) {
-                return;
-            }
-            if (anyChecked) {
-                appliedMarker.setCompoundDrawablesWithIntrinsicBounds(
-                        0, 0, R.drawable.filter_tab_applied, 0);
-                int pad = (int) TypedValue.applyDimension(
-                        TypedValue.COMPLEX_UNIT_DIP, 6f,
-                        appliedMarker.getResources().getDisplayMetrics());
-                appliedMarker.setCompoundDrawablePadding(pad);
-            } else {
-                appliedMarker.setCompoundDrawablesWithIntrinsicBounds(0, 0, 0, 0);
-            }
-        }
-
-        /** Remembers the framework tab label and paints the draft dot at once. */
-        void bindAppliedMarker(TextView title) {
-            appliedMarker = title;
-            updateSelectAllState();
-        }
-
-        /** Rebuilds the vocabulary in place (the dynamic genre reference: a
-         *  finished or cancelled enrichment pass may have added genres). The
-         *  checked state is preserved BY NAME across the rebuild — a selected
-         *  genre stays selected even as the reference grows. */
-        void refresh(String[] newAll) {
-            final String[] old = this.all;
-            final SparseBooleanArray oldChecked = this.checked;
-            this.all = newAll;
-            SparseBooleanArray next = new SparseBooleanArray();
-            for (int j = 0; j < old.length; j++) {
-                if (!oldChecked.get(j)) continue;
-                for (int i = 0; i < newAll.length; i++) {
-                    if (newAll[i].equals(old[j])) {
-                        next.put(i, true);
-                        break;
-                    }
-                }
-            }
-            this.checked = next;
-            // The search no longer matches the rebuilt vocabulary: reset it
-            // and re-show the full list.
-            search.setText("");
-            rebuildVisible();
-        }
-
-        /** Locks or unlocks the whole tab (the genres tab while the stage-2
-         *  worker runs): the checkboxes are untouchable, the search /
-         *  select-all / clear are disabled, and the hint explains why. */
-        void setLoading(boolean isLoading) {
-            loading = isLoading;
-            applyLoading();
-        }
-
-        private void applyLoading() {
-            search.setEnabled(!loading);
-            selectAll.setEnabled(!loading);
-            clear.setEnabled(!loading);
-            list.setEnabled(!loading);
-            // The already-inflated rows' checkboxes too (a disabled list
-            // delivers no row touches regardless; newly inflated rows come up
-            // enabled and stay untouchable while the list itself is locked).
-            for (int i = 0; i < list.getChildCount(); i++) {
-                list.getChildAt(i).setEnabled(!loading);
-            }
-            loadingHint.setVisibility(loading ? View.VISIBLE : View.GONE);
-        }
-    }
 }
