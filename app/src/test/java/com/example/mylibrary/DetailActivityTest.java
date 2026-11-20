@@ -8,8 +8,14 @@ import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 import static org.robolectric.Shadows.shadowOf;
 
+import android.app.ActionBar;
+import android.app.Activity;
+import android.content.ComponentName;
 import android.content.Intent;
 import android.content.Context;
+import android.content.pm.PackageManager;
+import android.view.Menu;
+import android.view.MenuItem;
 import android.database.ContentObserver;
 import android.net.Uri;
 import android.os.Handler;
@@ -17,6 +23,7 @@ import android.os.Looper;
 import android.view.View;
 import android.widget.Button;
 import android.widget.ImageView;
+import android.widget.PopupMenu;
 import android.widget.TextView;
 
 import com.example.mylibrary.db.BookDatabase;
@@ -468,5 +475,92 @@ public class DetailActivityTest {
         assertTrue("... and to the recently-read cursor", onRecent.fired);
         app.getContentResolver().unregisterContentObserver(onBooks);
         app.getContentResolver().unregisterContentObserver(onRecent);
+    }
+
+    // ------------------------------------------------------------------
+    // up caret and back stack (feature/detail-back)
+    // ------------------------------------------------------------------
+
+    private static void performHomeUp(Activity a) {
+        PopupMenu homeMenu = new PopupMenu(a, a.getWindow().getDecorView());
+        MenuItem homeItem = homeMenu.getMenu().add(Menu.NONE, android.R.id.home, Menu.NONE, "");
+        a.onOptionsItemSelected(homeItem);
+        shadowOf(Looper.getMainLooper()).idle();
+    }
+
+    private void assertParentActivityNameIsNull(Class<?> activityClass) throws Exception {
+        PackageManager pm = app.getPackageManager();
+        ComponentName cn = new ComponentName(app, activityClass);
+        android.content.pm.ActivityInfo info =
+                pm.getActivityInfo(cn, PackageManager.GET_META_DATA);
+        assertNull("parentActivityName must stay unset", info.parentActivityName);
+    }
+
+    @Test
+    public void upCaretFinishesDetailsWithoutStartingAnotherActivity() throws Exception {
+        DetailActivity a = launch(bookId);
+
+        ActionBar bar = a.getActionBar();
+        assertNotNull("the Holo action bar must be present", bar);
+        assertTrue("the up caret must be enabled",
+                (bar.getDisplayOptions() & ActionBar.DISPLAY_HOME_AS_UP) != 0);
+
+        performHomeUp(a);
+
+        assertTrue("home must finish the detail screen", a.isFinishing());
+        assertNull("home must not start another activity",
+                shadowOf(a).getNextStartedActivity());
+
+        assertParentActivityNameIsNull(DetailActivity.class);
+    }
+
+    @Test
+    public void backFromEditOpenedFromDetailsPopsOnlyTheEditor() throws Exception {
+        DetailActivity details = launch(bookId);
+
+        ((Button) details.findViewById(R.id.btn_edit_meta)).performClick();
+        shadowOf(Looper.getMainLooper()).idle();
+
+        Intent editIntent = shadowOf(details).getNextStartedActivity();
+        assertNotNull(editIntent);
+        EditMetaActivity editor =
+                Robolectric.buildActivity(EditMetaActivity.class, editIntent).setup().get();
+
+        performHomeUp(editor);
+        assertTrue("home on the editor must finish it", editor.isFinishing());
+        assertNull("the editor must not start another activity",
+                shadowOf(editor).getNextStartedActivity());
+        assertFalse("details must stay open under the editor", details.isFinishing());
+
+        performHomeUp(details);
+        assertTrue("home on details must finish them", details.isFinishing());
+        assertNull("details must not start the library with a new intent",
+                shadowOf(details).getNextStartedActivity());
+    }
+
+    @Test
+    public void systemBackFromEditThenDetailsPopsOneActivityAtATime() throws Exception {
+        DetailActivity details = launch(bookId);
+
+        ((Button) details.findViewById(R.id.btn_edit_meta)).performClick();
+        shadowOf(Looper.getMainLooper()).idle();
+
+        Intent editIntent = shadowOf(details).getNextStartedActivity();
+        assertNotNull(editIntent);
+        EditMetaActivity editor =
+                Robolectric.buildActivity(EditMetaActivity.class, editIntent).setup().get();
+
+        editor.onBackPressed();
+        shadowOf(Looper.getMainLooper()).idle();
+        assertTrue("Back must finish the editor", editor.isFinishing());
+        assertNull("the editor must not start another activity",
+                shadowOf(editor).getNextStartedActivity());
+        assertFalse("details must stay open under the editor", details.isFinishing());
+
+        details.onBackPressed();
+        shadowOf(Looper.getMainLooper()).idle();
+        assertTrue("Back must finish details", details.isFinishing());
+        assertNull("details must not start the library with a new intent",
+                shadowOf(details).getNextStartedActivity());
     }
 }

@@ -1,11 +1,13 @@
 package com.example.mylibrary;
 
+import android.app.ActionBar;
 import android.app.Activity;
 import android.app.AlertDialog;
 import android.content.Context;
 import android.content.Intent;
 import android.os.AsyncTask;
 import android.os.Bundle;
+import android.view.MenuItem;
 import android.view.View;
 import android.widget.Button;
 import android.widget.ImageView;
@@ -56,6 +58,14 @@ public class DetailActivity extends Activity {
             return;
         }
 
+        // Holo up caret: one finish() of this screen. No parentActivityName —
+        // hierarchical up would not match the real back stack.
+        ActionBar bar = getActionBar();
+        if (bar != null) {
+            bar.setDisplayHomeAsUpEnabled(true);
+            bar.setHomeActionContentDescription(R.string.navigate_back);
+        }
+
         ((TextView) findViewById(R.id.detail_file)).setText(book.path);
         showBook(book);
         updateMissingMark(book);
@@ -93,6 +103,17 @@ public class DetailActivity extends Activity {
         ((Button) findViewById(R.id.btn_open)).setOnClickListener(new View.OnClickListener() {
             @Override public void onClick(View v) { openBook(); }
         });
+    }
+
+    /** Up caret closes this screen only. System Back stays the framework
+     *  {@code finish()} — {@code onBackPressed} is not overridden. */
+    @Override
+    public boolean onOptionsItemSelected(MenuItem item) {
+        if (item.getItemId() == android.R.id.home) {
+            finish();
+            return true;
+        }
+        return super.onOptionsItemSelected(item);
     }
 
     /** Re-read the catalog row after the editor (or any other pause). A user edit

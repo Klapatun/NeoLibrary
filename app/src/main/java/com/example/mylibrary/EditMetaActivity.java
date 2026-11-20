@@ -1,5 +1,6 @@
 package com.example.mylibrary;
 
+import android.app.ActionBar;
 import android.app.Activity;
 import android.app.ProgressDialog;
 import android.content.Context;
@@ -9,6 +10,7 @@ import android.text.Editable;
 import android.text.TextWatcher;
 import android.util.TypedValue;
 import android.view.Gravity;
+import android.view.MenuItem;
 import android.view.View;
 import android.widget.Button;
 import android.widget.EditText;
@@ -94,6 +96,16 @@ public class EditMetaActivity extends Activity {
             finish();
             return;
         }
+
+        // Holo up caret: one finish() of this screen. No parentActivityName —
+        // hierarchical up would pop past details when the editor was opened
+        // from them, or invent a details screen that was never on the stack.
+        ActionBar bar = getActionBar();
+        if (bar != null) {
+            bar.setDisplayHomeAsUpEnabled(true);
+            bar.setHomeActionContentDescription(R.string.navigate_back);
+        }
+
         // The list cursor does not carry work_genres. The parcel is the row the
         // user opened (path and format stay); the genre list comes from the catalog.
         Book stored = db.getById(book.id);
@@ -142,6 +154,17 @@ public class EditMetaActivity extends Activity {
         ((Button) findViewById(R.id.btn_cancel)).setOnClickListener(new View.OnClickListener() {
             @Override public void onClick(View v) { finish(); }
         });
+    }
+
+    /** Up caret closes this screen only. System Back stays the framework
+     *  {@code finish()} — {@code onBackPressed} is not overridden. */
+    @Override
+    public boolean onOptionsItemSelected(MenuItem item) {
+        if (item.getItemId() == android.R.id.home) {
+            finish();
+            return true;
+        }
+        return super.onOptionsItemSelected(item);
     }
 
     private void addGenreField(String value) {
