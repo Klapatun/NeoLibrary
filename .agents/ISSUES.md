@@ -464,3 +464,506 @@ git-историей; полновесного ревью PR #14 ещё не б�
 - **Доработка:** явно прописать иерархию (напр. CONTEXT — сессия / class map,
   README — сборка и workflows, `architecture.md` — учебное развёрнутое
   описание) + перекрёстные ссылки; сверить устаревшие абзацы с v9/`Catalog`.
+
+---
+
+## [REFAC] 2026-11-21: декомпозиция `MainActivity` — вынос `FilterTab`, `ScanTask`, `ImportTask` — [ ] (средний)
+
+**Создано:** 2026-11-21. **Статус:** план согласован (2026-11-21, человек).
+Секции ниже — утверждённый план. К коду приступает `neo-refactor`.
+Отдельный `.agents/plans/**/PLAN.md` не заводить. Открытый [REFAC]
+`CoverExtractor` не смешивать: другой файл и другой коммитный ряд.
+
+Номера строк — снимок `MainActivity.java` до шага 1 (1547 строк,
+последняя — закрывающая скобка класса, 2026-11-21). После шага 1
+искать методы по имени.
+
+### 1. Задача / диагностика
+
+- **Где:** `app/src/main/java/com/example/mylibrary/MainActivity.java`,
+  1547 строк. Один экран каталога: `onCreate` / `onDestroy` /
+  `onSaveInstanceState`, список/плитка, пагинация, kebab, диалог
+  фильтра, скан, обогащение, импорт, открытие и удаление книги.
+- **Проблема:** в одном классе шесть работ. Три уже статические
+  вложенные классы и не держат активити сильно — их можно вынести
+  файлами без смены поведения.
+- **Согласованный разрез** (сверен с файлом, не двигать):
+  1. `FilterTab` — javadoc и класс, строки 1267–1546 (ровно 280).
+     Объявление класса — 1281: `private static final class FilterTab`.
+     → `final class FilterTab` в новом
+     `app/src/main/java/com/example/mylibrary/FilterTab.java`
+     (package-private, без `public`). Тесты тип не называют: ищут
+     `TabHost`, `R.id.formats_tab` / `R.id.genres_tab`, подписи
+     вкладок.
+  2. Сборка диалога (`showFilterDialog` 618–766, включая javadoc;
+     `ensureFilterTabLabel` 768–789) уходит в тот же `FilterTab.java`.
+     Обработчик OK остаётся в активити: пишет `filters`, ставит
+     `recentView = false`, зовёт существующий приватный
+     `applyCurrentView()` (restartLoader + иконка воронки). Поле
+     `openFilterGenresTab` (154–158) и вызовы `setLoading` / `refresh`
+     из `startEnrichment` (1125–1127) и `onEnrichmentStopped`
+     (191–194) остаются на активити.
+  3. `ScanTask` — javadoc 1000–1006, класс 1007–1098 →
+     `ScanTask.java`, тот же пакет, `final class`, без `public`.
+     После скана зовёт активити: спрятать прогресс, rebind курсора,
+     `initLoader` / `restartLoader`, тост «Found N book(s)»,
+     `startEnrichment`. Приватный `startScan()` (995–998) остаётся
+     и только делегирует: прогресс-бар VISIBLE и `execute()`.
+     Сигнатура `private void startScan()` без аргументов не меняется
+     (`MainActivityTest` берёт её через `getDeclaredMethod("startScan")`).
+  4. `ImportTask` — javadoc 1183–1189, класс 1190–1265 →
+     `ImportTask.java`, тот же пакет, `final class`, без `public`.
+     Шов с активити: тост и rebind курсора. Закрытие `ProgressDialog`
+     остаётся в задаче (см. шаг 4: диалог гасится и когда экран уже
+     мёртв). `launchImport` (1134), `onActivityResult` (1146),
+     `queryDisplayName` (1162), `importToLibrary` (1177) остаются
+     в активити: кусок задачи без них смыкается.
+- **Остаётся в `MainActivity`:** жизненный цикл и `onCreate`,
+  режим списка/плитки, пагинация и свайп (`pageSwipe`,
+  `setPaginationEnabled`, `showPage`, `computeListPageSize`),
+  kebab (`showHeaderMenu`, `getLastHeaderMenu`, `confirmClear`,
+  `setPaginationEnabled`), колбэки лоадера, действия с книгой
+  (open / edit / remove и их диалоги), полоска обогащения
+  (`startEnrichment` / `onEnrichmentStopped` / `enrichListener`).
+  Пагинацию, меню и диалоги книг не выносить.
+- **Уже существующий package-private API, который нельзя менять:**
+  `PopupMenu showHeaderMenu(View)`, `PopupMenu getLastHeaderMenu()`,
+  `FilterState getFilterState()`. Новые package-private методы —
+  только шов ниже; они аддитивные. Тесты ищут `startScan` по имени
+  и не перебирают все методы класса.
+- **Почему у задач был `static`:** javadoc `ScanTask` / `ImportTask` /
+  `FilterTab` — анонимный или нестатический внутренний класс держал
+  бы активити сильной ссылкой, а скан и копирование живут дольше
+  экрана. В своём файле класса это то же правило: не хранить
+  `MainActivity` сильным полем. `ScanTask` и `ImportTask` держат экран
+  через `WeakReference`, как сейчас. `FilterTab` активити полем не
+  держит: страницу по-прежнему строит из `Context` активити (тема
+  Holo), не из application context.
+- **Ограничения:** поведение не меняется; тесты не правятся, safety
+  net — `MainActivityTest` и весь сьют; один шаг = один коммит;
+  pre-lambda (анонимные классы, явные аргументы типов, без diamond
+  и без method reference); без субпакетов, без интерфейса-стратегии,
+  без новых зависимостей; minSdk 19, только фреймворк.
+
+Единственная реализация шва (другой вариант не выбирать):
+
+| Кто зовёт | Новый метод на `MainActivity` | Зачем он есть |
+|---|---|---|
+| `FilterTab.show`, кнопка OK | `void commitFilterDraft(FilterTab formatsTab, FilterTab genreTab)` | Запись приватных `filters` и вызов приватного `applyCurrentView`. Тело — нынешний `onClick` строк 742–756, дословно. |
+| `FilterTab.show`, после `setLoading` и в `OnDismissListener` | `void setOpenFilterGenresTab(FilterTab tab)` | Поле остаётся private. `null` на dismiss. `startEnrichment` / `onEnrichmentStopped` это поле по-прежнему читают сами. |
+| `ScanTask.onPostExecute`, экран жив, до записи каталога | `void onScanProgressDone()` | `progressBar.setVisibility(GONE)`. Порядок как сейчас: спрятать прогресс раньше `saveScanBatch`. |
+| `ScanTask.onPostExecute`, экран жив, после записи каталога | `void onScanPosted(List<Book> found)` | Если `found != null`: `adapter.changeCursor(currentCatalogCursor())`, `updateEmptyView()`, затем `getLoader(LOADER_BOOKS)` → `initLoader`, если лоадера нет, иначе `restartLoader`. Потом тост `Found N` (`N = found == null ? 0 : found.size()`) и `startEnrichment()`. |
+| `ImportTask.onPostExecute`, экран жив, после `dismiss` | `void onImportPosted(Boolean ok, String displayName)` | `if (ok)` — тост `Imported …`, rebind, `updateEmptyView()`; иначе тост `Import failed`. Unboxing как сейчас: `Boolean`, не `boolean`. |
+
+Поля `adapter`, `progressBar`, `filters`, `db`, `catalog`, `openFilterGenresTab` не делать package-private. `LOADER_BOOKS` остаётся private в активити; `initLoader` / `restartLoader` живут внутри `onScanPosted`, колбэк лоадера — `this` активити.
+
+### 2. Сложность и субагент
+
+**Уровень:** — (neo-refactor)
+**Субагент (Cursor):** `neo-refactor`
+
+**Обоснование:** это рефакторинг без смены поведения и без новых тестов.
+Поток — `PIPELINE.md` §3: исполняет R, не D. `neo-developer` /
+`neo-developer-low` сюда не ставить. Чеклист §2.1 скилла analytics
+для D здесь нарочно не выбирает модель: шагов больше трёх, задеты UI,
+сканер и class map, рядом риски 8.4 / 9.2 / 10.2 — как у «сложной»
+задачи разработчика, но контракт другой. Существующие тесты — safety
+net, их не пишут заранее и не правят. Публичный и уже существующий
+package-private API `MainActivity` не меняется; новые методы — только
+шов из таблицы §1.
+
+### 3. План по шагам
+
+Каждый шаг = один коммит. Сообщение: `Шаг N: …`. Критерий «готово» —
+полный сьют зелёный и число тестов то же, что до шага 1 (ориентир
+исходников: 449 аннотаций `@Test`, из них `MainActivityTest` — 46;
+истина — атрибут `tests` в XML-отчёте Gradle). Lint: 0 errors.
+Перед правкой шага — `git status` и mtime `MainActivity.java` (правило
+10.2). Чужой незакоммиченный prod-код не откатывать и не править.
+`app/src/test/**` не трогать. `meta/CoverExtractor*` не трогать.
+
+Импорты: убрать из `MainActivity` только те, которые этот шаг сделал
+неиспользуемыми. Импорты, которые не использовались и до тикета
+(`Color`, `Button`, `CompoundButton`, `Arrays`, `MotionEvent`,
+`SuppressLint`), не чистить.
+
+**Шаг 1. `FilterTab` → свой файл.**
+Перенести javadoc и тело класса (1267–1546) дословно, включая
+анонимные `TextWatcher` / `OnClickListener` / `OnItemClickListener`.
+Класс — `final`, package-private. Модификаторы членов не менять:
+`page`, `all`, `checked`, `rebuildVisible`, `setLoading`, `refresh`,
+`bindAppliedMarker` остаются package-private (их читает активити и
+на шаге 2 прочитает `commitFilterDraft`); `applyLoading` остаётся
+private. В javadoc заменить «STATIC on purpose / non-static inner
+class» на ту же причину для отдельного файла: у класса нет ссылки
+на внешний экземпляр, страницы диалога не должны её держать.
+`MainActivity` по-прежнему делает `new FilterTab(...)`.
+Сборку диалога на этом шаге не трогать.
+Документы тем же коммитом (факт «вкладка живёт внутри активити»
+перестаёт быть верным):
+- `CONTEXT.md`, class map: в ячейке `MainActivity` к словам
+  `two FilterTab pages` добавить, что это package-private класс
+  `FilterTab.java`, не вложенный тип. Смысл ячейки (TabHost, Formats
+  из `Formats.ALL`, жанры из `distinctGenres()`, замок на время
+  stage-2, черновик, точка на подписи, воронка = `isActive()`)
+  не переписывать. Новая строка таблицы `FilterTab`: одна страница
+  диалога (Formats или Genres) — поиск, select-all/clear, список;
+  точка черновика через `bindAppliedMarker`; замок жанров —
+  `setLoading`; пересборка словаря — `refresh` (выбор хранится по
+  имени). Своей Activity нет.
+- `README.md`, дерево файлов (строка `MainActivity.java`): следующей
+  строкой добавить `FilterTab.java` — одна вкладка диалога фильтра.
+  Строку про `MainActivity.startScan()` не менять: метод на месте.
+
+**Шаг 2. Сборка диалога → `FilterTab.show`.**
+Удалить из активити `showFilterDialog` и `ensureFilterTabLabel`.
+Клик воронки (`onCreate`, сейчас строка 283, `showFilterDialog()`)
+заменить на:
+
+```java
+FilterTab.show(MainActivity.this, filters.copy(),
+        db.distinctGenres().toArray(new String[0]), enriching);
+```
+
+`FilterTab.show(MainActivity host, FilterState draft, String[] genreNames, boolean genresLocked)` —
+package-private static. Тело — нынешний `showFilterDialog` (633–765)
+со следующими заменами и только ими:
+- `Context` / `this` активити → `host`;
+- черновик, имена жанров и флаг замка — аргументы (не читать приватные
+  поля активити);
+- `openFilterGenresTab = genreTab` в том же месте (после
+  `genreTab.setLoading(genresLocked)`, до сборки `TabHost`) →
+  `host.setOpenFilterGenresTab(genreTab)`;
+- тело `onClick` OK → `host.commitFilterDraft(formatsTab, genreTab)`;
+- dismiss → `host.setOpenFilterGenresTab(null)`.
+
+Сохранить дословно, это поведение, которое тесты и комментарии уже
+фиксируют: конструктор `TabHost(host, null)` (одноаргументный роняет
+диалог на resource 0x0); `addTab` formats затем genres; маркеры через
+`ensureFilterTabLabel`; `setCurrentTab(draft.selectedGenres.isEmpty() ? 0 : 1)`;
+скрытие нетекущей страницы (`genreTab.page` GONE, если текущая 0,
+иначе `formatsTab.page` GONE); заполнение `checked` из черновика и
+повторный `rebuildVisible()` после конструктора (конструктор
+пересобирает список раньше заполнения). `ensureFilterTabLabel`
+становится `private static` на `FilterTab` и принимает `Context`
+вместо неявного `this`. Имя метода сохранить.
+
+`commitFilterDraft` и `setOpenFilterGenresTab` — методы из таблицы §1,
+package-private, рядом с `getFilterState`. `applyCurrentView` и
+`updateFilterIcon` остаются private.
+
+Тем же коммитом дописать в строку class map `FilterTab`: диалог
+собирает `FilterTab.show`; OK — `MainActivity.commitFilterDraft`.
+`README.md` и `docs/architecture.md` на этом шаге не менять
+(`FilterTab` в architecture.md не назван).
+
+Импорты, которые после переноса в `MainActivity` больше не встречаются:
+`Editable`, `TextWatcher`, `SparseBooleanArray`, `TypedValue`,
+`Gravity`, `AdapterView`, `ArrayAdapter`, `CheckBox`, `EditText`,
+`ListView`, `TabHost`, `TabWidget`. `FrameLayout` и `LinearLayout`
+в активити остаются.
+
+**Шаг 3. `ScanTask` → свой файл.**
+Перенести класс дословно. Конструктор больше не читает приватные
+`host.catalog` / `host.db`. Сигнатура:
+
+```java
+ScanTask(Catalog catalog, BookDatabase db, MainActivity host)
+```
+
+`getExternalFilesDir(null)` по-прежнему вызывается внутри конструктора
+задачи (публичный метод `Activity`, в try/catch как сейчас). Так
+строка class map `LibraryScanner` остаётся правдой: набор
+`adoptedFromPaths` передаёт `ScanTask`, каталог внешних файлов в
+`scanDetailed` тоже передаёт `ScanTask`. Эту строку `CONTEXT.md` не
+править. `startScan` остаётся:
+
+```java
+private void startScan() {
+    progressBar.setVisibility(View.VISIBLE);
+    new ScanTask(catalog, db, this).execute();
+}
+```
+
+`onPostExecute` — те же ветки, в том же порядке:
+1. `found = result == null ? null : result.books`;
+   `screenAlive = a != null && !a.isFinishing()` (без `isDestroyed` —
+   на этом пути его сейчас нет).
+2. Если экран жив — `a.onScanProgressDone()`.
+3. Если `found != null` — `catalog.saveScanBatch` и `removeMissing`
+   по `root.complete` дословно, даже если экран мёртв.
+4. Если экран жив — `a.onScanPosted(found)`.
+
+Запись каталога не переносить в активити. Проверку `isFinishing` не
+дублировать внутри `onScanPosted`. Тела `onScanProgressDone` и
+`onScanPosted` — таблица §1. Javadoc задачи сохранить и поправить
+«STATIC nested class» на отдельный файл с `WeakReference` (причина
+та же). Сильное поле `MainActivity` не добавлять.
+
+Документы тем же коммитом:
+- `CONTEXT.md`: новая строка `ScanTask` — package-private `AsyncTask`
+  в своём файле; `Catalog` / `BookDatabase` и экран через
+  `WeakReference`; фон — `adoptedFromPaths` и `getExternalFilesDir(null)`
+  в `LibraryScanner.scanDetailed`; UI-хвост — `onScanProgressDone` /
+  `onScanPosted`. Workflow «Scan (stage 1)» не переписывать: там по-прежнему
+  `startScan()` → `AsyncTask`, это не стало ложью.
+- `README.md`: в дерево файлов добавить `ScanTask.java`. Строку
+  `MainActivity.startScan()` не менять.
+- `docs/architecture.md` строка 185 — одна фраза. Сейчас: все
+  долгоживущие задачи, включая скан, — статические вложенные
+  `AsyncTask`, и пункт 1 списка выше — это `MainActivity`. Убрать
+  «скан» из перечисления вложенных и в той же фразе назвать
+  package-private `ScanTask` (свой файл, Activity через
+  `WeakReference`). Абзац под фразой, строки 885 и 956 и §10 не
+  трогать (тикет 15.3; 885/956 не говорят «вложенный»).
+
+Импорты активити: убрать `HashSet` и `java.util.Set`, если их больше
+нет. `LibraryScanner`, `AsyncTask`, `WeakReference` ещё нужны
+`ImportTask` — оставить до шага 4.
+
+**Шаг 4. `ImportTask` → свой файл.**
+Перенести класс дословно. `launchImport`, `onActivityResult`,
+`queryDisplayName`, `importToLibrary` не переносить. `importToLibrary`
+по-прежнему создаёт `dest`, показывает `ProgressDialog` и запускает
+задачу. Конструктор принимает уже собранные зависимости вместо чтения
+приватных полей:
+
+```java
+ImportTask(Context appContext, Catalog catalog, BookDatabase db,
+        Uri uri, String displayName, File dest, ProgressDialog pd,
+        MainActivity host)
+```
+
+Вызов из `importToLibrary`:
+`new ImportTask(getApplicationContext(), catalog, db, uri, displayName, dest, pd, this).execute()`.
+Тело `doInBackground` (копирование, `scanSingle`, `catalog.importFile`,
+`CoverCache.delete` при перезаписи, `MetaEnricher.enrichOne(..., false)`)
+не менять: тот же буфер 8192, та же запись прямо в `dest`, без
+`.copying`. `onPostExecute`: сначала `dismiss` у диалога из
+`WeakReference` (и когда активити уже нет), затем
+`if (a == null || a.isFinishing()) return;`, затем
+`a.onImportPosted(ok, displayName)`. `dismiss` не переносить в
+`onImportPosted`: иначе мёртвый экран оставит диалог. Javadoc —
+отдельный файл и `WeakReference`, причина та же.
+
+Документы тем же коммитом:
+- `CONTEXT.md`: строка `ImportTask` — package-private `AsyncTask`;
+  app context на время копирования; Activity и `ProgressDialog` слабо;
+  `dismiss` даже если экран мёртв; дальше `onImportPosted`.
+  `launchImport` / `onActivityResult` / `queryDisplayName` /
+  `importToLibrary` остаются на активити. Workflow «Import» не
+  переписывать.
+- `README.md`: строка `ImportTask.java` в дереве.
+- `docs/architecture.md` строка 185: так же одной фразой вынуть
+  «импорт» из вложенных и назвать `ImportTask`. Больше в этом файле
+  ничего.
+
+Импорты активити, которые после этого не встречаются: `AsyncTask`,
+`WeakReference`, `LibraryScanner`, `CoverCache`. `ProgressDialog`
+остаётся: его показывает `importToLibrary`.
+
+### 4. Тесты (задание тестировщику)
+
+Новые тесты не писать. Набор не менять: ни добавить, ни удалить, ни
+править assertions. Красный тест — сломанный контракт рефакторинга,
+не повод чинить тест. Проверка T — после всех четырёх шагов R
+(`PIPELINE.md` §3): полный сьют, lint, то же число тестов. R гоняет
+сьют сам после каждого шага; T это не заменяет.
+
+Что уже прибивает каждый шаг (`MainActivityTest`, Robolectric sdk 19).
+Тесты ходят в экран через `R.id.btn_filter`, kebab, `getFilterState()`,
+`getLastHeaderMenu()`, reflection `startScan` и `onActivityResult`.
+Тип `FilterTab` / `ScanTask` / `ImportTask` они не называют — вынос
+файла сам по себе их не ломает, ломает другое поведение.
+
+- **Шаг 1 (вкладка).** Поиск, select-all, крестик, чекбоксы, точка
+  на подписи: `theFilterDialogSearchBarFiltersTheFormatList`,
+  `theFilterDialogSelectAllCheckboxTogglesAllFormats`,
+  `selectAllWithActiveSearchResetsSearchAndSelectsAllFormats`,
+  `filterTabDotsFollowTheDraftAndTheTabClear`,
+  `filterTabDotSurvivesSearchAndSelectAll`,
+  `filterTabDotMatchesCommittedStateOnReopen`,
+  `genreTabDotTracksOnlyTheGenreDraft`. Список форматов и id страниц:
+  `theFunnelIconOpensTheFilterDialogWithOneItemPerFormat`,
+  `filterDialogHidesTheTabThatIsNotCurrent` (`R.id.formats_tab` /
+  `R.id.genres_tab`).
+- **Шаг 2 (сборка диалога и OK).** `TabHost` и подписи:
+  `filterDialogHidesTheTabThatIsNotCurrent`,
+  `filterTabDotMatchesCommittedStateOnReopen` (текст
+  `filter_tab_formats` / `filter_tab_genres` и compound drawable).
+  OK пишет фильтр и сбрасывает recent view:
+  `checkingAFormatInTheDialogRestrictsTheVisibleBooks`,
+  `applyingTheFilterDialogOverridesTheRecentViewWithoutLosingTheFilter`,
+  `anEmptySelectionInTheDialogMeansAllFormats`,
+  `theFilterStateIsActiveExactlyWhenAFormatIsSelected`.
+  Cancel не трогает состояние:
+  `cancellingTheFilterDialogLeavesTheCatalogAndTheStateUntouched`.
+  Черновик после поворота:
+  `theFilterChoiceSurvivesARotation`,
+  `theFilterStateSurvivesRotationButDialogStateIsReset`.
+  Ветку «открыть диалог сразу на Genres, если в черновике есть жанры»
+  (`setCurrentTab`) ни один тест не утверждает — её всё равно сохранить
+  (шаг 2). Хелпер теста `ensureFilterTabIndicators` дорисовывает
+  индикаторы, только если у `TabWidget` меньше двух детей; пустой
+  strip из-за сломанного `addTab` этот хелпер замаскирует не весь
+  assert (текст подписи и drawable проверяются отдельно).
+- **Жанры во время enrichment.** Прямого теста нет: никто не открывает
+  диалог, пока `R.id.enrich_bar` ещё VISIBLE, и не проверяет
+  `setEnabled(false)` / подсказку `filter_genres_loading`.
+  Ближайшее — `genreTabDotTracksOnlyTheGenreDraft`: ждёт
+  `needMeta()` пустым и полоску GONE, затем видит жанр «Prose»
+  в списке вкладки. `backgroundEnricherCompletesForAllBooks` прибивает
+  саму полоску. Замок и `refresh` остаются на активити
+  (`startEnrichment` / `onEnrichmentStopped`) и обязаны звать те же
+  `setLoading` / `refresh` на том же экземпляре, который
+  `setOpenFilterGenresTab` запомнил. Выкинуть эти два вызова нельзя,
+  даже хотя сьют их не ловит.
+- **Шаг 3 (rescan через `startScan`).**
+  `rescanAfterEmptyFirstScanDrawsTheNewBooks` — reflection
+  `startScan()`, список рисует новые книги, прогресс уходит.
+  `headerKebabRescanPickRunsTheScanAndDrawsTheNewBooks` — пункт меню.
+  `scanOnLaunchFindsBooksInExternalStorage` — холодный старт.
+  `recreationSkipsTheRescanButResumesEnrichment` — после поворота
+  `startScan` не вызывается, прогресс не показывается, enrichment
+  продолжается. Rebind после скана не завязан на живой
+  `ContentObserver` — это комментарий теста и код `onPostExecute`;
+  `initLoader` на холодном старте и `restartLoader` на повторном
+  скане оба обязаны остаться.
+- **Шаг 4 (импорт).**
+  `headerKebabImportPickLaunchesTheDocumentPicker` — `launchImport`.
+  `importFromDocumentPickerCopiesFileIntoLibraryAndCatalog` и
+  `reimportingOverAnExistingFileReEnrichesTheBook` — `onActivityResult`,
+  копирование, каталог, повторное обогащение, rebind.
+  `importRejectsWhenThePickerYieldsNoUsableFile` — отказ по типу ещё
+  в активити, до задачи; поэтому `queryDisplayName` /
+  `onActivityResult` не переезжают.
+
+Пагинация, свайп и empty-view этим тикетом не двигаются. Если упал
+тест вида/страниц — сначала 9.2 (пустой каталог прячет `AbsListView`,
+visibility грида не означает режим) и 13.3–13.5 (жест в
+`PagedListView` / `PagedGridView`, перехват свайпа включён и при
+выключенной пагинации, `showPage` с поста). Чинить это «заодно» нельзя.
+
+**Флейки 8.4.** Таймаут 15–30 с в полном сьюте (часто
+`MainActivityTest` или `MetaEnricherTest`) — не регресс, пока
+изолированный прогон того же метода падает. Сначала
+`--tests "com.example.mylibrary.MainActivityTest.<метод>"`, потом вывод.
+`ShadowActivity.getNextStartedActivity()` по-прежнему одноразовый;
+`ShadowDialog.clickOn` — id вью `android.R.id.button1` / `button2`.
+
+### 5. Анти-рекомендации
+
+- **Отдельная Activity** для фильтра, скана или импорта. Тесты
+  поднимают один `MainActivity` и жмут `btn_filter`, kebab и
+  `onActivityResult`. Второй экран — другой манифест и другое
+  поведение.
+- **Presenter и любой интерфейс хоста** (`ScanHost`, `OnFilterCommit`,
+  стратегия «как читать книгу»). Прецедент закрытого [REFAC]
+  MetaExtractor/CoverExtractor: интерфейс-стратегии нет, единого
+  `BookReader` нет. Хост `ScanTask` / `ImportTask` / `FilterTab.show` —
+  конкретные методы `MainActivity` из таблицы §1.
+- **Общий базовый класс** для `ScanTask` и `ImportTask`. Разные
+  результаты (`ScanResult` / `Boolean`) и разные хвосты; общая база
+  стала бы тем же интерфейсом без ключевого слова.
+- **Субпакет `ui` или перенос `ScanTask` в `scan/`.** Новые классы
+  лежат рядом с `FilterState` и `BookAdapter`, в
+  `com.example.mylibrary`. В `scan/` остаются `LibraryScanner` и
+  `Formats`.
+- **Вынос пагинации, kebab и диалогов книг.** Общие `adapter`, `list`,
+  `grid`, `filters`, prefs. Жест и пустой список — 9.2 и 13.3–13.5,
+  не этот тикет. `showHeaderMenu` / `getLastHeaderMenu` /
+  `confirmClear` / `setPaginationEnabled` остаются как есть, включая
+  приватность `confirmClear` и `setPaginationEnabled`.
+- **Лямбды, method reference, diamond.** Исходники Java 8 из-за AGP,
+  стиль — анонимные классы и явные аргументы типов (`new WeakReference<MainActivity>(host)`,
+  `new HashSet<String>()`). При переносе не осовременивать.
+- **Package-private поля** `filters` / `db` / `adapter` / `progressBar`
+  вместо методов хвоста. Шире, чем шов, и даёт тесту писать состояние
+  в обход `getFilterState()`.
+- **Перенос `launchImport` / `onActivityResult` / `queryDisplayName` /
+  `importToLibrary` в файл задачи.** Смыкание есть без них: задача
+  получает uri, dest, catalog, db и app context аргументами.
+  Отказ «That file type is not supported» остаётся в активити — его
+  прибивает `importRejectsWhenThePickerYieldsNoUsableFile` до
+  `execute()`. Оставлять в активити пустую оболочку этих четырёх
+  методов и уносить тела незачем.
+- **`dismiss` внутри `onImportPosted`.** Метод зовётся только для живого
+  экрана; диалог сейчас гасится раньше этой проверки.
+- **Новый тест на замок жанров** в этом тикете. [REFAC] тесты не
+  добавляет. Поведение `setLoading` / `refresh` сохранять дословно.
+- **Правка `docs/architecture.md` целиком** и правка строк 885 / 956.
+  Там «статический ScanTask / ImportTask» без слова «вложенный», а
+  data flow рядом устарел (`upsertBasicBatch`, `LibraryScanner.scan`).
+  Это тикет 15.3. В этом тикете — только фраза на строке 185, шаги 3 и 4.
+- **Попутный фикс копирования** (`.copying` → rename, другой буфер) и
+  смена write-path скана (`clear`, прямой `upsert` мимо `Catalog`).
+  Инварианты ниже.
+
+### 6. Invariants, которые нельзя сломать
+
+Из `CONTEXT.md` «Invariants (don't break)» — только задетое:
+
+- **minSdk 19, никаких API выше 19, тема Holo.** Диалог — framework
+  `TabHost` (не ViewPager), `AlertDialog`, `AsyncTask`, `ProgressDialog`.
+  Support-библиотек и AndroidX не добавлять.
+- **Никаких новых зависимостей.**
+- **`Formats.ALL` — единственный список форматов** вкладки Formats.
+  Жанры — только `db.distinctGenres()` на открытии и в `refresh`,
+  без зашитого списка.
+- **Фильтры сессионные.** `FilterState` по-прежнему в instance state.
+  OK подменяет `filters` новым состоянием с `recentView = false` и
+  зовёт `applyCurrentView`. Cancel `filters` не пишет. Точка воронки —
+  `isActive()` уже записанного состояния, не черновика вкладки.
+  `recentView` по-прежнему побеждает в запросе, пока OK его не сбросит.
+- **Запись скана не меняет контракт `last_read`.** `ScanTask` по-прежнему
+  пишет через `catalog.saveScanBatch` / `removeMissing`, не через
+  `BookDatabase` в обход `Catalog` и не через `clear`.
+- **Файл импорта не «улучшать».** Инвариант про полузаписанный файл
+  (`.copying` → rename у приватной копии, `.tmp` → swap у MetaWriter)
+  этот тикет не реализует заново: нынешнее тело `ImportTask` пишет
+  в `dest` напрямую. Перенести байт-в-байт. Менять протокол — отдельная
+  задача.
+
+Не задеты и не трогаются: манифест (`package`, `exported`), бюджет
+2 минут на файл (`MetaEnricher` и `startEnrichment` остаются на
+активити).
+
+### 7. Как проверять
+
+PowerShell, корень `D:\Projects\myLibrary`. `java` в PATH нет:
+
+```powershell
+$env:JAVA_HOME = "D:\Program Files\Android\Android Studio\jbr"
+gradlew.bat :app:testDebugUnitTest
+gradlew.bat :app:lintDebug
+```
+
+`assembleDebug` этим тикетом не требуется: ресурсы, манифест и gradle
+не меняются. T по `PIPELINE.md` §3 может прогнать его отдельно.
+
+Быстрый сигнал по экрану (не заменяет полный сьют):
+
+```powershell
+gradlew.bat :app:testDebugUnitTest --tests "com.example.mylibrary.MainActivityTest"
+```
+
+Число тестов — `app/build/test-results/testDebugUnitTest/*.xml`
+(атрибут `tests`) и HTML
+`app/build/reports/tests/testDebugUnitTest/index.html`.
+После каждого шага failures = 0 и `tests` равно числу до шага 1.
+Таймаут в полном сьюте — правило 8.4 из §4: сначала изолированный
+`--tests "com.example.mylibrary.<Класс>.<метод>"`.
+
+### Текущее состояние
+
+Ветка `refactor/main-activity-extract` (от `master` / `8fc49d1`).
+Перед шагом 1: `git status` — изменён только `.agents/ISSUES.md`;
+`MainActivity.java` совпадал с HEAD, mtime 2026-11-21 04:15:31;
+чужого незакоммиченного prod-кода нет. База сьюта до шага 1 — XML
+`app/build/test-results/testDebugUnitTest` от 2026-11-21 04:14
+(prod-код совпадает с HEAD): tests=449, failures=0, errors=0.
+
+Шаг 1 выполнен в этом коммите: `FilterTab` — package-private
+`final class` в `FilterTab.java` (не вложенный тип). Сборка диалога
+(`showFilterDialog`, `ensureFilterTabLabel`) ещё в `MainActivity`.
+Шаги 2–4 не начаты. Сьют и lint шага 1 прогоняются до шага 2.
