@@ -5,7 +5,6 @@ import android.app.Activity;
 import android.app.AlertDialog;
 import android.app.LoaderManager;
 import android.app.ProgressDialog;
-import android.content.Context;
 import android.content.DialogInterface;
 import android.content.CursorLoader;
 import android.content.Intent;
@@ -13,7 +12,6 @@ import android.content.Loader;
 import android.database.Cursor;
 import android.database.DataSetObserver;
 import android.net.Uri;
-import android.os.AsyncTask;
 import android.os.Bundle;
 import android.graphics.Color;
 import android.view.LayoutInflater;
@@ -37,14 +35,11 @@ import com.example.mylibrary.db.Catalog;
 import com.example.mylibrary.meta.MetaEnricher;
 import com.example.mylibrary.model.Book;
 import com.example.mylibrary.scan.Formats;
-import com.example.mylibrary.scan.LibraryScanner;
-import com.example.mylibrary.util.CoverCache;
 import com.example.mylibrary.util.FileLocator;
 import com.example.mylibrary.util.LocateResult;
 import com.example.mylibrary.util.Openers;
 
 import java.io.File;
-import java.lang.ref.WeakReference;
 import java.util.Arrays;
 import java.util.List;
 
@@ -969,91 +964,31 @@ public class MainActivity extends Activity
     private void importToLibrary(Uri uri, String displayName) {
         final File dest = new File(getExternalFilesDir("books"), displayName);
         final ProgressDialog pd = ProgressDialog.show(this, null, "Importing…", true, false);
-        new ImportTask(this, uri, displayName, dest, pd).execute();
+        new ImportTask(getApplicationContext(), catalog, db, uri, displayName, dest, pd, this).execute();
     }
 
-    /** Copies a picked document into the library and re-enriches the book. A STATIC
-     *  nested class for the same reason as {@link ScanTask}: an anonymous inner
-     *  class would carry a synthetic strong reference to the Activity, and copying
-     *  a big file can outlive the screen. Uses the app context for the background
-     *  work (the SAF read grant is process-wide — any ContentResolver in the
-     *  process can open the picked document) and holds the Activity and the
-     *  progress dialog weakly for the UI follow-up. */
-    private static final class ImportTask extends AsyncTask<Void, Void, Boolean> {
-        private final Uri uri;
-        private final String displayName;
-        private final File dest;
-        private final Context appContext;
-        private final BookDatabase db;
-        private final Catalog catalog;
-        private final WeakReference<ProgressDialog> dialog;
-        private final WeakReference<MainActivity> self;
-
-        ImportTask(MainActivity host, Uri uri, String displayName, File dest, ProgressDialog pd) {
-            this.uri = uri;
-            this.displayName = displayName;
-            this.dest = dest;
-            this.appContext = host.getApplicationContext();
-            this.db = host.db; // safe: it holds the app context
-            this.catalog = host.catalog;
-            this.dialog = new WeakReference<ProgressDialog>(pd);
-            this.self = new WeakReference<MainActivity>(host);
+    /** Toast and catalog rebind after a finished import. The caller has already
+     *  dismissed the progress dialog and checked that the screen is alive.
+     *  {@code ok} stays {@link Boolean} so a null result unboxes as before. */
+    void onImportPosted(Boolean ok, String displayName) {
+        if (ok) {
+            Toast.makeText(this, "Imported " + displayName, Toast.LENGTH_SHORT).show();
+            // The upsert above was committed on the background thread, just
+            // before this callback — so re-query the catalog ourselves and
+            // rebind the adapter. Deterministic: it does not rely on the
+            // CursorLoader's ContentObserver being alive (on API 19 it can be
+            // lost after a loader cancel/restart cycle — without this rebind
+            // the list could stay empty after an import, same class of bug as
+            // the rescan fix in startScan). The loader's next delivery simply
+            // replaces this cursor.
+            adapter.changeCursor(currentCatalogCursor());
+            updateEmptyView();
+        } else {
+            Toast.makeText(this, "Import failed", Toast.LENGTH_LONG).show();
         }
-
-        @Override protected Boolean doInBackground(Void... v) {
-            try {
-                if (!dest.getParentFile().exists()) dest.getParentFile().mkdirs();
-                java.io.InputStream in = appContext.getContentResolver().openInputStream(uri);
-                java.io.OutputStream out = new java.io.FileOutputStream(dest);
-                byte[] buf = new byte[8192];
-                int n;
-                while ((n = in.read(buf)) > 0) out.write(buf, 0, n);
-                in.close();
-                out.close();
-                Book b = LibraryScanner.scanSingle(dest);
-                if (b != null) {
-                    long existing = db.getIdForPath(dest.getAbsolutePath());
-                    catalog.importFile(b, existing >= 0, existing);
-                    if (existing >= 0) {
-                        // The import overwrote an existing file: drop the stale cover
-                        // cache — enrichOne below refreshes it.
-                        CoverCache.delete(appContext, dest.getAbsolutePath());
-                    }
-                    // Stage 2 for this single book — already off the UI thread.
-                    // The bytes were just replaced, so a foreign in-flight parse
-                    // must not be taken.
-                    MetaEnricher.enrichOne(appContext, db, b, false);
-                }
-                return b != null;
-            } catch (Exception e) {
-                return false;
-            }
-        }
-
-        @Override protected void onPostExecute(Boolean ok) {
-            ProgressDialog d = dialog.get();
-            if (d != null) d.dismiss();
-            MainActivity a = self.get();
-            if (a == null || a.isFinishing()) return;
-            if (ok) {
-                Toast.makeText(a, "Imported " + displayName, Toast.LENGTH_SHORT).show();
-                // The upsert above was committed on the background thread, just
-                // before this callback — so re-query the catalog ourselves and
-                // rebind the adapter. Deterministic: it does not rely on the
-                // CursorLoader's ContentObserver being alive (on API 19 it can be
-                // lost after a loader cancel/restart cycle — without this rebind
-                // the list could stay empty after an import, same class of bug as
-                // the rescan fix in startScan). The loader's next delivery simply
-                // replaces this cursor.
-                a.adapter.changeCursor(a.currentCatalogCursor());
-                a.updateEmptyView();
-            } else {
-                Toast.makeText(a, "Import failed", Toast.LENGTH_LONG).show();
-            }
-            // The notifyChange in doInBackground still goes out for the other
-            // listeners (e.g. the "recently read" view); this rebind only
-            // guarantees that the list in front of the user catches up.
-        }
+        // The notifyChange in doInBackground still goes out for the other
+        // listeners (e.g. the "recently read" view); this rebind only
+        // guarantees that the list in front of the user catches up.
     }
 
 }

@@ -321,6 +321,7 @@ app/src/main/java/com/example/mylibrary/
 ├── MainActivity.java        # scan, browse, filter, recently-read, import
 ├── FilterTab.java           # one tab of the filter dialog
 ├── ScanTask.java            # stage-1 scan AsyncTask
+├── ImportTask.java          # document import AsyncTask
 ├── DetailActivity.java      # book details: open / edit / remove
 ├── EditMetaActivity.java    # metadata editing form
 ├── BookAdapter.java         # list adapter

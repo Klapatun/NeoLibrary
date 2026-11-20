@@ -469,7 +469,7 @@ git-историей; полновесного ревью PR #14 ещё не б�
 
 ## [REFAC] 2026-11-21: декомпозиция `MainActivity` — вынос `FilterTab`, `ScanTask`, `ImportTask` — [ ] (средний)
 
-**Создано:** 2026-11-21. **Статус:** план согласован (2026-11-21, человек).
+**Создано:** 2026-11-21. **Статус:** шаги R выполнены (2026-11-21); финальная проверка — у T.
 Секции ниже — утверждённый план. К коду приступает `neo-refactor`.
 Отдельный `.agents/plans/**/PLAN.md` не заводить. Открытый [REFAC]
 `CoverExtractor` не смешивать: другой файл и другой коммитный ряд.
@@ -959,22 +959,22 @@ gradlew.bat :app:testDebugUnitTest --tests "com.example.mylibrary.MainActivityTe
 Ветка `refactor/main-activity-extract` (от `master` / `8fc49d1`).
 Перед шагом 1: `git status` — изменён только `.agents/ISSUES.md`;
 `MainActivity.java` совпадал с HEAD, mtime 2026-11-21 04:15:31;
-чужого незакоммиченного prod-кода нет. База сьюта до шага 1 — XML
-`app/build/test-results/testDebugUnitTest` от 2026-11-21 04:14
-(prod-код совпадает с HEAD): tests=449, failures=0, errors=0.
+чужого незакоммиченного prod-кода нет. База сьюта до шага 1:
+tests=449, failures=0, errors=0.
 
-Шаг 1 — `309d864`: `FilterTab` — package-private `final class` в
-`FilterTab.java`. Сьют после шага 1: tests=449, failures=0, errors=0.
-Lint: 0 errors.
+Шаги R:
+- Шаг 1 — `309d864`: `FilterTab` в `FilterTab.java`. Сьют: tests=449,
+  failures=0, errors=0. Lint: 0 errors.
+- Шаг 2 — `aeb25e9`: `FilterTab.show`, `commitFilterDraft`,
+  `setOpenFilterGenresTab`. Сьют: tests=449, failures=0, errors=0.
+  Lint: 0 errors.
+- Шаг 3 — `a1aad4b`: `ScanTask` в своём файле, `onScanProgressDone` /
+  `onScanPosted`. Сьют: tests=449, failures=0, errors=0. Lint: 0 errors.
+- Шаг 4 — этот коммит: `ImportTask` в своём файле, `onImportPosted`.
+  `dismiss` остаётся в задаче. `launchImport` / `onActivityResult` /
+  `queryDisplayName` / `importToLibrary` остались в активити.
+  Хеш шага 4 и сьют после него в этот коммит не входят (amend запрещён);
+  их дописывает R сразу после зелёного прогона, если прогон зелёный.
 
-Шаг 2 — `aeb25e9`: диалог собирает `FilterTab.show`; OK —
-`MainActivity.commitFilterDraft`; вкладка жанров —
-`setOpenFilterGenresTab`. Сьют после шага 2: tests=449, failures=0,
-errors=0. Lint: 0 errors.
-
-Шаг 3 выполнен в этом коммите: `ScanTask` — package-private
-`final class` в своём файле. Конструктор принимает `Catalog`,
-`BookDatabase` и экран; `getExternalFilesDir(null)` остаётся внутри
-задачи. Хвост — `onScanProgressDone` / `onScanPosted`. Приватный
-`startScan()` без аргументов на месте. Шаг 4 не начат. Сьют и lint
-шага 3 прогоняются до шага 4.
+Осталось передать тестировщику (T): полный сьют, lint, то же число
+тестов (449). `app/src/test/**` не менялся.
