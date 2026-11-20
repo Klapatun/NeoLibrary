@@ -2843,4 +2843,362 @@ public class MainActivityTest {
         String[] files = booksDir == null ? null : booksDir.list();
         assertTrue("no imported file may appear", files == null || files.length == 0);
     }
+
+    // ------------------------------------------------------------------
+    // catalog place and child-screen back (feature/detail-back)
+    // ------------------------------------------------------------------
+
+    private void awaitStage2Quiet(final MainActivity a) throws InterruptedException {
+        final BookDatabase dbLocal = db;
+        awaitCondition("stage-2 to finish", new Cond() {
+            public boolean holds() {
+                return dbLocal.needMeta().isEmpty()
+                        && a.findViewById(R.id.enrich_bar).getVisibility() == View.GONE;
+            }
+        });
+    }
+
+    private static void performHomeUp(android.app.Activity a) {
+        android.widget.PopupMenu homeMenu =
+                new android.widget.PopupMenu(a, a.getWindow().getDecorView());
+        android.view.MenuItem homeItem = homeMenu.getMenu().add(
+                android.view.Menu.NONE, android.R.id.home, android.view.Menu.NONE, "");
+        a.onOptionsItemSelected(homeItem);
+        shadowOf(Looper.getMainLooper()).idle();
+    }
+
+    private ActivityController<MainActivity> recreateMain(ActivityController<MainActivity> c) {
+        Bundle state = new Bundle();
+        c.saveInstanceState(state);
+        c.pause().stop().destroy();
+        return Robolectric.buildActivity(MainActivity.class).setup(state);
+    }
+
+    private void assertCatalogPlaceNotInPrefs(MainActivity a) {
+        SharedPreferences prefs = a.getSharedPreferences("library_prefs", Context.MODE_PRIVATE);
+        assertFalse(prefs.contains("catalog_page"));
+        assertFalse(prefs.contains("catalog_scroll_position"));
+        assertFalse(prefs.contains("catalog_scroll_top"));
+    }
+
+    private void enablePaginationFromKebab(MainActivity a) {
+        a.findViewById(R.id.btn_menu).performClick();
+        a.getLastHeaderMenu().getMenu().performIdentifierAction(R.id.main_menu_pagination, 0);
+        shadowOf(Looper.getMainLooper()).idle();
+    }
+
+    private void assertPaginationOnPage(MainActivity a, AbsListView view, String indicator,
+            int page) throws InterruptedException {
+        final TextView ind = (TextView) a.findViewById(R.id.page_indicator);
+        final String indicatorRef = indicator;
+        final int pageRef = page;
+        awaitCondition("page indicator " + indicator, new Cond() {
+            public boolean holds() {
+                return indicatorRef.equals(ind.getText().toString())
+                        && ((BookAdapter) view.getAdapter()).getPage() == pageRef;
+            }
+        });
+        assertEquals(indicator, ind.getText().toString());
+        assertEquals(page, ((BookAdapter) view.getAdapter()).getPage());
+    }
+
+    @Test
+    public void backFromEditOpenedFromLibraryPopsOnlyTheEditor() throws Exception {
+        TestFixtures.writeText(new File(storage, "story_a.txt"), "alpha\n");
+        TestFixtures.writeText(new File(storage, "story_b.txt"), "beta\n");
+
+        MainActivity a = launchMain();
+        awaitCatalogSize(2);
+        GridView grid = a.findViewById(R.id.book_grid);
+        awaitAdapterCount(grid, 2);
+        BookAdapter adapter = (BookAdapter) grid.getAdapter();
+        Book target = findBook("story_a.txt");
+        assertNotNull(target);
+        int pos = positionOf(adapter, target);
+
+        android.widget.PopupMenu menu = openKebabFor(grid, pos);
+        menu.getMenu().performIdentifierAction(R.id.book_menu_edit, 0);
+        shadowOf(Looper.getMainLooper()).idle();
+
+        Intent editIntent = shadowOf(a).getNextStartedActivity();
+        assertNotNull(editIntent);
+        assertEquals(EditMetaActivity.class.getName(), editIntent.getComponent().getClassName());
+        EditMetaActivity editor =
+                Robolectric.buildActivity(EditMetaActivity.class, editIntent).setup().get();
+        assertNull("only the editor must have been started",
+                shadowOf(a).getNextStartedActivity());
+
+        performHomeUp(editor);
+        assertTrue("home must finish the editor", editor.isFinishing());
+        assertNull("home must not start another activity",
+                shadowOf(editor).getNextStartedActivity());
+        assertFalse("the library must stay open", a.isFinishing());
+
+        MainActivity a2 = launchMain();
+        awaitCatalogSize(2);
+        grid = a2.findViewById(R.id.book_grid);
+        awaitAdapterCount(grid, 2);
+        adapter = (BookAdapter) grid.getAdapter();
+        target = findBook("story_a.txt");
+        pos = positionOf(adapter, target);
+        menu = openKebabFor(grid, pos);
+        menu.getMenu().performIdentifierAction(R.id.book_menu_edit, 0);
+        shadowOf(Looper.getMainLooper()).idle();
+
+        editIntent = shadowOf(a2).getNextStartedActivity();
+        assertNotNull(editIntent);
+        editor = Robolectric.buildActivity(EditMetaActivity.class, editIntent).setup().get();
+
+        editor.onBackPressed();
+        shadowOf(Looper.getMainLooper()).idle();
+        assertTrue("Back must finish the editor", editor.isFinishing());
+        assertNull("Back must not start another activity",
+                shadowOf(editor).getNextStartedActivity());
+        assertFalse("the library must stay open", a2.isFinishing());
+    }
+
+    @Test
+    public void paginationPageSurvivesReturnWithoutRecreation() throws Exception {
+        for (int i = 1; i <= 8; i++) {
+            TestFixtures.writeText(new File(storage, "story_" + i + ".txt"), "text " + i + "\n");
+        }
+
+        ActivityController<MainActivity> c = Robolectric.buildActivity(MainActivity.class);
+        MainActivity a = c.setup().get();
+        awaitCatalogSize(8);
+        GridView grid = a.findViewById(R.id.book_grid);
+        awaitAdapterCount(grid, 8);
+        awaitStage2Quiet(a);
+
+        enablePaginationFromKebab(a);
+        a.findViewById(R.id.page_next).performClick();
+        assertPaginationOnPage(a, grid, "2 / 2", 1);
+
+        // Page 2 shows only the tail of the catalog — kebab the first visible tile.
+        android.widget.PopupMenu menu = openKebabFor(grid, 0);
+        menu.getMenu().performIdentifierAction(R.id.book_menu_details, 0);
+        shadowOf(Looper.getMainLooper()).idle();
+
+        Intent detailIntent = shadowOf(a).getNextStartedActivity();
+        assertNotNull(detailIntent);
+        Robolectric.buildActivity(DetailActivity.class, detailIntent).setup().get();
+
+        c.pause().stop().start().resume();
+        shadowOf(Looper.getMainLooper()).idle();
+        assertPaginationOnPage(a, grid, "2 / 2", 1);
+        assertCatalogPlaceNotInPrefs(a);
+    }
+
+    @Test
+    public void paginationPageSurvivesReturnFromEditWithoutRecreation() throws Exception {
+        for (int i = 1; i <= 8; i++) {
+            TestFixtures.writeText(new File(storage, "story_" + i + ".txt"), "text " + i + "\n");
+        }
+
+        ActivityController<MainActivity> c = Robolectric.buildActivity(MainActivity.class);
+        MainActivity a = c.setup().get();
+        awaitCatalogSize(8);
+        GridView grid = a.findViewById(R.id.book_grid);
+        awaitAdapterCount(grid, 8);
+        awaitStage2Quiet(a);
+
+        enablePaginationFromKebab(a);
+        a.findViewById(R.id.page_next).performClick();
+        assertPaginationOnPage(a, grid, "2 / 2", 1);
+
+        android.widget.PopupMenu menu = openKebabFor(grid, 0);
+        menu.getMenu().performIdentifierAction(R.id.book_menu_edit, 0);
+        shadowOf(Looper.getMainLooper()).idle();
+
+        Intent editIntent = shadowOf(a).getNextStartedActivity();
+        assertNotNull(editIntent);
+        Robolectric.buildActivity(EditMetaActivity.class, editIntent).setup().get();
+
+        c.pause().stop().start().resume();
+        shadowOf(Looper.getMainLooper()).idle();
+        assertPaginationOnPage(a, grid, "2 / 2", 1);
+        assertCatalogPlaceNotInPrefs(a);
+    }
+
+    @Test
+    public void paginationPageSurvivesRecreationOnGridAndList() throws Exception {
+        for (int i = 1; i <= 8; i++) {
+            TestFixtures.writeText(new File(storage, "story_" + i + ".txt"), "text " + i + "\n");
+        }
+
+        ActivityController<MainActivity> c = Robolectric.buildActivity(MainActivity.class);
+        MainActivity a = c.setup().get();
+        awaitCatalogSize(8);
+        GridView grid = a.findViewById(R.id.book_grid);
+        awaitAdapterCount(grid, 8);
+        awaitStage2Quiet(a);
+
+        enablePaginationFromKebab(a);
+        assertPaginationOnPage(a, grid, "1 / 2", 0);
+
+        c = recreateMain(c);
+        a = c.get();
+        grid = a.findViewById(R.id.book_grid);
+        awaitCatalogSize(8);
+        awaitAdapterCount(grid, 6);
+        awaitStage2Quiet(a);
+        assertPaginationOnPage(a, grid, "1 / 2", 0);
+
+        a.findViewById(R.id.page_next).performClick();
+        assertPaginationOnPage(a, grid, "2 / 2", 1);
+
+        c = recreateMain(c);
+        a = c.get();
+        grid = a.findViewById(R.id.book_grid);
+        awaitCatalogSize(8);
+        awaitStage2Quiet(a);
+        assertPaginationOnPage(a, grid, "2 / 2", 1);
+
+        a.findViewById(R.id.toggle_view).performClick();
+        final ListView list = a.findViewById(R.id.book_list);
+        awaitCondition("the list to lay out", new Cond() {
+            public boolean holds() {
+                return list.getHeight() > 0;
+            }
+        });
+        enablePaginationFromKebab(a);
+        a.findViewById(R.id.page_next).performClick();
+        final String listIndicator =
+                ((TextView) a.findViewById(R.id.page_indicator)).getText().toString();
+        final int listPage = ((BookAdapter) list.getAdapter()).getPage();
+        assertTrue("the list must span more than one page",
+                listIndicator.startsWith("2 / "));
+
+        c = recreateMain(c);
+        a = c.get();
+        ListView listRecreated = a.findViewById(R.id.book_list);
+        awaitCatalogSize(8);
+        awaitStage2Quiet(a);
+        assertPaginationOnPage(a, listRecreated, listIndicator, listPage);
+
+        for (int i = 1; i <= 7; i++) {
+            TestFixtures.writeText(new File(storage, "clamp_" + i + ".txt"), "c" + i + "\n");
+        }
+        ActivityController<MainActivity> cClamp = Robolectric.buildActivity(MainActivity.class);
+        MainActivity aClamp = cClamp.setup().get();
+        awaitCatalogSize(7);
+        GridView gridClamp = aClamp.findViewById(R.id.book_grid);
+        awaitAdapterCount(gridClamp, 7);
+        awaitStage2Quiet(aClamp);
+        enablePaginationFromKebab(aClamp);
+        aClamp.findViewById(R.id.page_next).performClick();
+        assertPaginationOnPage(aClamp, gridClamp, "2 / 2", 1);
+
+        Bundle clampState = new Bundle();
+        cClamp.saveInstanceState(clampState);
+        java.util.List<Book> all = db.all(null);
+        Book keeper = all.get(0);
+        for (int i = 1; i < all.size(); i++) {
+            db.deleteByPath(all.get(i).path);
+        }
+        cClamp.pause().stop().destroy();
+
+        ActivityController<MainActivity> cAfter =
+                Robolectric.buildActivity(MainActivity.class).setup(clampState);
+        MainActivity aAfter = cAfter.get();
+        final GridView gridAfterClamp = aAfter.findViewById(R.id.book_grid);
+        awaitCondition("the clamped catalog to load one book", new Cond() {
+            public boolean holds() {
+                return gridAfterClamp.getAdapter() != null
+                        && gridAfterClamp.getAdapter().getCount() == 1;
+            }
+        });
+        assertPaginationOnPage(aAfter, gridAfterClamp, "1 / 1", 0);
+        assertNotNull(db.getById(keeper.id));
+    }
+
+    @Test
+    public void emptyCatalogRecreationDoesNotCrash() throws Exception {
+        ActivityController<MainActivity> c = Robolectric.buildActivity(MainActivity.class);
+        MainActivity a = c.setup().get();
+        final BookDatabase dbLocal = db;
+        awaitCondition("the first scan to finish on empty storage", new Cond() {
+            public boolean holds() {
+                return a.findViewById(R.id.progress).getVisibility() == View.GONE
+                        && dbLocal.all(null).isEmpty();
+            }
+        });
+
+        enablePaginationFromKebab(a);
+        assertEquals(View.GONE, a.findViewById(R.id.pagination_bar).getVisibility());
+
+        Bundle state = new Bundle();
+        c.saveInstanceState(state);
+        c.pause().stop().destroy();
+
+        MainActivity a2 = Robolectric.buildActivity(MainActivity.class).setup(state).get();
+        shadowOf(Looper.getMainLooper()).idle();
+        assertEquals(View.GONE, a2.findViewById(R.id.pagination_bar).getVisibility());
+        assertFalse("the catalog activity must stay alive", a2.isFinishing());
+    }
+
+    @Test
+    public void scrollPositionSurvivesReturnAndRecreation() throws Exception {
+        for (int i = 1; i <= 12; i++) {
+            TestFixtures.writeText(new File(storage, "story_" + i + ".txt"), "text " + i + "\n");
+        }
+
+        ActivityController<MainActivity> c = Robolectric.buildActivity(MainActivity.class);
+        MainActivity a = c.setup().get();
+        awaitCatalogSize(12);
+        awaitStage2Quiet(a);
+
+        a.findViewById(R.id.toggle_view).performClick();
+        final ListView list = a.findViewById(R.id.book_list);
+        awaitAdapterCount(list, 12);
+        awaitCondition("the list to lay out", new Cond() {
+            public boolean holds() {
+                return list.getHeight() > 0;
+            }
+        });
+        final int countRef = 12;
+        awaitCondition("the list to be taller than one screenful", new Cond() {
+            public boolean holds() {
+                return list.getLastVisiblePosition() < countRef - 1;
+            }
+        });
+
+        list.setSelection(5);
+        shadowOf(Looper.getMainLooper()).idle();
+        rowAt(list, 5);
+        final int wantPos = 5;
+        awaitCondition("selection to settle on position 5", new Cond() {
+            public boolean holds() {
+                return list.getFirstVisiblePosition() == wantPos;
+            }
+        });
+        final int savedTop;
+        View firstChild = list.getChildAt(0);
+        savedTop = firstChild != null ? firstChild.getTop() : 0;
+
+        c.pause().stop().start().resume();
+        shadowOf(Looper.getMainLooper()).idle();
+        awaitCondition("scroll position after return without recreation", new Cond() {
+            public boolean holds() {
+                if (list.getFirstVisiblePosition() != wantPos) return false;
+                View child = list.getChildAt(0);
+                return child != null && child.getTop() == savedTop;
+            }
+        });
+
+        c = recreateMain(c);
+        a = c.get();
+        ListView list2 = a.findViewById(R.id.book_list);
+        awaitCatalogSize(12);
+        awaitAdapterCount(list2, 12);
+        awaitStage2Quiet(a);
+        final ListView listAfter = list2;
+        awaitCondition("scroll position after recreation", new Cond() {
+            public boolean holds() {
+                if (listAfter.getFirstVisiblePosition() != wantPos) return false;
+                View child = listAfter.getChildAt(0);
+                return child != null && child.getTop() == savedTop;
+            }
+        });
+    }
 }

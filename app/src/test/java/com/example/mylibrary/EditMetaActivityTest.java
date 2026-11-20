@@ -7,9 +7,14 @@ import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 import static org.robolectric.Shadows.shadowOf;
 
+import android.app.ActionBar;
 import android.app.Activity;
+import android.content.ComponentName;
 import android.content.Intent;
 import android.content.Context;
+import android.content.pm.PackageManager;
+import android.view.Menu;
+import android.view.MenuItem;
 import android.database.ContentObserver;
 import android.database.Cursor;
 import android.database.sqlite.SQLiteDatabase;
@@ -20,6 +25,7 @@ import android.view.View;
 import android.widget.Button;
 import android.widget.EditText;
 import android.widget.LinearLayout;
+import android.widget.PopupMenu;
 import android.widget.TextView;
 
 import com.example.mylibrary.db.BookDatabase;
@@ -479,6 +485,59 @@ public class EditMetaActivityTest {
         assertTrue("the recently-read cursor must be told as well", onRecent.fired);
         app.getContentResolver().unregisterContentObserver(onBooks);
         app.getContentResolver().unregisterContentObserver(onRecent);
+    }
+
+    // ------------------------------------------------------------------
+    // up caret and system Back (feature/detail-back)
+    // ------------------------------------------------------------------
+
+    private static void performHomeUp(EditMetaActivity a) {
+        PopupMenu homeMenu = new PopupMenu(a, a.getWindow().getDecorView());
+        MenuItem homeItem = homeMenu.getMenu().add(Menu.NONE, android.R.id.home, Menu.NONE, "");
+        a.onOptionsItemSelected(homeItem);
+        shadowOf(Looper.getMainLooper()).idle();
+    }
+
+    private void assertParentActivityNameIsNull(Class<?> activityClass) throws Exception {
+        PackageManager pm = app.getPackageManager();
+        ComponentName cn = new ComponentName(app, activityClass);
+        android.content.pm.ActivityInfo info =
+                pm.getActivityInfo(cn, PackageManager.GET_META_DATA);
+        assertNull("parentActivityName must stay unset", info.parentActivityName);
+    }
+
+    @Test
+    public void upCaretFinishesEditorWithoutStartingAnotherActivity() throws Exception {
+        EditMetaActivity a = launch(
+                new File(folder.getRoot(), "up-caret.txt"), "TXT", "T", "A");
+
+        ActionBar bar = a.getActionBar();
+        assertNotNull("the Holo action bar must be present", bar);
+        assertTrue("the up caret must be enabled",
+                (bar.getDisplayOptions() & ActionBar.DISPLAY_HOME_AS_UP) != 0);
+
+        performHomeUp(a);
+
+        assertTrue("home must finish the editor", a.isFinishing());
+        assertNull("home must not start another activity",
+                shadowOf(a).getNextStartedActivity());
+
+        assertParentActivityNameIsNull(EditMetaActivity.class);
+    }
+
+    @Test
+    public void systemBackFinishesEditorWithoutStartingAnotherActivity() throws Exception {
+        EditMetaActivity a = launch(
+                new File(folder.getRoot(), "sys-back.txt"), "TXT", "T", "A");
+
+        a.onBackPressed();
+        shadowOf(Looper.getMainLooper()).idle();
+
+        assertTrue("Back must finish the editor", a.isFinishing());
+        assertNull("Back must not start another activity",
+                shadowOf(a).getNextStartedActivity());
+
+        assertParentActivityNameIsNull(EditMetaActivity.class);
     }
 
     /** Two catalog genres -> two fields; none -> one empty field (same order). */
