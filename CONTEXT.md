@@ -70,7 +70,7 @@ initial placeholder), pagination (kebab `main_menu_pagination`, `pagination_bar`
 client-side window over the whole cursor, 6-tile grid pages / `computeListPageSize()`
 list pages, the `OnLayoutChangeListener` posted recompute, `pagination_enabled`
 persistence, the `changeCursor` page-clamp), and the horizontal swipe
-(`PagedListView`/`PagedGridView` → `PageSwipeTracker`, posted `showPage`, the API-19
+(`PagedListView`/`PagedGridView` → `PageSwipeControl` → `PageSwipeTracker`, posted `showPage` via the view's `post`, the API-19
 row-prepress intercept pitfalls). One-liners kept here: **tiles are the default view**;
 the view mode and the pagination on/off toggle **persist in `library_prefs`**; when
 pagination is on, a horizontal swipe also turns pages.

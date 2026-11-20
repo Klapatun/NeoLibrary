@@ -311,19 +311,21 @@ View → ViewGroup → целевой вью.
 полный прогон тестов (194/194). Закрытые пункты (13.1, 13.2, 13.6) вынесены
 2026-10-21 (полный текст — в истории git).
 
-### 13.3 `PagedListView`/`PagedGridView`: три одинаковых override'а в каждом классе — [ ] (низкий)
+### 13.3 `PagedListView`/`PagedGridView`: три одинаковых override'а в каждом классе — [x] (низкий)
 
+- **План:** `.agents/plans/fix_13.3_page-swipe-control/PLAN.md` (ветка `fix/13.3_page-swipe-control`).
+- **Сделано:** код `b71e5f4` (`PageSwipeControl`), `4f1e644` (кэш высоты строки списка). Новых тестов не было.
+- **Согласование:** согласован 2026-11-21. Готово: сьют 441/441 после каждого шага, lint 0 errors.
 - **Где:** `PagedListView.java` / `PagedGridView.java` (коммит 6d25f57).
 - **Проблема:** `dispatchTouchEvent` / `onInterceptTouchEvent` /
   `onTouchEvent` скопипастаны между классами (~50 строк на класс; различие —
   только слова «row»/«tile» в комментах). Bookkeeping уже вынесен в общий
   `PageSwipeTracker`, а view-слой продублирован: любой будущий багфикс жеста
   придётся вносить дважды.
-- **Доработка:** package-private хелпер (например `PageSwipeControl`:
-  `int onDispatch(ev)` с постом колбэка, `boolean shouldIntercept()`,
-  `boolean shouldConsume()`) либо маленький общий базовый класс. Рефакторинг
-  без изменения поведения; safety net — `PageSwipeTrackerTest` (9 тестов) +
-  e2e свайп-тест.
+- **Доработка:** package-private `PageSwipeControl`; три override делегируют,
+  один `ownsGesture()` по `swipeInFlight()`. Общий базовый класс не подходит:
+  `ListView` и `GridView` сходятся только на `AbsListView`. Поведение жеста
+  то же; safety net — `PageSwipeTrackerTest` (9 тестов) + e2e свайп-тест.
 
 ### 13.4 Перехват свайпа активен и при ВЫКЛЮЧЕННОЙ пагинации — [x] (знание, не баг)
 
@@ -343,9 +345,9 @@ View → ViewGroup → целевой вью.
 
 ### 13.5 Мелочи (отмечено, не чинилось)
 
-- `computeListPageSize()` инфлойт новую строку на каждый вызов (layout-слушатель
-  `bookContainer` зовёт его при каждом изменении высоты) — дёшево, но высоту
-  строки (констант) можно кэшировать.
+- `computeListPageSize()` инфлейтил новую строку на каждый вызов — [x]
+  в `4f1e644`: кэшируется пиксельная высота непривязанной строки, доступная
+  высота по-прежнему читается каждый раз.
 - Свайп постится через `view.post`: если activity к моменту выполнения
   завершён, `showPage()` работает по мёртвому экрану (безвредно: адаптер
   жив, crash'а нет).
@@ -353,6 +355,7 @@ View → ViewGroup → целевой вью.
   `confirmingTheOpenConfirmationLaunchesTheReaderAndMarksTheBookRead`
   («timed out waiting for the catalog to hold 2 book(s)») и прошёл изолированно
   за 3с; повторный полный прогон — 194/194.
+- **План 13.3:** кэш высоты строки вошёл в `4f1e644`. Гард `showPage` после `view.post` и флейк 8.4 оставлены как есть.
 
 ---
 
