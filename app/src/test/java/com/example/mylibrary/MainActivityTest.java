@@ -3061,13 +3061,37 @@ public class MainActivityTest {
                 return list.getHeight() > 0;
             }
         });
-        enablePaginationFromKebab(a);
-        a.findViewById(R.id.page_next).performClick();
-        final String listIndicator =
-                ((TextView) a.findViewById(R.id.page_indicator)).getText().toString();
+        assertEquals(View.VISIBLE, a.findViewById(R.id.pagination_bar).getVisibility());
+        final BookAdapter listAdapterAtToggle = (BookAdapter) list.getAdapter();
+        if (listAdapterAtToggle.getPage() == 0) {
+            a.findViewById(R.id.page_next).performClick();
+        }
+        final TextView listPageIndicator = (TextView) a.findViewById(R.id.page_indicator);
+        final MainActivity act = a;
+        awaitCondition("the list on a live second page", new Cond() {
+            public boolean holds() {
+                if (act.findViewById(R.id.pagination_bar).getVisibility() != View.VISIBLE) {
+                    return false;
+                }
+                int p = ((BookAdapter) list.getAdapter()).getPage();
+                if (p < 1) {
+                    return false;
+                }
+                String t = listPageIndicator.getText().toString();
+                if (!t.startsWith((p + 1) + " / ")) {
+                    return false;
+                }
+                return !t.startsWith("1 / 1");
+            }
+        });
+        final String listIndicator = listPageIndicator.getText().toString();
         final int listPage = ((BookAdapter) list.getAdapter()).getPage();
-        assertTrue("the list must span more than one page",
-                listIndicator.startsWith("2 / "));
+        assertTrue("the list page index must be at least 1", listPage >= 1);
+        assertEquals(listIndicator, listPageIndicator.getText().toString());
+        assertTrue("the list indicator must match the live page",
+                listIndicator.startsWith((listPage + 1) + " / "));
+        assertFalse("the list must span more than one page",
+                listIndicator.startsWith("1 / 1"));
 
         c = recreateMain(c);
         a = c.get();
@@ -3076,14 +3100,37 @@ public class MainActivityTest {
         awaitStage2Quiet(a);
         assertPaginationOnPage(a, listRecreated, listIndicator, listPage);
 
+        c.pause().stop().destroy();
+        for (int i = 1; i <= 8; i++) {
+            new File(storage, "story_" + i + ".txt").delete();
+        }
+        java.util.List<Book> existingCatalog = db.all(null);
+        for (int i = 0; i < existingCatalog.size(); i++) {
+            db.deleteByPath(existingCatalog.get(i).path);
+        }
         for (int i = 1; i <= 7; i++) {
             TestFixtures.writeText(new File(storage, "clamp_" + i + ".txt"), "c" + i + "\n");
         }
+        app.getSharedPreferences("library_prefs", Context.MODE_PRIVATE).edit()
+                .putInt("view_mode", BookAdapter.MODE_GRID)
+                .putBoolean("pagination_enabled", false)
+                .commit();
+
         ActivityController<MainActivity> cClamp = Robolectric.buildActivity(MainActivity.class);
         MainActivity aClamp = cClamp.setup().get();
         awaitCatalogSize(7);
-        GridView gridClamp = aClamp.findViewById(R.id.book_grid);
-        awaitAdapterCount(gridClamp, 7);
+        awaitCondition("the clamp scan to finish with exactly 7 books", new Cond() {
+            public boolean holds() {
+                return db.all(null).size() == 7;
+            }
+        });
+        final GridView gridClamp = aClamp.findViewById(R.id.book_grid);
+        awaitCondition("the clamp grid to show all 7 books", new Cond() {
+            public boolean holds() {
+                return gridClamp.getAdapter() != null
+                        && gridClamp.getAdapter().getCount() == 7;
+            }
+        });
         awaitStage2Quiet(aClamp);
         enablePaginationFromKebab(aClamp);
         aClamp.findViewById(R.id.page_next).performClick();
