@@ -46,9 +46,7 @@ import com.example.mylibrary.util.Openers;
 import java.io.File;
 import java.lang.ref.WeakReference;
 import java.util.Arrays;
-import java.util.HashSet;
 import java.util.List;
-import java.util.Set;
 
 /**
  * Home screen: loads the library in three stages and lets the user browse the catalog
@@ -841,107 +839,54 @@ public class MainActivity extends Activity
 
     private void startScan() {
         progressBar.setVisibility(View.VISIBLE);
-        new ScanTask(this).execute();
+        new ScanTask(catalog, db, this).execute();
     }
 
-    /** The stage-1 scan task. A STATIC nested class on purpose: an anonymous inner
-     *  class would carry a synthetic strong reference to the Activity (javac emits
-     *  it for every anonymous class inside an instance method, used or not), and a
-     *  storage walk can run for minutes — the screen must be collectible while it
-     *  is in flight. Holds the catalog for the writes, the database for the
-     *  adopted-path read, and the Activity weakly for the UI follow-up: the
-     *  catalog upserts complete even if the screen is gone by then. */
-    private static final class ScanTask extends AsyncTask<Void, Void, LibraryScanner.ScanResult> {
-        private final Catalog catalog;
-        private final BookDatabase db;
-        private final File privateFilesDir;
-        private final WeakReference<MainActivity> self;
+    /** Hides the scan progress bar before the catalog write. The caller has
+     *  already checked that the screen is alive. */
+    void onScanProgressDone() {
+        progressBar.setVisibility(View.GONE);
+    }
 
-        ScanTask(MainActivity host) {
-            this.catalog = host.catalog;
-            this.db = host.db; // safe: it holds the app context
-            File dir = null;
-            try {
-                dir = host.getExternalFilesDir(null);
-            } catch (Exception ignored) {}
-            this.privateFilesDir = dir;
-            this.self = new WeakReference<MainActivity>(host);
-        }
-
-        @Override protected LibraryScanner.ScanResult doInBackground(Void... v) {
-            // Fast by design: file walk only, no in-file metadata extraction
-            // (that is stage 2's job). Paths already recorded as adopted_from
-            // are matched canonically, so the original file still sitting in
-            // shared storage does not become a second book under another prefix.
-            // The app files directory is not entered: private copies live there
-            // and are already the catalog path.
-            Set<String> skip = db.adoptedFromPaths();
-            return LibraryScanner.scanDetailed(null, null, skip, privateFilesDir);
-        }
-
-        @Override protected void onPostExecute(LibraryScanner.ScanResult result) {
-            List<Book> found = result == null ? null : result.books;
-            MainActivity a = self.get();
-            boolean screenAlive = a != null && !a.isFinishing();
-            if (screenAlive) a.progressBar.setVisibility(View.GONE);
-            // Do NOT clear the whole table here: upsertBasic() already keeps
-            // metadata, enrichment state and last_read timestamps in sync. The
-            // catalog work completes even if the screen is gone — the upserts are
-            // the scan's actual result (the next launch only re-binds the UI).
-            // The rows go in as batch commits (groups of
-            // BookDatabase.BATCH_SIZE rows per transaction), not one autocommit
-            // per book.
-            if (found != null) {
-                catalog.saveScanBatch(found);
-                if (result != null) {
-                    for (LibraryScanner.RootScanResult root : result.roots) {
-                        if (root.complete) {
-                            Set<String> paths = new HashSet<String>();
-                            for (Book book : root.books) paths.add(book.path);
-                            catalog.removeMissing(root.rootPath, paths);
-                        }
-                    }
-                }
-                if (screenAlive) {
-                    // The upserts above were committed on this (UI) thread, just now —
-                    // so re-query the catalog ourselves and rebind the adapter.
-                    // Deterministic: it does not rely on the CursorLoader's
-                    // ContentObserver being alive (on API 19 it can be lost after a
-                    // loader cancel/restart cycle — without this rebind the list
-                    // would stay empty after a rescan that finds new books). The
-                    // loader's next delivery simply replaces this cursor.
-                    a.adapter.changeCursor(a.currentCatalogCursor());
-                    a.updateEmptyView();
-                    // Only now start the catalog loader (it is deliberately NOT
-                    // started in onCreate on a cold start — see there): its first
-                    // query must see the post-scan data, never the empty pre-scan
-                    // table whose stale delivery would otherwise race this rebind.
-                    // On a RE-SCAN the loader usually already runs (and may have
-                    // a PRE-scan query in flight): plain initLoader is then a
-                    // no-op, and that in-flight query would be DELIVERED after
-                    // this fresh rebind — a stale cursor that blanks the view
-                    // (the observer that would trigger a fresh re-query is
-                    // usually already dead after the first restart cycle on
-                    // API 19 — same hazard as the rebind above). restartLoader
-                    // cancels the in-flight query and re-queries the post-scan
-                    // data instead; initLoader creates the loader on a cold
-                    // start, where nothing is in flight yet.
-                    Loader<Cursor> existingLoader =
-                            a.getLoaderManager().getLoader(LOADER_BOOKS);
-                    if (existingLoader == null) {
-                        a.getLoaderManager().initLoader(LOADER_BOOKS, null, a);
-                    } else {
-                        a.getLoaderManager().restartLoader(LOADER_BOOKS, null, a);
-                    }
-                }
-            }
-            if (screenAlive) {
-                Toast.makeText(a,
-                        "Found " + (found == null ? 0 : found.size()) + " book(s)",
-                        Toast.LENGTH_SHORT).show();
-                a.startEnrichment();
+    /** Rebinds the list after a finished scan, then toasts and starts enrichment.
+     *  The caller has already checked that the screen is alive. */
+    void onScanPosted(List<Book> found) {
+        if (found != null) {
+            // The upserts above were committed on this (UI) thread, just now —
+            // so re-query the catalog ourselves and rebind the adapter.
+            // Deterministic: it does not rely on the CursorLoader's
+            // ContentObserver being alive (on API 19 it can be lost after a
+            // loader cancel/restart cycle — without this rebind the list
+            // would stay empty after a rescan that finds new books). The
+            // loader's next delivery simply replaces this cursor.
+            adapter.changeCursor(currentCatalogCursor());
+            updateEmptyView();
+            // Only now start the catalog loader (it is deliberately NOT
+            // started in onCreate on a cold start — see there): its first
+            // query must see the post-scan data, never the empty pre-scan
+            // table whose stale delivery would otherwise race this rebind.
+            // On a RE-SCAN the loader usually already runs (and may have
+            // a PRE-scan query in flight): plain initLoader is then a
+            // no-op, and that in-flight query would be DELIVERED after
+            // this fresh rebind — a stale cursor that blanks the view
+            // (the observer that would trigger a fresh re-query is
+            // usually already dead after the first restart cycle on
+            // API 19 — same hazard as the rebind above). restartLoader
+            // cancels the in-flight query and re-queries the post-scan
+            // data instead; initLoader creates the loader on a cold
+            // start, where nothing is in flight yet.
+            Loader<Cursor> existingLoader =
+                    getLoaderManager().getLoader(LOADER_BOOKS);
+            if (existingLoader == null) {
+                getLoaderManager().initLoader(LOADER_BOOKS, null, this);
+            } else {
+                getLoaderManager().restartLoader(LOADER_BOOKS, null, this);
             }
         }
+        Toast.makeText(this,
+                "Found " + (found == null ? 0 : found.size()) + " book(s)",
+                Toast.LENGTH_SHORT).show();
+        startEnrichment();
     }
 
     // -----------------------------------------------------------------

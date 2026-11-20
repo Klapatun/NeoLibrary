@@ -967,10 +967,14 @@ gradlew.bat :app:testDebugUnitTest --tests "com.example.mylibrary.MainActivityTe
 `FilterTab.java`. Сьют после шага 1: tests=449, failures=0, errors=0.
 Lint: 0 errors.
 
-Шаг 2 выполнен в этом коммите: диалог собирает `FilterTab.show`;
-OK — `MainActivity.commitFilterDraft`; открытая вкладка жанров —
-`setOpenFilterGenresTab` (в том числе `null` на dismiss).
-`showFilterDialog` и `ensureFilterTabLabel` из активити удалены.
-`startEnrichment` / `onEnrichmentStopped` по-прежнему читают поле
-`openFilterGenresTab`. Шаги 3–4 не начаты. Сьют и lint шага 2
-прогоняются до шага 3.
+Шаг 2 — `aeb25e9`: диалог собирает `FilterTab.show`; OK —
+`MainActivity.commitFilterDraft`; вкладка жанров —
+`setOpenFilterGenresTab`. Сьют после шага 2: tests=449, failures=0,
+errors=0. Lint: 0 errors.
+
+Шаг 3 выполнен в этом коммите: `ScanTask` — package-private
+`final class` в своём файле. Конструктор принимает `Catalog`,
+`BookDatabase` и экран; `getExternalFilesDir(null)` остаётся внутри
+задачи. Хвост — `onScanProgressDone` / `onScanPosted`. Приватный
+`startScan()` без аргументов на месте. Шаг 4 не начат. Сьют и lint
+шага 3 прогоняются до шага 4.
