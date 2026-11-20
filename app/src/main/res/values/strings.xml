@@ -1,6 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">Neo Library</string>
+    <string name="navigate_back">Back</string>
 
     <string name="menu_refresh">Rescan</string>
     <string name="menu_import">Import</string>
