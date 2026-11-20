@@ -16,14 +16,12 @@ import android.net.Uri;
 import android.os.AsyncTask;
 import android.os.Bundle;
 import android.graphics.Color;
-import android.view.Gravity;
 import android.view.LayoutInflater;
 import android.view.MenuInflater;
 import android.view.MenuItem;
 import android.view.MotionEvent;
 import android.view.View;
 import android.view.ViewConfiguration;
-import android.view.ViewGroup;
 import android.widget.Button;
 import android.widget.CompoundButton;
 import android.widget.FrameLayout;
@@ -31,8 +29,6 @@ import android.widget.ImageButton;
 import android.widget.LinearLayout;
 import android.widget.PopupMenu;
 import android.widget.ProgressBar;
-import android.widget.TabHost;
-import android.widget.TabWidget;
 import android.widget.TextView;
 import android.widget.Toast;
 
@@ -273,7 +269,8 @@ public class MainActivity extends Activity
         // The funnel opens the filter dialog (the multi-choice format list).
         btnFilter.setOnClickListener(new View.OnClickListener() {
             @Override public void onClick(View v) {
-                showFilterDialog();
+                FilterTab.show(MainActivity.this, filters.copy(),
+                        db.distinctGenres().toArray(new String[0]), enriching);
             }
         });
 
@@ -614,179 +611,6 @@ public class MainActivity extends Activity
     // Filter modal (the funnel icon in the header)
     // -----------------------------------------------------------------
 
-    /** The funnel icon's filter dialog: a TabHost with the two filter
-     *  dimensions — "Formats" (the format ids, {@link Formats#ALL}, the single
-     *  source of truth) and "Genres" (the dynamic genre reference: the
-     *  catalog's distinct non-null genres). Each tab is a {@link FilterTab}
-     *  (search field, select-all/clear row, multi-choice list), and the dialog
-     *  works on a DRAFT copy of the filter state: the real state (and the dot
-     *  on the funnel) changes only on OK, and OK also resets the recent view —
-     *  the views are mutually exclusive, the filter view wins. Cancel throws
-     *  the draft away (nothing changes).
-     *
-     *  <p>While the stage-2 enrichment worker runs, the Genres tab is LOCKED
-     *  (its reference is still growing): the checkboxes are untouchable, the
-     *  search / select-all / clear are disabled and the hint says why. It
-     *  unlocks — with a fresh reference — on {@code onFinished()}/{@code
-     *  onCancelled()} (see {@link #openFilterGenresTab}).</p> */
-    private void showFilterDialog() {
-        final FilterState draft = filters.copy();
-
-        // The two tab pages (children of the tabcontent frame the TabHost
-        // swaps). The formats tab works on the static Formats.ALL vocabulary;
-        // the checked state is filled from the draft (cancel semantics: the
-        // real state changes only on OK).
-        final FilterTab formatsTab = new FilterTab(this, Formats.ALL,
-                R.string.filter_search_hint, R.id.formats_tab);
-        for (int i = 0; i < Formats.ALL.length; i++) {
-            if (draft.selectedFormats.contains(Formats.ALL[i])) {
-                formatsTab.checked.put(i, true);
-            }
-        }
-        // The constructor's rebuild ran BEFORE this fill: push the restored
-        // state into the list now (the checkmarks of the materialized rows,
-        // the select-all/clear row) — without this a re-opened dialog would
-        // show every box unticked even though the draft carries the selection.
-        formatsTab.rebuildVisible();
-
-        // The genre reference is DYNAMIC: the catalog's distinct non-null
-        // genres, read here on open and again whenever an enrichment pass
-        // stops (the finished/cancelled pass may have added genres).
-        final String[] genreNames = db.distinctGenres().toArray(new String[0]);
-        final FilterTab genreTab = new FilterTab(this, genreNames,
-                R.string.filter_search_hint_genres, R.id.genres_tab);
-        for (int i = 0; i < genreNames.length; i++) {
-            if (draft.selectedGenres.contains(genreNames[i])) {
-                genreTab.checked.put(i, true);
-            }
-        }
-        // Same re-push as the formats tab (see there): the draft's genre
-        // selection must be visible on the rows the moment the tab opens.
-        genreTab.rebuildVisible();
-        // Locked while the worker runs; the enrichment callbacks keep it in
-        // sync while the dialog is open (see openFilterGenresTab).
-        genreTab.setLoading(enriching);
-        openFilterGenresTab = genreTab;
-
-        // The TabHost (framework, API 19 — no ViewPager): the TabWidget on
-        // top, the tabcontent frame (holding the two pages) below it. setup()
-        // must run after the frame is in place; addTab() then swaps the pages
-        // by id (the first addTab selects the Formats tab).
-        final TabWidget tabs = new TabWidget(this);
-        tabs.setId(android.R.id.tabs);
-        final FrameLayout tabContent = new FrameLayout(this);
-        tabContent.setId(android.R.id.tabcontent);
-        tabContent.addView(formatsTab.page, new FrameLayout.LayoutParams(
-                FrameLayout.LayoutParams.MATCH_PARENT,
-                FrameLayout.LayoutParams.MATCH_PARENT));
-        tabContent.addView(genreTab.page, new FrameLayout.LayoutParams(
-                FrameLayout.LayoutParams.MATCH_PARENT,
-                FrameLayout.LayoutParams.MATCH_PARENT));
-
-        final LinearLayout tabLayout = new LinearLayout(this);
-        tabLayout.setOrientation(LinearLayout.VERTICAL);
-        tabLayout.addView(tabs, new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT));
-        tabLayout.addView(tabContent, new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, 0, 1.0f));
-
-        // (context, null) on purpose, NOT the single-arg constructor: the label
-        // indicator is inflated from an internal layout id that the attrs
-        // constructor resolves from the theme (tab_indicator_holo); the single-arg
-        // one leaves it 0, and the first addTab() would inflate resource #0x0
-        // and crash the dialog (Resources$NotFoundException).
-        final TabHost tabHost = new TabHost(this, null);
-        tabHost.addView(tabLayout, new FrameLayout.LayoutParams(
-                FrameLayout.LayoutParams.MATCH_PARENT,
-                FrameLayout.LayoutParams.MATCH_PARENT));
-        tabHost.setup();
-        tabHost.addTab(tabHost.newTabSpec("formats")
-                .setIndicator(getString(R.string.filter_tab_formats))
-                .setContent(R.id.formats_tab));
-        tabHost.addTab(tabHost.newTabSpec("genres")
-                .setIndicator(getString(R.string.filter_tab_genres))
-                .setContent(R.id.genres_tab));
-        // Not getTabWidget(): its shadow looks up android.R.id.tabs on the
-        // Activity, and this strip lives in the dialog. On a device addTab
-        // already installed the holo title; the fallback label only fills a
-        // strip that addTab left empty.
-        formatsTab.bindAppliedMarker(ensureFilterTabLabel(
-                tabs, 0, R.string.filter_tab_formats));
-        genreTab.bindAppliedMarker(ensureFilterTabLabel(
-                tabs, 1, R.string.filter_tab_genres));
-        // A re-open lands on the Genres tab when the draft carries a genre
-        // selection (the plan's step 8); otherwise on Formats (already
-        // selected by the first addTab).
-        tabHost.setCurrentTab(draft.selectedGenres.isEmpty() ? 0 : 1);
-        // addTab() hides a page only when the current tab changes. The Genres
-        // page is added while Formats is already current, so it stays VISIBLE
-        // and its "Select all" row is drawn on top of the Formats one.
-        if (tabHost.getCurrentTab() == 0) {
-            genreTab.page.setVisibility(View.GONE);
-        } else {
-            formatsTab.page.setVisibility(View.GONE);
-        }
-
-        new AlertDialog.Builder(this)
-                .setTitle(R.string.filter_dialog_title)
-                .setView(tabHost)
-                .setNegativeButton(R.string.cancel, null)
-                .setPositiveButton(R.string.filter_ok, new DialogInterface.OnClickListener() {
-                    @Override public void onClick(DialogInterface d, int w) {
-                        // OK adopts the draft of BOTH tabs: the selections
-                        // become the real state, and the recent view is reset
-                        // (the filter view wins over the "Recently read"
-                        // view).
-                        FilterState next = new FilterState();
-                        for (int i = 0; i < formatsTab.all.length; i++) {
-                            if (formatsTab.checked.get(i)) {
-                                next.selectedFormats.add(formatsTab.all[i]);
-                            }
-                        }
-                        for (int i = 0; i < genreTab.all.length; i++) {
-                            if (genreTab.checked.get(i)) {
-                                next.selectedGenres.add(genreTab.all[i]);
-                            }
-                        }
-                        next.recentView = false;
-                        filters = next;
-                        applyCurrentView();
-                    }
-                })
-                .setOnDismissListener(new DialogInterface.OnDismissListener() {
-                    @Override public void onDismiss(DialogInterface d) {
-                        // The dialog is gone: no open tab to lock/unlock
-                        // anymore.
-                        openFilterGenresTab = null;
-                    }
-                })
-                .show();
-    }
-
-    /** Tab label at {@code index}. Reuses the holo title when {@code addTab}
-     *  already put one there; otherwise installs a plain label (a child with
-     *  no title at that index is replaced). */
-    private TextView ensureFilterTabLabel(TabWidget tabs, int index, int labelRes) {
-        if (index < tabs.getChildCount()) {
-            TextView existing = (TextView) tabs.getChildAt(index)
-                    .findViewById(android.R.id.title);
-            if (existing != null) {
-                return existing;
-            }
-            tabs.removeViewAt(index);
-        }
-        LinearLayout row = new LinearLayout(this);
-        row.setOrientation(LinearLayout.HORIZONTAL);
-        row.setGravity(Gravity.CENTER_VERTICAL);
-        TextView title = new TextView(this);
-        title.setId(android.R.id.title);
-        title.setText(labelRes);
-        row.addView(title);
-        tabs.addView(row, index);
-        return title;
-    }
-
     /** Re-applies the current filter state to the catalog view: restarts the
      *  loader (the new query comes from {@code filters} in
      *  {@link #onCreateLoader}) and refreshes the funnel icon's dot. */
@@ -807,6 +631,30 @@ public class MainActivity extends Activity
      *  live state through it, same pattern as {@link #getLastHeaderMenu()}). */
     FilterState getFilterState() {
         return filters;
+    }
+
+    /** OK of the filter dialog: both tabs become {@link #filters}
+     *  with {@code recentView} false, then {@link #applyCurrentView()}. */
+    void commitFilterDraft(FilterTab formatsTab, FilterTab genreTab) {
+        FilterState next = new FilterState();
+        for (int i = 0; i < formatsTab.all.length; i++) {
+            if (formatsTab.checked.get(i)) {
+                next.selectedFormats.add(formatsTab.all[i]);
+            }
+        }
+        for (int i = 0; i < genreTab.all.length; i++) {
+            if (genreTab.checked.get(i)) {
+                next.selectedGenres.add(genreTab.all[i]);
+            }
+        }
+        next.recentView = false;
+        filters = next;
+        applyCurrentView();
+    }
+
+    /** The open dialog's Genres tab, or null after the dialog is gone. */
+    void setOpenFilterGenresTab(FilterTab tab) {
+        openFilterGenresTab = tab;
     }
 
     // -----------------------------------------------------------------

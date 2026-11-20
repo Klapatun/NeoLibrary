@@ -963,7 +963,14 @@ gradlew.bat :app:testDebugUnitTest --tests "com.example.mylibrary.MainActivityTe
 `app/build/test-results/testDebugUnitTest` от 2026-11-21 04:14
 (prod-код совпадает с HEAD): tests=449, failures=0, errors=0.
 
-Шаг 1 выполнен в этом коммите: `FilterTab` — package-private
-`final class` в `FilterTab.java` (не вложенный тип). Сборка диалога
-(`showFilterDialog`, `ensureFilterTabLabel`) ещё в `MainActivity`.
-Шаги 2–4 не начаты. Сьют и lint шага 1 прогоняются до шага 2.
+Шаг 1 — `309d864`: `FilterTab` — package-private `final class` в
+`FilterTab.java`. Сьют после шага 1: tests=449, failures=0, errors=0.
+Lint: 0 errors.
+
+Шаг 2 выполнен в этом коммите: диалог собирает `FilterTab.show`;
+OK — `MainActivity.commitFilterDraft`; открытая вкладка жанров —
+`setOpenFilterGenresTab` (в том числе `null` на dismiss).
+`showFilterDialog` и `ensureFilterTabLabel` из активити удалены.
+`startEnrichment` / `onEnrichmentStopped` по-прежнему читают поле
+`openFilterGenresTab`. Шаги 3–4 не начаты. Сьют и lint шага 2
+прогоняются до шага 3.

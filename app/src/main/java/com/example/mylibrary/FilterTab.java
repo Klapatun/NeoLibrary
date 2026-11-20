@@ -1,6 +1,8 @@
 package com.example.mylibrary;
 
+import android.app.AlertDialog;
 import android.content.Context;
+import android.content.DialogInterface;
 import android.text.Editable;
 import android.text.TextWatcher;
 import android.util.SparseBooleanArray;
@@ -12,9 +14,14 @@ import android.widget.AdapterView;
 import android.widget.ArrayAdapter;
 import android.widget.CheckBox;
 import android.widget.EditText;
+import android.widget.FrameLayout;
 import android.widget.LinearLayout;
 import android.widget.ListView;
+import android.widget.TabHost;
+import android.widget.TabWidget;
 import android.widget.TextView;
+
+import com.example.mylibrary.scan.Formats;
 
 import java.util.ArrayList;
 
@@ -296,5 +303,158 @@ final class FilterTab {
             list.getChildAt(i).setEnabled(!loading);
         }
         loadingHint.setVisibility(loading ? View.VISIBLE : View.GONE);
+    }
+
+    /** The funnel icon's filter dialog: a TabHost with the two filter
+     *  dimensions — "Formats" (the format ids, {@link Formats#ALL}, the single
+     *  source of truth) and "Genres" (the dynamic genre reference: the
+     *  catalog's distinct non-null genres). Each tab is a {@link FilterTab}
+     *  (search field, select-all/clear row, multi-choice list), and the dialog
+     *  works on a DRAFT copy of the filter state: the real state (and the dot
+     *  on the funnel) changes only on OK, and OK also resets the recent view —
+     *  the views are mutually exclusive, the filter view wins. Cancel throws
+     *  the draft away (nothing changes).
+     *
+     *  <p>While the stage-2 enrichment worker runs, the Genres tab is LOCKED
+     *  (its reference is still growing): the checkboxes are untouchable, the
+     *  search / select-all / clear are disabled and the hint says why. It
+     *  unlocks — with a fresh reference — on {@code onFinished()}/{@code
+     *  onCancelled()} (see the host's open genres tab).</p> */
+    static void show(MainActivity host, FilterState draft, String[] genreNames, boolean genresLocked) {
+        // The two tab pages (children of the tabcontent frame the TabHost
+        // swaps). The formats tab works on the static Formats.ALL vocabulary;
+        // the checked state is filled from the draft (cancel semantics: the
+        // real state changes only on OK).
+        final FilterTab formatsTab = new FilterTab(host, Formats.ALL,
+                R.string.filter_search_hint, R.id.formats_tab);
+        for (int i = 0; i < Formats.ALL.length; i++) {
+            if (draft.selectedFormats.contains(Formats.ALL[i])) {
+                formatsTab.checked.put(i, true);
+            }
+        }
+        // The constructor's rebuild ran BEFORE this fill: push the restored
+        // state into the list now (the checkmarks of the materialized rows,
+        // the select-all/clear row) — without this a re-opened dialog would
+        // show every box unticked even though the draft carries the selection.
+        formatsTab.rebuildVisible();
+
+        // The genre reference is DYNAMIC: the catalog's distinct non-null
+        // genres, read here on open and again whenever an enrichment pass
+        // stops (the finished/cancelled pass may have added genres).
+        final FilterTab genreTab = new FilterTab(host, genreNames,
+                R.string.filter_search_hint_genres, R.id.genres_tab);
+        for (int i = 0; i < genreNames.length; i++) {
+            if (draft.selectedGenres.contains(genreNames[i])) {
+                genreTab.checked.put(i, true);
+            }
+        }
+        // Same re-push as the formats tab (see there): the draft's genre
+        // selection must be visible on the rows the moment the tab opens.
+        genreTab.rebuildVisible();
+        // Locked while the worker runs; the enrichment callbacks keep it in
+        // sync while the dialog is open (see openFilterGenresTab).
+        genreTab.setLoading(genresLocked);
+        host.setOpenFilterGenresTab(genreTab);
+
+        // The TabHost (framework, API 19 — no ViewPager): the TabWidget on
+        // top, the tabcontent frame (holding the two pages) below it. setup()
+        // must run after the frame is in place; addTab() then swaps the pages
+        // by id (the first addTab selects the Formats tab).
+        final TabWidget tabs = new TabWidget(host);
+        tabs.setId(android.R.id.tabs);
+        final FrameLayout tabContent = new FrameLayout(host);
+        tabContent.setId(android.R.id.tabcontent);
+        tabContent.addView(formatsTab.page, new FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.MATCH_PARENT));
+        tabContent.addView(genreTab.page, new FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.MATCH_PARENT));
+
+        final LinearLayout tabLayout = new LinearLayout(host);
+        tabLayout.setOrientation(LinearLayout.VERTICAL);
+        tabLayout.addView(tabs, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT));
+        tabLayout.addView(tabContent, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, 0, 1.0f));
+
+        // (context, null) on purpose, NOT the single-arg constructor: the label
+        // indicator is inflated from an internal layout id that the attrs
+        // constructor resolves from the theme (tab_indicator_holo); the single-arg
+        // one leaves it 0, and the first addTab() would inflate resource #0x0
+        // and crash the dialog (Resources$NotFoundException).
+        final TabHost tabHost = new TabHost(host, null);
+        tabHost.addView(tabLayout, new FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.MATCH_PARENT));
+        tabHost.setup();
+        tabHost.addTab(tabHost.newTabSpec("formats")
+                .setIndicator(host.getString(R.string.filter_tab_formats))
+                .setContent(R.id.formats_tab));
+        tabHost.addTab(tabHost.newTabSpec("genres")
+                .setIndicator(host.getString(R.string.filter_tab_genres))
+                .setContent(R.id.genres_tab));
+        // Not getTabWidget(): its shadow looks up android.R.id.tabs on the
+        // Activity, and this strip lives in the dialog. On a device addTab
+        // already installed the holo title; the fallback label only fills a
+        // strip that addTab left empty.
+        formatsTab.bindAppliedMarker(ensureFilterTabLabel(
+                host, tabs, 0, R.string.filter_tab_formats));
+        genreTab.bindAppliedMarker(ensureFilterTabLabel(
+                host, tabs, 1, R.string.filter_tab_genres));
+        // A re-open lands on the Genres tab when the draft carries a genre
+        // selection (the plan's step 8); otherwise on Formats (already
+        // selected by the first addTab).
+        tabHost.setCurrentTab(draft.selectedGenres.isEmpty() ? 0 : 1);
+        // addTab() hides a page only when the current tab changes. The Genres
+        // page is added while Formats is already current, so it stays VISIBLE
+        // and its "Select all" row is drawn on top of the Formats one.
+        if (tabHost.getCurrentTab() == 0) {
+            genreTab.page.setVisibility(View.GONE);
+        } else {
+            formatsTab.page.setVisibility(View.GONE);
+        }
+
+        new AlertDialog.Builder(host)
+                .setTitle(R.string.filter_dialog_title)
+                .setView(tabHost)
+                .setNegativeButton(R.string.cancel, null)
+                .setPositiveButton(R.string.filter_ok, new DialogInterface.OnClickListener() {
+                    @Override public void onClick(DialogInterface d, int w) {
+                        host.commitFilterDraft(formatsTab, genreTab);
+                    }
+                })
+                .setOnDismissListener(new DialogInterface.OnDismissListener() {
+                    @Override public void onDismiss(DialogInterface d) {
+                        // The dialog is gone: no open tab to lock/unlock
+                        // anymore.
+                        host.setOpenFilterGenresTab(null);
+                    }
+                })
+                .show();
+    }
+
+    /** Tab label at {@code index}. Reuses the holo title when {@code addTab}
+     *  already put one there; otherwise installs a plain label (a child with
+     *  no title at that index is replaced). */
+    private static TextView ensureFilterTabLabel(Context context, TabWidget tabs, int index, int labelRes) {
+        if (index < tabs.getChildCount()) {
+            TextView existing = (TextView) tabs.getChildAt(index)
+                    .findViewById(android.R.id.title);
+            if (existing != null) {
+                return existing;
+            }
+            tabs.removeViewAt(index);
+        }
+        LinearLayout row = new LinearLayout(context);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setGravity(Gravity.CENTER_VERTICAL);
+        TextView title = new TextView(context);
+        title.setId(android.R.id.title);
+        title.setText(labelRes);
+        row.addView(title);
+        tabs.addView(row, index);
+        return title;
     }
 }
