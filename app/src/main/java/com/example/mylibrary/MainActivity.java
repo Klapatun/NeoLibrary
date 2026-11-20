@@ -114,6 +114,9 @@ public class MainActivity extends Activity
     /** Whether the books are shown in fixed pages (the kebab's "Add pagination")
      *  instead of one long scroll; persisted like the view-mode choice. */
     private boolean paginationEnabled;
+    /** Pixel height of an unbound list row, measured once per activity.
+     *  Zero until the first positive measure; not persisted. */
+    private int listRowHeightPx;
     /** The view's touch slop; the swipe threshold is a multiple of it. */
     private int swipeSlop;
     /** The header kebab's popup last built by {@link #showHeaderMenu}; exposed for
@@ -564,12 +567,18 @@ public class MainActivity extends Activity
         int available = list.getHeight();
         if (available <= 0) available = grid.getHeight();
         if (available <= 0) available = getResources().getDisplayMetrics().heightPixels;
-        int width = list.getWidth() > 0
-                ? list.getWidth() : getResources().getDisplayMetrics().widthPixels;
-        View row = LayoutInflater.from(this).inflate(R.layout.item_book, list, false);
-        row.measure(View.MeasureSpec.makeMeasureSpec(width, View.MeasureSpec.EXACTLY),
-                    View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED));
-        return Math.max(1, available / Math.max(1, row.getMeasuredHeight()));
+        if (listRowHeightPx <= 0) {
+            int width = list.getWidth() > 0
+                    ? list.getWidth() : getResources().getDisplayMetrics().widthPixels;
+            View row = LayoutInflater.from(this).inflate(R.layout.item_book, list, false);
+            row.measure(View.MeasureSpec.makeMeasureSpec(width, View.MeasureSpec.EXACTLY),
+                        View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED));
+            int measured = row.getMeasuredHeight();
+            if (measured > 0) {
+                listRowHeightPx = measured;
+            }
+        }
+        return Math.max(1, available / Math.max(1, listRowHeightPx));
     }
 
     /** Re-measures the list page size. Invoked by the {@code bookContainer}
