@@ -9,6 +9,9 @@ import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.InputStream;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 
 /**
  * Durable, file-based cache of extracted cover <b>bytes</b> (not bitmaps — decoding
@@ -24,12 +27,31 @@ import java.io.InputStream;
 public final class CoverCache {
 
     private static final String DIR = "covers";
+    private static final char[] HEX = "0123456789abcdef".toCharArray();
 
     private CoverCache() {}
 
     /** The cache file that stores the cover bytes for {@code bookPath}. */
     public static File fileFor(Context context, String bookPath) {
-        return new File(coversDir(context), Long.toHexString(bookPath.hashCode()) + ".img");
+        return new File(coversDir(context), keyFor(bookPath) + ".img");
+    }
+
+    /** SHA-1 of the path's UTF-8 bytes, 40 lowercase hex characters. */
+    private static String keyFor(String bookPath) {
+        MessageDigest digest;
+        try {
+            digest = MessageDigest.getInstance("SHA-1");
+        } catch (NoSuchAlgorithmException e) {
+            throw new IllegalStateException(e);
+        }
+        byte[] hash = digest.digest(bookPath.getBytes(StandardCharsets.UTF_8));
+        char[] hex = new char[hash.length * 2];
+        for (int i = 0; i < hash.length; i++) {
+            int value = hash[i] & 0xff;
+            hex[i * 2] = HEX[value >>> 4];
+            hex[i * 2 + 1] = HEX[value & 0x0f];
+        }
+        return new String(hex);
     }
 
     /**

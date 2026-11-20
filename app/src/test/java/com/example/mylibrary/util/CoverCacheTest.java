@@ -4,6 +4,7 @@ import static org.junit.Assert.assertArrayEquals;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
+import static org.junit.Assert.assertNotEquals;
 import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 
@@ -211,5 +212,87 @@ public class CoverCacheTest {
         CoverCache.save(app, "/x/a.epub", COVER);
 
         assertArrayEquals(COVER, CoverCache.load(app, "/x/a.epub"));
+    }
+
+    @Test
+    public void pathsThatShareStringHashCodeKeepSeparateCovers() {
+        final String pathAa = "/x/Aa.epub";
+        final String pathBb = "/x/BB.epub";
+        assertEquals(-2103836800, pathAa.hashCode());
+        assertEquals(-2103836800, pathBb.hashCode());
+
+        final byte[] coverAa = new byte[]{1, 2, 3};
+        final byte[] coverBb = new byte[]{4, 5, 6};
+        CoverCache.save(app, pathAa, coverAa);
+        CoverCache.save(app, pathBb, coverBb);
+
+        File fileAa = CoverCache.fileFor(app, pathAa);
+        File fileBb = CoverCache.fileFor(app, pathBb);
+        assertNotEquals(fileAa, fileBb);
+
+        assertArrayEquals(coverAa, CoverCache.load(app, pathAa));
+        assertArrayEquals(coverBb, CoverCache.load(app, pathBb));
+
+        assertEquals("d050a8e8adce6dae236be78d67375c54bbd8c478.img", fileAa.getName());
+        assertEquals("c8e6d7e707711b87582f16f3a2a49ab6614b4ea6.img", fileBb.getName());
+        assertNotEquals("ffffffff8299ff80.img", fileAa.getName());
+        assertNotEquals("ffffffff8299ff80.img", fileBb.getName());
+    }
+
+    @Test
+    public void cacheFileNameIsTheSha1HexOfTheUtf8Path() {
+        final String path = "/\u043a\u043d\u0438\u0433\u0438/\u0451.fb2";
+        assertEquals("8c6dfbca10454156b0c395bb380742bb48bf3127.img",
+                CoverCache.fileFor(app, path).getName());
+    }
+
+    @Test
+    public void loadIgnoresALegacyHashCodeFileAndSaveDoesNotOverwriteIt() throws Exception {
+        final String path = "/x/Aa.epub";
+        final byte[] newCover = new byte[]{1, 2, 3};
+        final byte[] legacyCover = new byte[]{9, 9, 9};
+
+        File cacheFile = CoverCache.fileFor(app, path);
+        File cacheDir = cacheFile.getParentFile();
+        if (!cacheDir.exists()) {
+            assertTrue(cacheDir.mkdirs());
+        }
+        File legacy = new File(cacheDir, "ffffffff8299ff80.img");
+        writeExactBytes(legacy, legacyCover);
+
+        assertNull(CoverCache.load(app, path));
+
+        CoverCache.save(app, path, newCover);
+        assertArrayEquals(legacyCover, readAllBytes(legacy));
+
+        assertArrayEquals(newCover, CoverCache.load(app, path));
+    }
+
+    private static void writeExactBytes(File file, byte[] bytes) throws Exception {
+        java.io.FileOutputStream out = new java.io.FileOutputStream(file);
+        try {
+            out.write(bytes);
+        } finally {
+            out.close();
+        }
+    }
+
+    private static byte[] readAllBytes(File file) throws Exception {
+        java.io.FileInputStream in = new java.io.FileInputStream(file);
+        try {
+            int len = (int) file.length();
+            byte[] data = new byte[len];
+            int off = 0;
+            while (off < len) {
+                int n = in.read(data, off, len - off);
+                if (n < 0) {
+                    break;
+                }
+                off += n;
+            }
+            return data;
+        } finally {
+            in.close();
+        }
     }
 }
