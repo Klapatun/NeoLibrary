@@ -117,7 +117,7 @@ Every book's metadata lives in **two places**:
 | `MobiParser` | read MOBI/AZW (package-private) | PalmDB record table + MOBI header + EXTH; cover = first image + EXTH 201 |
 | `MetaWriter` | write meta | non-destructive: `.tmp` → swap → `.bak` recovery |
 | `CoverExtractor` | read cover image bytes | EPUB via `content.opf`→manifest; FB2 via `coverpage`→`<binary>`; FB2.ZIP via the inner `<binary>` or a loose image entry (e.g. `cover.jpg`); MOBI via EXTH record 201 (JPEG trimmed at EOI) |
-| `CoverCache` | durable file cache of cover bytes | `getExternalFilesDir("covers")/<path-hash>.img`, atomic `.tmp`→rename |
+| `CoverCache` | durable file cache of cover bytes | `getExternalFilesDir("covers")/<sha1-of-utf8-path>.img`, atomic `.tmp`→rename |
 | `CoverLoader` | async cover bitmap + LruCache | `CoverCache` first, in-file extraction second; hides letter badge once cover shows |
 | `BookAdapter` | `CursorAdapter`: list + grid/tile view modes | driven by the loader; re-inflates on mode switch; grid loads covers |
 | `Openers` | MIME map + `ACTION_VIEW` | `Uri.fromFile` (ok on KitKat) |
