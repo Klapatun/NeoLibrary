@@ -29,7 +29,7 @@ public class BookDatabase extends SQLiteOpenHelper {
 
     private static final String TAG = "BookDatabase";
     private static final String DB_NAME = "library.db";
-    private static final int DB_VERSION = 9;
+    private static final int DB_VERSION = 10;
 
     /** How many books go into one batch commit (one SQLite transaction per group;
      *  see {@link #upsertBasicBatch} and {@link #updateMetadataBatch}): one commit
@@ -181,6 +181,14 @@ public class BookDatabase extends SQLiteOpenHelper {
                     + " AND NOT EXISTS ("
                     + " SELECT 1 FROM work_genres g WHERE g.work_id = w._id"
                     + " ))");
+        }
+        if (oldVersion < 10) {
+            // No new column: send FB3 with no user edit back through enrichment.
+            db.execSQL("UPDATE files SET meta_done=0, meta_failed=0"
+                    + " WHERE format='FB3'"
+                    + " AND work_id IN ("
+                    + " SELECT w._id FROM works w"
+                    + " WHERE w.deleted=0 AND w.user_edited=0)");
         }
     }
 
