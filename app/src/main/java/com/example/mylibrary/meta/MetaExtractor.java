@@ -26,9 +26,11 @@ import java.util.zip.ZipFile;
  * fully parsed (FB2ZIP — a ZIP container around an FB2 document — is parsed
  * through its inner {@code .fb2} entry). MOBI/AZW is parsed read-only
  * (PalmDB + MOBI header + EXTH) for
- * title/author/publisher/description/language. Plain-text and other simple formats
+ * title/author/publisher/description/language. FB3 is parsed read-only from the
+ * package relationships ({@link Fb3Package}): title, author, publisher, description,
+ * genres, series and language. Plain-text and other simple formats
  * are parsed best-effort for title/author. For the remaining container formats (CHM,
- * DjVu, PDB, PDF, DOC/DOCX, RTF, FB3...) we do not rewrite files, so catalog metadata
+ * DjVu, PDB, PDF, DOC/DOCX, RTF) we do not rewrite files, so catalog metadata
  * is stored in SQLite and the display title falls back to the file name.</p>
  *
  * <p>No third-party libraries are used: ZIP reading uses {@link java.util.zip}, XML
@@ -58,6 +60,7 @@ public final class MetaExtractor {
             if (format.equals("FB2")) return extractFb2(file);
             if (format.equals("FB2ZIP")) return extractFb2Zip(file);
             if (format.equals("MOBI")) return extractMobi(file);
+            if (format.equals("FB3")) return extractFb3(file);
             if (format.equals("TXT")) return extractText(file);
             if (format.equals("HTML")) return extractHtml(file);
         } catch (Exception e) {
@@ -326,9 +329,10 @@ public final class MetaExtractor {
     }
 
     /**
-     * After a finished FB2 parse ({@code genres != null}), copies this file's name
-     * into {@code title} when no title tag was read. Does not raise {@code found}.
-     * For FB2ZIP {@code file} is the archive, not the inner {@code .fb2}.
+     * After a finished parse ({@code genres != null}), copies this file's name
+     * into {@code title} when no title was read. Does not raise {@code found}.
+     * Used for FB2, FB2ZIP and FB3. For FB2ZIP {@code file} is the archive, not
+     * the inner {@code .fb2}.
      */
     static void fillFileNameTitle(MetaData md, File file) {
         if (md.genres == null) return;
@@ -362,6 +366,27 @@ public final class MetaExtractor {
             return md;
         } finally {
             p.close();
+        }
+    }
+
+    // -------------------------------------------------------------------
+    // FB3
+    // -------------------------------------------------------------------
+
+    /**
+     * FB3 is a ZIP package. {@link Fb3Package} reads the description and the
+     * cover from {@code _rels/.rels}; this method only opens and closes the
+     * archive, then fills a missing title from the file name without raising
+     * {@code found}. A broken archive is left to the caller's catch.
+     */
+    private static MetaData extractFb3(File file) throws Exception {
+        ZipFile zip = new ZipFile(file);
+        try {
+            Fb3Package.Result result = Fb3Package.read(zip);
+            fillFileNameTitle(result.meta, file);
+            return result.meta;
+        } finally {
+            zip.close();
         }
     }
 
