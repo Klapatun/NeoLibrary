@@ -795,6 +795,61 @@ public class MetaExtractorTest {
     }
 
     @Test
+    public void fb3DocumentWithoutDescriptionRootLeavesGenresNull() throws Exception {
+        File fb3 = folder.newFile("body-as-book.fb3");
+        String xml = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+                + "<body><title><main>Глава</main></title>"
+                + "<subject>prose</subject></body>\n";
+        writeFb3Book(fb3, xml, null, null);
+        MetaData md = MetaExtractor.extract(fb3);
+        assertFalse(md.found);
+        assertNull(md.genres);
+        assertNull(md.title);
+    }
+
+    @Test
+    public void fb3PercentEncodedBookTargetFindsTheDescription() throws Exception {
+        File fb3 = folder.newFile("encoded.fb3");
+        java.util.Map<String, byte[]> entries = new java.util.LinkedHashMap<String, byte[]>();
+        entries.put("_rels/.rels", TestFixtures.buildFb3RootRels("fb3/my%20book.xml", null)
+                .getBytes("UTF-8"));
+        entries.put("fb3/my book.xml",
+                fb3DescrShell("  <title><main>Encoded</main></title>\n").getBytes("UTF-8"));
+        TestFixtures.writeFb3(fb3, entries);
+        MetaData md = MetaExtractor.extract(fb3);
+        assertTrue(md.found);
+        assertEquals("Encoded", md.title);
+    }
+
+    @Test
+    public void fb3BackslashEntryNamesStillResolve() throws Exception {
+        File fb3 = folder.newFile("backslash.fb3");
+        java.util.Map<String, byte[]> entries = new java.util.LinkedHashMap<String, byte[]>();
+        entries.put("_rels\\.rels", TestFixtures.buildFb3RootRels("fb3/description.xml", null)
+                .getBytes("UTF-8"));
+        entries.put("fb3\\description.xml",
+                fb3DescrShell("  <title><main>Slash</main></title>\n").getBytes("UTF-8"));
+        TestFixtures.writeFb3(fb3, entries);
+        MetaData md = MetaExtractor.extract(fb3);
+        assertTrue(md.found);
+        assertEquals("Slash", md.title);
+    }
+
+    @Test
+    public void fb3PercentEncodedDotDotDoesNotEscapeThePackage() throws Exception {
+        File fb3 = folder.newFile("escape.fb3");
+        java.util.Map<String, byte[]> entries = new java.util.LinkedHashMap<String, byte[]>();
+        entries.put("_rels/.rels",
+                TestFixtures.buildFb3RootRels("%2E%2E/fb3/description.xml", null).getBytes("UTF-8"));
+        entries.put("fb3/description.xml",
+                fb3DescrShell("  <title><main>Hidden</main></title>\n").getBytes("UTF-8"));
+        TestFixtures.writeFb3(fb3, entries);
+        MetaData md = MetaExtractor.extract(fb3);
+        assertFalse(md.found);
+        assertNull(md.genres);
+    }
+
+    @Test
     public void fb3ArchiveWithoutContentTypesStillExtractsMetadata() throws Exception {
         File fb3 = folder.newFile("no-content-types.fb3");
         TestFixtures.writeMinimalFb3(fb3);

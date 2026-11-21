@@ -673,6 +673,33 @@ public class CoverExtractorTest {
     }
 
     @Test
+    public void fb3ExternalThumbnailDoesNotUseALaterCover() throws Exception {
+        String rels = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+                + "<Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\">\n"
+                + "  <Relationship Type=\"http://www.fictionbook.org/FictionBook3/relationships/Book\""
+                + " Target=\"fb3/description.xml\"/>\n"
+                + "  <Relationship Type=\"http://schemas.openxmlformats.org/package/2006/relationships/metadata/thumbnail\""
+                + " Target=\"http://example.com/cover.jpg\" TargetMode=\"External\"/>\n"
+                + "  <Relationship Type=\"http://schemas.openxmlformats.org/package/2006/relationships/metadata/thumbnail\""
+                + " Target=\"cover.jpg\"/>\n"
+                + "</Relationships>\n";
+        File fb3 = folder.newFile("external-thumb.fb3");
+        java.util.Map<String, byte[]> entries = new java.util.LinkedHashMap<String, byte[]>();
+        entries.put("_rels/.rels", rels.getBytes("UTF-8"));
+        entries.put("fb3/description.xml", TestFixtures.FB3_DESCRIPTION_MINIMAL.getBytes("UTF-8"));
+        entries.put("cover.jpg", TestFixtures.coverBytes());
+        entries.put("fb3/_rels/description.xml.rels",
+                TestFixtures.buildFb3DescriptionPartRels("img/cover.jpg").getBytes("UTF-8"));
+        entries.put("fb3/img/cover.jpg", jpegBytes());
+        TestFixtures.writeFb3(fb3, entries);
+
+        MetaData metadata = MetaExtractor.extract(fb3);
+        assertTrue(metadata.found);
+        assertEquals("Война и мир", metadata.title);
+        assertNull(CoverExtractor.extract(fb3));
+    }
+
+    @Test
     public void fb3PackageThumbnailWinsOverPartCoverWhenBytesDiffer() throws Exception {
         byte[] thumb = TestFixtures.coverBytes();
         byte[] partCover = jpegBytes();

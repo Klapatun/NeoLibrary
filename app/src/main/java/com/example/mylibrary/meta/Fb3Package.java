@@ -5,7 +5,12 @@ import android.util.Xml;
 
 import org.xmlpull.v1.XmlPullParser;
 
+import java.io.ByteArrayOutputStream;
 import java.io.StringReader;
+import java.nio.ByteBuffer;
+import java.nio.charset.Charset;
+import java.nio.charset.CharsetDecoder;
+import java.nio.charset.CodingErrorAction;
 import java.util.ArrayList;
 import java.util.Enumeration;
 import java.util.zip.ZipEntry;
@@ -23,10 +28,13 @@ import java.util.zip.ZipFile;
  * not guessed by name, and {@code body.xml} is not opened. A later {@code Book}
  * relationship (a multi-book package) is ignored.</p>
  *
- * <p>The cover is one image: the root thumbnail relationship, otherwise the
- * first non-external {@code .../relationships/cover} in the description part's
- * own relationships file. Bytes go through {@link CoverExtractor#readEntryBytes};
- * an entry over the cover limit is null and does not discard metadata.</p>
+ * <p>The cover is one image: the first root thumbnail relationship, otherwise
+ * the first {@code .../relationships/cover} in the description part's own
+ * relationships file. An external thumbnail or cover is a missing image and
+ * does not select a later relationship. Targets are percent-decoded URIs;
+ * {@code \} in a target or a zip entry name is a separator. Bytes go through
+ * {@link CoverExtractor#readEntryBytes}; an entry over the cover limit is null
+ * and does not discard metadata.</p>
  */
 final class Fb3Package {
 
@@ -97,13 +105,21 @@ final class Fb3Package {
     private static final class Rels {
         boolean hasBook;
         String bookTarget;
-        boolean hasThumb;
+        /** The first thumbnail relationship, external ones included. */
+        boolean thumbSeen;
+        boolean thumbExternal;
         String thumbTarget;
-        boolean hasCover;
+        /** The first cover relationship, external ones included. */
+        boolean coverSeen;
+        boolean coverExternal;
         String coverTarget;
     }
 
-    /** First non-external relationship of each type. Namespace is not checked. */
+    /**
+     * Namespace is not checked. The first non-external {@code Book} is the
+     * description. The first thumbnail and the first cover are decisive:
+     * an external one is not skipped in favour of a later internal target.
+     */
     private static Rels parseRels(String xml) throws Exception {
         Rels rels = new Rels();
         XmlPullParser p = Xml.newPullParser();
@@ -114,16 +130,18 @@ final class Fb3Package {
             if (!"Relationship".equals(localName(p.getName()))) continue;
             String type = attr(p, "Type");
             String target = attr(p, "Target");
-            if ("External".equals(attr(p, "TargetMode"))) continue;
-            if (TYPE_BOOK.equals(type) && !rels.hasBook) {
+            boolean external = "External".equals(attr(p, "TargetMode"));
+            if (TYPE_BOOK.equals(type) && !rels.hasBook && !external) {
                 rels.hasBook = true;
                 rels.bookTarget = target;
-            } else if (TYPE_THUMB.equals(type) && !rels.hasThumb) {
-                rels.hasThumb = true;
-                rels.thumbTarget = target;
-            } else if (TYPE_COVER.equals(type) && !rels.hasCover) {
-                rels.hasCover = true;
-                rels.coverTarget = target;
+            } else if (TYPE_THUMB.equals(type) && !rels.thumbSeen) {
+                rels.thumbSeen = true;
+                rels.thumbExternal = external;
+                if (!external) rels.thumbTarget = target;
+            } else if (TYPE_COVER.equals(type) && !rels.coverSeen) {
+                rels.coverSeen = true;
+                rels.coverExternal = external;
+                if (!external) rels.coverTarget = target;
             }
         }
         return rels;
@@ -132,13 +150,17 @@ final class Fb3Package {
     /**
      * Package-relative path of {@code target} as seen from {@code sourcePart}.
      * An empty {@code sourcePart} is the package root (the root relationships
-     * file). A leading {@code /} is package-absolute. {@code .} and {@code ..}
-     * are collapsed; a path that leaves the package is null (no such entry).
+     * file). A leading {@code /} is package-absolute. Percent-escapes are
+     * decoded as UTF-8 before {@code .} and {@code ..} are collapsed; a path
+     * that leaves the package, or a broken escape, is null (no such entry).
      */
     private static String resolveTarget(String sourcePart, String target) {
         if (target == null) return null;
         int hash = target.indexOf('#');
         if (hash >= 0) target = target.substring(0, hash);
+        target = target.replace('\\', '/');
+        target = percentDecode(target);
+        if (target == null) return null;
         target = target.replace('\\', '/');
         if (target.length() == 0) return null;
         String combined;
@@ -152,6 +174,51 @@ final class Fb3Package {
             combined = dir.length() == 0 ? target : dir + "/" + target;
         }
         return collapse(combined);
+    }
+
+    /** {@code %HH} sequences as UTF-8. {@code +} stays a plus. Null when an escape is broken. */
+    private static String percentDecode(String s) {
+        if (s.indexOf('%') < 0) return s;
+        ByteArrayOutputStream pending = new ByteArrayOutputStream();
+        StringBuilder out = new StringBuilder(s.length());
+        for (int i = 0; i < s.length(); ) {
+            char c = s.charAt(i);
+            if (c == '%') {
+                if (i + 2 >= s.length()) return null;
+                int hi = hex(s.charAt(i + 1));
+                int lo = hex(s.charAt(i + 2));
+                if (hi < 0 || lo < 0) return null;
+                pending.write((hi << 4) | lo);
+                i += 3;
+            } else {
+                if (!flushUtf8(pending, out)) return null;
+                out.append(c);
+                i++;
+            }
+        }
+        if (!flushUtf8(pending, out)) return null;
+        return out.toString();
+    }
+
+    private static boolean flushUtf8(ByteArrayOutputStream pending, StringBuilder out) {
+        if (pending.size() == 0) return true;
+        try {
+            CharsetDecoder decoder = Charset.forName("UTF-8").newDecoder();
+            decoder.onMalformedInput(CodingErrorAction.REPORT);
+            decoder.onUnmappableCharacter(CodingErrorAction.REPORT);
+            out.append(decoder.decode(ByteBuffer.wrap(pending.toByteArray())));
+            pending.reset();
+            return true;
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    private static int hex(char c) {
+        if (c >= '0' && c <= '9') return c - '0';
+        if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+        if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+        return -1;
     }
 
     /** Null when {@code ..} would leave the package. */
@@ -186,21 +253,26 @@ final class Fb3Package {
     }
 
     /**
-     * Case-insensitive entry lookup. One leading {@code /} is ignored.
-     * Directory entries are not parts.
+     * Case-insensitive entry lookup. {@code \} is a separator, one leading
+     * {@code /} is ignored. Directory entries are not parts.
      */
     private static ZipEntry findEntry(ZipFile zip, String path) {
         if (path == null || path.length() == 0) return null;
-        String want = stripOneSlash(path);
+        String want = zipName(path);
+        if (want.length() == 0) return null;
         Enumeration<? extends ZipEntry> entries = zip.entries();
         while (entries.hasMoreElements()) {
             ZipEntry entry = entries.nextElement();
             if (entry.isDirectory()) continue;
             String name = entry.getName();
             if (name == null) continue;
-            if (want.equalsIgnoreCase(stripOneSlash(name))) return entry;
+            if (want.equalsIgnoreCase(zipName(name))) return entry;
         }
         return null;
+    }
+
+    private static String zipName(String name) {
+        return stripOneSlash(name.replace('\\', '/'));
     }
 
     private static String stripOneSlash(String name) {
@@ -209,13 +281,14 @@ final class Fb3Package {
     }
 
     /**
-     * Thumbnail wins when the root relationships name one. Otherwise the
-     * description part's cover relationship. Any failure here is a missing
-     * cover, not a failed description.
+     * The first root thumbnail wins, including an external one (then the cover
+     * is absent). Otherwise the description part's first cover relationship.
+     * Any failure here is a missing cover, not a failed description.
      */
     private static byte[] readCover(ZipFile zip, Rels rels, String bookPath) {
         try {
-            if (rels.hasThumb) {
+            if (rels.thumbSeen) {
+                if (rels.thumbExternal) return null;
                 String path = resolveTarget("", rels.thumbTarget);
                 if (path == null) return null;
                 return CoverExtractor.readEntryBytes(zip, findEntry(zip, path));
@@ -227,7 +300,7 @@ final class Fb3Package {
             String xml = XmlText.decode(raw);
             if (xml == null) return null;
             Rels part = parseRels(xml);
-            if (!part.hasCover) return null;
+            if (!part.coverSeen || part.coverExternal) return null;
             String path = resolveTarget(bookPath, part.coverTarget);
             if (path == null) return null;
             return CoverExtractor.readEntryBytes(zip, findEntry(zip, path));
@@ -242,8 +315,11 @@ final class Fb3Package {
     // -------------------------------------------------------------------
 
     /**
-     * A pull that reaches the end is a finished parse: {@code genres} is set
-     * even when every field is empty. {@code found} follows the book title only.
+     * Genres are set only after an {@code fb3-description} element is read.
+     * A document that parses without that root leaves {@code genres} null, so
+     * a mis-aimed Book part cannot clear catalog genres. Inside a real
+     * description, an empty field list is still a finished parse.
+     * {@code found} follows the book title only.
      */
     private static MetaData parseDescription(String xml) throws Exception {
         MetaData md = new MetaData();
@@ -258,6 +334,10 @@ final class Fb3Package {
                 seen = true;
                 readDescription(p, md, genres);
             }
+        }
+        if (!seen) {
+            md.found = false;
+            return md;
         }
         md.genres = MetaData.normalizeGenres(genres);
         md.found = md.title != null && md.title.length() > 0;
