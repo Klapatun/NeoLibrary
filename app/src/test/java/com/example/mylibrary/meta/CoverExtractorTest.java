@@ -62,6 +62,7 @@ public class CoverExtractorTest {
         assertTrue(CoverExtractor.canHaveCover("FB2"));
         assertTrue(CoverExtractor.canHaveCover("FB2ZIP"));
         assertTrue(CoverExtractor.canHaveCover("MOBI"));
+        assertTrue(CoverExtractor.canHaveCover("FB3"));
         assertFalse(CoverExtractor.canHaveCover("PDF"));
         assertFalse(CoverExtractor.canHaveCover("DJVU"));
         assertFalse(CoverExtractor.canHaveCover("CHM"));
@@ -639,6 +640,102 @@ public class CoverExtractorTest {
         assertEquals(-1, CoverExtractor.imageLen(new byte[]{'x', 'y', 'z', 'w'}));
         assertEquals(-1, CoverExtractor.imageLen(new byte[]{}));
         assertEquals(-1, CoverExtractor.imageLen(null));
+    }
+
+    // ------------------------------------------------------------------
+    // FB3 covers
+    // ------------------------------------------------------------------
+
+    @Test
+    public void fb3MinimalPackageCoverMatchesThumbnailBytes() throws Exception {
+        File fb3 = folder.newFile("minimal.fb3");
+        TestFixtures.writeMinimalFb3(fb3);
+        byte[] cover = CoverExtractor.extract(fb3);
+        assertNotNull(cover);
+        assertTrue(java.util.Arrays.equals(cover, TestFixtures.coverBytes()));
+    }
+
+    @Test
+    public void fb3CoverFromPartDescriptionRelsWhenRootThumbnailAbsent() throws Exception {
+        File fb3 = folder.newFile("part-cover.fb3");
+        java.util.Map<String, byte[]> entries = new java.util.LinkedHashMap<String, byte[]>();
+        entries.put("_rels/.rels", TestFixtures.buildFb3RootRels("fb3/description.xml", null)
+                .getBytes("UTF-8"));
+        entries.put("fb3/description.xml", TestFixtures.FB3_DESCRIPTION_MINIMAL.getBytes("UTF-8"));
+        entries.put("fb3/_rels/description.xml.rels",
+                TestFixtures.buildFb3DescriptionPartRels("img/cover.jpg").getBytes("UTF-8"));
+        entries.put("fb3/img/cover.jpg", TestFixtures.coverBytes());
+        TestFixtures.writeFb3(fb3, entries);
+
+        byte[] cover = CoverExtractor.extract(fb3);
+        assertNotNull(cover);
+        assertTrue(java.util.Arrays.equals(cover, TestFixtures.coverBytes()));
+    }
+
+    @Test
+    public void fb3PackageThumbnailWinsOverPartCoverWhenBytesDiffer() throws Exception {
+        byte[] thumb = TestFixtures.coverBytes();
+        byte[] partCover = jpegBytes();
+        File fb3 = folder.newFile("thumb-wins.fb3");
+        java.util.Map<String, byte[]> entries = new java.util.LinkedHashMap<String, byte[]>();
+        entries.put("_rels/.rels", TestFixtures.buildFb3RootRels("fb3/description.xml", "cover.jpg")
+                .getBytes("UTF-8"));
+        entries.put("fb3/description.xml", TestFixtures.FB3_DESCRIPTION_MINIMAL.getBytes("UTF-8"));
+        entries.put("cover.jpg", thumb);
+        entries.put("fb3/_rels/description.xml.rels",
+                TestFixtures.buildFb3DescriptionPartRels("img/cover.jpg").getBytes("UTF-8"));
+        entries.put("fb3/img/cover.jpg", partCover);
+        TestFixtures.writeFb3(fb3, entries);
+
+        byte[] cover = CoverExtractor.extract(fb3);
+        assertNotNull(cover);
+        assertTrue(java.util.Arrays.equals(cover, thumb));
+        assertFalse(java.util.Arrays.equals(cover, partCover));
+    }
+
+    @Test
+    public void fb3OversizedCoverEntryLeavesMetadataButCoverNull() throws Exception {
+        File fb3 = folder.newFile("large-cover.fb3");
+        java.util.Map<String, byte[]> entries = new java.util.LinkedHashMap<String, byte[]>();
+        entries.put("_rels/.rels", TestFixtures.buildFb3RootRels("fb3/description.xml", "cover.jpg")
+                .getBytes("UTF-8"));
+        entries.put("fb3/description.xml", TestFixtures.FB3_DESCRIPTION_MINIMAL.getBytes("UTF-8"));
+        entries.put("cover.jpg", new byte[CoverExtractor.effectiveCoverLimit() + 1]);
+        TestFixtures.writeFb3(fb3, entries);
+
+        MetaData metadata = MetaExtractor.extract(fb3);
+        assertTrue(metadata.found);
+        assertEquals("Война и мир", metadata.title);
+        assertNull(CoverExtractor.extract(fb3));
+    }
+
+    @Test
+    public void fb3NoCoverRelationshipYieldsNullCoverWhileMetadataRemains() throws Exception {
+        File fb3 = folder.newFile("no-cover.fb3");
+        java.util.Map<String, byte[]> entries = new java.util.LinkedHashMap<String, byte[]>();
+        entries.put("_rels/.rels", TestFixtures.buildFb3RootRels("fb3/description.xml", null)
+                .getBytes("UTF-8"));
+        entries.put("fb3/description.xml", TestFixtures.FB3_DESCRIPTION_MINIMAL.getBytes("UTF-8"));
+        TestFixtures.writeFb3(fb3, entries);
+
+        MetaData metadata = MetaExtractor.extract(fb3);
+        assertTrue(metadata.found);
+        assertEquals("Война и мир", metadata.title);
+        assertNull(CoverExtractor.extract(fb3));
+    }
+
+    @Test
+    public void fb3CorruptArchiveReturnsNullCoverWithoutThrowing() throws Exception {
+        File fb3 = folder.newFile("broken.fb3");
+        TestFixtures.writeBytes(fb3, new byte[]{(byte) 0x50, (byte) 0x4B, 0x03, 0x04, 0x01});
+        assertNull(CoverExtractor.extract(fb3));
+    }
+
+    @Test
+    public void fb3NonZipReturnsNullCoverWithoutThrowing() throws Exception {
+        File fb3 = folder.newFile("notzip.fb3");
+        TestFixtures.writeBytes(fb3, new byte[]{0x00, 0x01, 0x02, 0x03});
+        assertNull(CoverExtractor.extract(fb3));
     }
 
     // ------------------------------------------------------------------
