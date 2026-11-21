@@ -542,6 +542,341 @@ public class MetaExtractorTest {
     }
 
     // ------------------------------------------------------------------
+    // FB3
+    // ------------------------------------------------------------------
+
+    private static String fb3DescrShell(String inner) {
+        return "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+                + "<fb3-description xmlns=\"http://www.fictionbook.org/FictionBook3/description\">\n"
+                + inner
+                + "</fb3-description>\n";
+    }
+
+    private static void writeFb3Book(File f, String descriptionXml, String bookTarget,
+                                     String thumbnailTarget) throws Exception {
+        Map<String, byte[]> entries = new java.util.LinkedHashMap<String, byte[]>();
+        String target = bookTarget != null ? bookTarget : "fb3/description.xml";
+        entries.put("_rels/.rels", TestFixtures.buildFb3RootRels(target, thumbnailTarget)
+                .getBytes("UTF-8"));
+        entries.put(target, descriptionXml.getBytes("UTF-8"));
+        if (thumbnailTarget != null) {
+            entries.put(thumbnailTarget, TestFixtures.coverBytes());
+        }
+        TestFixtures.writeFb3(f, entries);
+    }
+
+    @Test
+    public void fb3ExtractsFullMetadataFromMinimalValidPackage() throws Exception {
+        File fb3 = folder.newFile("war_and_peace.fb3");
+        TestFixtures.writeMinimalFb3(fb3);
+        MetaData md = MetaExtractor.extract(fb3);
+
+        assertTrue(md.found);
+        assertEquals("Война и мир", md.title);
+        assertEquals("Лев Николаевич Толстой, Соавтор Имя", md.author);
+        assertEquals("Эксмо", md.publisher);
+        assertEquals("Первый абзац\nВторой абзац", md.description);
+        assertEquals("Русская классика", md.series);
+        assertGenres("sf_fantasy", "prose", md.genres);
+        assertEquals("ru", md.language);
+    }
+
+    @Test
+    public void fb3TitleFromMainWrappingParagraphMatchesFullTitle() throws Exception {
+        File fb3 = folder.newFile("nested-main.fb3");
+        String xml = fb3DescrShell("  <title><main><p>Война и мир</p></main></title>\n");
+        writeFb3Book(fb3, xml, null, null);
+        MetaData md = MetaExtractor.extract(fb3);
+        assertTrue(md.found);
+        assertEquals("Война и мир", md.title);
+    }
+
+    @Test
+    public void fb3TitleFromDirectParagraphWhenMainAbsent() throws Exception {
+        File fb3 = folder.newFile("from-p.fb3");
+        String xml = fb3DescrShell("  <title><p>Из редактора</p></title>\n");
+        writeFb3Book(fb3, xml, null, null);
+        MetaData md = MetaExtractor.extract(fb3);
+        assertTrue(md.found);
+        assertEquals("Из редактора", md.title);
+    }
+
+    @Test
+    public void fb3AuthorNameFromFirstMiddleLastParts() throws Exception {
+        File fb3 = folder.newFile("name-parts.fb3");
+        String xml = fb3DescrShell(
+                "  <title><main>Titled</main></title>\n"
+              + "  <fb3-relations>\n"
+              + "    <subject link=\"author\">\n"
+              + "      <first-name>Ivan</first-name>\n"
+              + "      <middle-name>Ivanovich</middle-name>\n"
+              + "      <last-name>Petrov</last-name>\n"
+              + "    </subject>\n"
+              + "  </fb3-relations>\n");
+        writeFb3Book(fb3, xml, null, null);
+        MetaData md = MetaExtractor.extract(fb3);
+        assertEquals("Ivan Ivanovich Petrov", md.author);
+    }
+
+    @Test
+    public void fb3EmptyAuthorSubjectDoesNotAppearInAuthorList() throws Exception {
+        File fb3 = folder.newFile("no-empty-author.fb3");
+        String xml = fb3DescrShell(
+                "  <title><main>Titled</main></title>\n"
+              + "  <fb3-relations>\n"
+              + "    <subject link=\"author\">\n"
+              + "      <title><main>Real Author</main></title>\n"
+              + "    </subject>\n"
+              + "    <subject link=\"author\">\n"
+              + "      <title><main></main></title>\n"
+              + "    </subject>\n"
+              + "  </fb3-relations>\n");
+        writeFb3Book(fb3, xml, null, null);
+        MetaData md = MetaExtractor.extract(fb3);
+        assertEquals("Real Author", md.author);
+    }
+
+    @Test
+    public void fb3WithoutBookTitleUsesFileNameButRemainsNotFound() throws Exception {
+        File fb3 = folder.newFile("My_Book.fb3");
+        String xml = fb3DescrShell(
+                "  <fb3-classification><subject>prose</subject></fb3-classification>\n"
+              + "  <lang>en</lang>\n");
+        writeFb3Book(fb3, xml, null, null);
+        MetaData md = MetaExtractor.extract(fb3);
+        assertFalse(md.found);
+        assertNotNull(md.genres);
+        assertGenres("prose", md.genres);
+        assertEquals("My Book", md.title);
+    }
+
+    @Test
+    public void fb3ParsedDescriptionWithoutOptionalFieldsLeavesNullsAndEmptyGenres() throws Exception {
+        File fb3 = folder.newFile("sparse.fb3");
+        String xml = fb3DescrShell(
+                "  <title><main>Only Title</main></title>\n"
+              + "  <lang>en</lang>\n");
+        writeFb3Book(fb3, xml, null, null);
+        MetaData md = MetaExtractor.extract(fb3);
+        assertTrue(md.found);
+        assertNull(md.series);
+        assertNull(md.description);
+        assertNull(md.publisher);
+        assertNull(md.author);
+        assertNotNull(md.genres);
+        assertTrue(md.genres.isEmpty());
+    }
+
+    @Test
+    public void fb3ArchiveWithoutRootRelsIsNotFound() throws Exception {
+        File fb3 = folder.newFile("no-rels.fb3");
+        Map<String, byte[]> entries = new java.util.LinkedHashMap<String, byte[]>();
+        entries.put("fb3/description.xml", TestFixtures.FB3_DESCRIPTION_MINIMAL.getBytes("UTF-8"));
+        TestFixtures.writeFb3(fb3, entries);
+        MetaData md = MetaExtractor.extract(fb3);
+        assertFalse(md.found);
+        assertNull(md.genres);
+    }
+
+    @Test
+    public void fb3RootRelsWithoutBookRelationshipIsNotFound() throws Exception {
+        File fb3 = folder.newFile("no-book-rel.fb3");
+        String rels = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+                + "<Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\">\n"
+                + "  <Relationship Type=\"http://schemas.openxmlformats.org/package/2006/relationships/metadata/thumbnail\" Target=\"cover.jpg\"/>\n"
+                + "</Relationships>\n";
+        Map<String, byte[]> entries = new java.util.LinkedHashMap<String, byte[]>();
+        entries.put("_rels/.rels", rels.getBytes("UTF-8"));
+        entries.put("cover.jpg", TestFixtures.coverBytes());
+        TestFixtures.writeFb3(fb3, entries);
+        MetaData md = MetaExtractor.extract(fb3);
+        assertFalse(md.found);
+        assertNull(md.genres);
+    }
+
+    @Test
+    public void fb3BookRelationshipWithExternalTargetIsNotFound() throws Exception {
+        File fb3 = folder.newFile("external-book.fb3");
+        String rels = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+                + "<Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\">\n"
+                + "  <Relationship Type=\"http://www.fictionbook.org/FictionBook3/relationships/Book\""
+                + " Target=\"fb3/description.xml\" TargetMode=\"External\"/>\n"
+                + "</Relationships>\n";
+        Map<String, byte[]> entries = new java.util.LinkedHashMap<String, byte[]>();
+        entries.put("_rels/.rels", rels.getBytes("UTF-8"));
+        entries.put("fb3/description.xml", TestFixtures.FB3_DESCRIPTION_MINIMAL.getBytes("UTF-8"));
+        TestFixtures.writeFb3(fb3, entries);
+        MetaData md = MetaExtractor.extract(fb3);
+        assertFalse(md.found);
+        assertNull(md.genres);
+    }
+
+    @Test
+    public void fb3BookRelationshipToMissingEntryIsNotFound() throws Exception {
+        File fb3 = folder.newFile("missing-target.fb3");
+        Map<String, byte[]> entries = new java.util.LinkedHashMap<String, byte[]>();
+        entries.put("_rels/.rels", TestFixtures.buildFb3RootRels("fb3/missing.xml", null)
+                .getBytes("UTF-8"));
+        TestFixtures.writeFb3(fb3, entries);
+        MetaData md = MetaExtractor.extract(fb3);
+        assertFalse(md.found);
+        assertNull(md.genres);
+    }
+
+    @Test
+    public void fb3FindsRootRelsAndDescriptionRegardlessOfPathCase() throws Exception {
+        File fb3 = folder.newFile("case.fb3");
+        Map<String, byte[]> entries = new java.util.LinkedHashMap<String, byte[]>();
+        entries.put("_RELS/.RELS", TestFixtures.buildFb3RootRels("FB3/Description.xml", null)
+                .getBytes("UTF-8"));
+        entries.put("FB3/Description.xml",
+                fb3DescrShell("  <title><main>Case Title</main></title>\n").getBytes("UTF-8"));
+        TestFixtures.writeFb3(fb3, entries);
+        MetaData md = MetaExtractor.extract(fb3);
+        assertTrue(md.found);
+        assertEquals("Case Title", md.title);
+    }
+
+    @Test
+    public void fb3Utf16LeDescriptionWithBomYieldsCorrectTitle() throws Exception {
+        File fb3 = folder.newFile("utf16.fb3");
+        String xml = fb3DescrShell("  <title><main>Юникод</main></title>\n");
+        byte[] body = xml.getBytes("UTF-16LE");
+        byte[] withBom = new byte[body.length + 2];
+        withBom[0] = (byte) 0xFF;
+        withBom[1] = (byte) 0xFE;
+        System.arraycopy(body, 0, withBom, 2, body.length);
+        Map<String, byte[]> entries = new java.util.LinkedHashMap<String, byte[]>();
+        entries.put("_rels/.rels", TestFixtures.buildFb3RootRels("fb3/description.xml", null)
+                .getBytes("UTF-8"));
+        entries.put("fb3/description.xml", withBom);
+        TestFixtures.writeFb3(fb3, entries);
+        MetaData md = MetaExtractor.extract(fb3);
+        assertTrue(md.found);
+        assertEquals("Юникод", md.title);
+    }
+
+    @Test
+    public void fb3SecondBookRelationshipIsIgnored() throws Exception {
+        File fb3 = folder.newFile("two-books.fb3");
+        String first = fb3DescrShell("  <title><main>First Book</main></title>\n");
+        String second = fb3DescrShell("  <title><main>Second Book</main></title>\n");
+        String rels = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+                + "<Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\">\n"
+                + "  <Relationship Type=\"http://www.fictionbook.org/FictionBook3/relationships/Book\" Target=\"fb3/first.xml\"/>\n"
+                + "  <Relationship Type=\"http://www.fictionbook.org/FictionBook3/relationships/Book\" Target=\"fb3/second.xml\"/>\n"
+                + "</Relationships>\n";
+        Map<String, byte[]> entries = new java.util.LinkedHashMap<String, byte[]>();
+        entries.put("_rels/.rels", rels.getBytes("UTF-8"));
+        entries.put("fb3/first.xml", first.getBytes("UTF-8"));
+        entries.put("fb3/second.xml", second.getBytes("UTF-8"));
+        TestFixtures.writeFb3(fb3, entries);
+        MetaData md = MetaExtractor.extract(fb3);
+        assertEquals("First Book", md.title);
+    }
+
+    @Test
+    public void fb3LargeBodyXmlDoesNotPreventReadingTitle() throws Exception {
+        File fb3 = folder.newFile("with-body.fb3");
+        StringBuilder body = new StringBuilder(120000);
+        body.append("<?xml version=\"1.0\"?><body>");
+        for (int i = 0; i < 100000; i++) body.append('x');
+        body.append("</body>");
+        Map<String, byte[]> entries = new java.util.LinkedHashMap<String, byte[]>();
+        entries.put("_rels/.rels", TestFixtures.buildFb3RootRels("fb3/description.xml", null)
+                .getBytes("UTF-8"));
+        entries.put("fb3/description.xml",
+                fb3DescrShell("  <title><main>Title With Body</main></title>\n").getBytes("UTF-8"));
+        entries.put("fb3/body.xml", body.toString().getBytes("UTF-8"));
+        TestFixtures.writeFb3(fb3, entries);
+        MetaData md = MetaExtractor.extract(fb3);
+        assertTrue(md.found);
+        assertEquals("Title With Body", md.title);
+    }
+
+    @Test
+    public void fb3DocumentWithoutDescriptionRootLeavesGenresNull() throws Exception {
+        File fb3 = folder.newFile("body-as-book.fb3");
+        String xml = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+                + "<body><title><main>Глава</main></title>"
+                + "<subject>prose</subject></body>\n";
+        writeFb3Book(fb3, xml, null, null);
+        MetaData md = MetaExtractor.extract(fb3);
+        assertFalse(md.found);
+        assertNull(md.genres);
+        assertNull(md.title);
+    }
+
+    @Test
+    public void fb3PercentEncodedBookTargetFindsTheDescription() throws Exception {
+        File fb3 = folder.newFile("encoded.fb3");
+        java.util.Map<String, byte[]> entries = new java.util.LinkedHashMap<String, byte[]>();
+        entries.put("_rels/.rels", TestFixtures.buildFb3RootRels("fb3/my%20book.xml", null)
+                .getBytes("UTF-8"));
+        entries.put("fb3/my book.xml",
+                fb3DescrShell("  <title><main>Encoded</main></title>\n").getBytes("UTF-8"));
+        TestFixtures.writeFb3(fb3, entries);
+        MetaData md = MetaExtractor.extract(fb3);
+        assertTrue(md.found);
+        assertEquals("Encoded", md.title);
+    }
+
+    @Test
+    public void fb3BackslashEntryNamesStillResolve() throws Exception {
+        File fb3 = folder.newFile("backslash.fb3");
+        java.util.Map<String, byte[]> entries = new java.util.LinkedHashMap<String, byte[]>();
+        entries.put("_rels\\.rels", TestFixtures.buildFb3RootRels("fb3/description.xml", null)
+                .getBytes("UTF-8"));
+        entries.put("fb3\\description.xml",
+                fb3DescrShell("  <title><main>Slash</main></title>\n").getBytes("UTF-8"));
+        TestFixtures.writeFb3(fb3, entries);
+        MetaData md = MetaExtractor.extract(fb3);
+        assertTrue(md.found);
+        assertEquals("Slash", md.title);
+    }
+
+    @Test
+    public void fb3PercentEncodedDotDotDoesNotEscapeThePackage() throws Exception {
+        File fb3 = folder.newFile("escape.fb3");
+        java.util.Map<String, byte[]> entries = new java.util.LinkedHashMap<String, byte[]>();
+        entries.put("_rels/.rels",
+                TestFixtures.buildFb3RootRels("%2E%2E/fb3/description.xml", null).getBytes("UTF-8"));
+        entries.put("fb3/description.xml",
+                fb3DescrShell("  <title><main>Hidden</main></title>\n").getBytes("UTF-8"));
+        TestFixtures.writeFb3(fb3, entries);
+        MetaData md = MetaExtractor.extract(fb3);
+        assertFalse(md.found);
+        assertNull(md.genres);
+    }
+
+    @Test
+    public void fb3ArchiveWithoutContentTypesStillExtractsMetadata() throws Exception {
+        File fb3 = folder.newFile("no-content-types.fb3");
+        TestFixtures.writeMinimalFb3(fb3);
+        MetaData md = MetaExtractor.extract(fb3);
+        assertTrue(md.found);
+        assertEquals("Война и мир", md.title);
+    }
+
+    @Test
+    public void fb3NonZipFileIsNotFoundWithoutThrowing() throws Exception {
+        File fb3 = folder.newFile("plain.fb3");
+        TestFixtures.writeBytes(fb3, new byte[]{0x00, 0x01, 0x02, 0x03, 0x04});
+        MetaData md = MetaExtractor.extract(fb3);
+        assertFalse(md.found);
+        assertNull(md.genres);
+    }
+
+    @Test
+    public void fb3TruncatedZipIsNotFoundWithoutThrowing() throws Exception {
+        File fb3 = folder.newFile("truncated.fb3");
+        TestFixtures.writeBytes(fb3, new byte[]{(byte) 0x50, (byte) 0x4B, 0x03, 0x04, 0x01});
+        MetaData md = MetaExtractor.extract(fb3);
+        assertFalse(md.found);
+        assertNull(md.genres);
+    }
+
+    // ------------------------------------------------------------------
     // everything else
     // ------------------------------------------------------------------
 

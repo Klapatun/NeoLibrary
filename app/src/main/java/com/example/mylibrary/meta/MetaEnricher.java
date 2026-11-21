@@ -180,8 +180,8 @@ public final class MetaEnricher {
     }
 
     /**
-     * The default {@link ParseTask}: the single-pass parsers. EPUB, FB2, FB2ZIP and
-     * MOBI are each parsed in ONE file session (metadata + cover together — see the
+     * The default {@link ParseTask}: the single-pass parsers. EPUB, FB2, FB3, FB2ZIP
+     * and MOBI are each parsed in ONE file session (metadata + cover together — see the
      * {@code parse*SinglePass} methods below) instead of the public extractors'
      * separate passes; the remaining formats keep the public extractors' best-effort
      * path (metadata only, no cover).
@@ -192,6 +192,7 @@ public final class MetaEnricher {
             if (format != null) {
                 if (format.equals("EPUB")) { parseEpubSinglePass(file, out); return; }
                 if (format.equals("FB2")) { parseFb2SinglePass(file, out); return; }
+                if (format.equals("FB3")) { parseFb3SinglePass(file, out); return; }
                 if (format.equals("FB2ZIP")) { parseFb2ZipSinglePass(file, out); return; }
                 if (format.equals("MOBI")) { parseMobiSinglePass(file, out); return; }
             }
@@ -240,6 +241,30 @@ public final class MetaEnricher {
         } catch (Exception e) {
             Log.w(TAG, "Single-pass EPUB parse of " + file, e);
             out.meta = notFound();
+        } finally {
+            closeQuietly(zip);
+        }
+    }
+
+    /**
+     * FB3, one session: a single {@link ZipFile} and one {@link Fb3Package#read}.
+     * A broken archive degrades to "not found" with no cover and does not throw.
+     * A cover that cannot be read stays null and does not clear the description.
+     * {@code coverOff} / {@code coverLen} are left unset (the whole byte array).
+     * Package-private so the tests share it with the default parse task.
+     */
+    static void parseFb3SinglePass(File file, Parsed out) {
+        ZipFile zip = null;
+        try {
+            zip = new ZipFile(file);
+            Fb3Package.Result result = Fb3Package.read(zip);
+            MetaExtractor.fillFileNameTitle(result.meta, file);
+            out.meta = result.meta;
+            out.cover = result.cover;
+        } catch (Exception e) {
+            Log.w(TAG, "Single-pass FB3 parse of " + file, e);
+            out.meta = notFound();
+            out.cover = null;
         } finally {
             closeQuietly(zip);
         }

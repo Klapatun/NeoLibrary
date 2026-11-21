@@ -36,6 +36,10 @@ import java.util.zip.ZipFile;
  *   <li><b>MOBI/AZW</b> — the EXTH block's {@code 201} record gives an offset that,
  *       added to the header's "first image" record index, locates the cover image
  *       record (a raw JPEG/PNG stored in a single PalmDB record).</li>
+ *   <li><b>FB3</b> — the package thumbnail relationship in {@code _rels/.rels},
+ *       or, when that is absent, the description part's cover relationship.
+ *       Bytes come from {@link Fb3Package}; an entry over the cover limit is
+ *       skipped and the metadata is kept.</li>
  * </ul>
  *
  * <p>The other binary formats (CHM, DjVu, PDB, PDF, DOCX...) embed covers behind much
@@ -76,6 +80,7 @@ public final class CoverExtractor {
             if (format.equals("FB2")) return extractFb2(file);
             if (format.equals("FB2ZIP")) return extractFb2Zip(file);
             if (format.equals("MOBI")) return extractMobi(file);
+            if (format.equals("FB3")) return extractFb3(file);
         } catch (Exception e) {
             // Any malformed file simply yields no cover (log the cause for logcat).
             Log.w(TAG, "Could not extract cover of " + file, e);
@@ -86,7 +91,21 @@ public final class CoverExtractor {
     /** Returns true if the format is expected to be able to carry a cover. */
     public static boolean canHaveCover(String format) {
         return "EPUB".equals(format) || "FB2".equals(format)
-                || "FB2ZIP".equals(format) || "MOBI".equals(format);
+                || "FB2ZIP".equals(format) || "MOBI".equals(format)
+                || "FB3".equals(format);
+    }
+
+    /**
+     * FB3 cover from the same package read as {@link MetaExtractor}. One
+     * {@link ZipFile} session; a broken archive is left to the caller's catch.
+     */
+    private static byte[] extractFb3(File file) throws Exception {
+        ZipFile zip = new ZipFile(file);
+        try {
+            return Fb3Package.read(zip).cover;
+        } finally {
+            zip.close();
+        }
     }
 
     // -------------------------------------------------------------------

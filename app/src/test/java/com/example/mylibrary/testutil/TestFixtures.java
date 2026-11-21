@@ -354,6 +354,111 @@ public final class TestFixtures {
     }
 
     // ------------------------------------------------------------------
+    // FB3
+    // ------------------------------------------------------------------
+
+    /** Minimal valid FB3 description used across extractor tests (see feature plan). */
+    public static final String FB3_DESCRIPTION_MINIMAL =
+            "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+          + "<fb3-description xmlns=\"http://www.fictionbook.org/FictionBook3/description\">\n"
+          + "  <title>\n"
+          + "    <main>Война и мир</main>\n"
+          + "    <sub>Том первый</sub>\n"
+          + "  </title>\n"
+          + "  <sequence>\n"
+          + "    <title><main>Русская классика</main></title>\n"
+          + "  </sequence>\n"
+          + "  <fb3-relations>\n"
+          + "    <subject link=\"author\">\n"
+          + "      <title><main>Лев Николаевич Толстой</main></title>\n"
+          + "      <first-name>Лев</first-name>\n"
+          + "      <middle-name>Николаевич</middle-name>\n"
+          + "      <last-name>Толстой</last-name>\n"
+          + "    </subject>\n"
+          + "    <subject link=\"author\">\n"
+          + "      <title><main>Соавтор Имя</main></title>\n"
+          + "      <last-name>Соавтор</last-name>\n"
+          + "    </subject>\n"
+          + "    <subject link=\"translator\">\n"
+          + "      <title><main>Не Автор</main></title>\n"
+          + "      <last-name>Переводчик</last-name>\n"
+          + "    </subject>\n"
+          + "    <subject link=\"publisher\">\n"
+          + "      <title><main>Эксмо</main></title>\n"
+          + "      <last-name>Эксмо</last-name>\n"
+          + "    </subject>\n"
+          + "  </fb3-relations>\n"
+          + "  <fb3-classification>\n"
+          + "    <class>novel</class>\n"
+          + "    <subject>SF_Fantasy</subject>\n"
+          + "    <subject>sf_fantasy</subject>\n"
+          + "    <subject>  </subject>\n"
+          + "    <subject>prose</subject>\n"
+          + "  </fb3-classification>\n"
+          + "  <lang>ru</lang>\n"
+          + "  <annotation>\n"
+          + "    <p>Первый абзац</p>\n"
+          + "    <p>Второй <strong>абзац</strong></p>\n"
+          + "  </annotation>\n"
+          + "  <periodical>\n"
+          + "    <title><main>Не серия</main></title>\n"
+          + "  </periodical>\n"
+          + "</fb3-description>\n";
+
+    private static final String FB3_RELS_NS =
+            "http://schemas.openxmlformats.org/package/2006/relationships";
+    private static final String FB3_TYPE_BOOK =
+            "http://www.fictionbook.org/FictionBook3/relationships/Book";
+    private static final String FB3_TYPE_THUMBNAIL =
+            "http://schemas.openxmlformats.org/package/2006/relationships/metadata/thumbnail";
+    public static final String FB3_TYPE_COVER =
+            "http://www.fictionbook.org/FictionBook3/relationships/cover";
+
+    /** Root {@code _rels/.rels}: one Book target and optional package thumbnail. */
+    public static String buildFb3RootRels(String bookTarget, String thumbnailTarget) {
+        StringBuilder sb = new StringBuilder(384);
+        sb.append("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n");
+        sb.append("<Relationships xmlns=\"").append(FB3_RELS_NS).append("\">\n");
+        sb.append("  <Relationship Type=\"").append(FB3_TYPE_BOOK).append("\" Target=\"");
+        sb.append(bookTarget).append("\"/>\n");
+        if (thumbnailTarget != null) {
+            sb.append("  <Relationship Type=\"").append(FB3_TYPE_THUMBNAIL).append("\" Target=\"");
+            sb.append(thumbnailTarget).append("\"/>\n");
+        }
+        sb.append("</Relationships>\n");
+        return sb.toString();
+    }
+
+    /** Part-level rels beside {@code fb3/description.xml} (cover only). */
+    public static String buildFb3DescriptionPartRels(String coverTarget) {
+        StringBuilder sb = new StringBuilder(256);
+        sb.append("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n");
+        sb.append("<Relationships xmlns=\"").append(FB3_RELS_NS).append("\">\n");
+        sb.append("  <Relationship Type=\"").append(FB3_TYPE_COVER).append("\" Target=\"");
+        sb.append(coverTarget).append("\"/>\n");
+        sb.append("</Relationships>\n");
+        return sb.toString();
+    }
+
+    /** Writes a {@code .fb3} zip (wrapper over {@link #writeZip}). */
+    public static void writeFb3(File f, Map<String, byte[]> entries) throws Exception {
+        writeZip(f, entries);
+    }
+
+    /**
+     * Minimal valid FB3: root {@code _rels/.rels}, {@code fb3/description.xml},
+     * {@code cover.jpg} = {@link #coverBytes()}. No {@code [Content_Types].xml}.
+     */
+    public static void writeMinimalFb3(File f) throws Exception {
+        Map<String, byte[]> entries = new LinkedHashMap<String, byte[]>();
+        entries.put("_rels/.rels", buildFb3RootRels("fb3/description.xml", "cover.jpg")
+                .getBytes("UTF-8"));
+        entries.put("fb3/description.xml", FB3_DESCRIPTION_MINIMAL.getBytes("UTF-8"));
+        entries.put("cover.jpg", coverBytes());
+        writeFb3(f, entries);
+    }
+
+    // ------------------------------------------------------------------
     // IO helpers
     // ------------------------------------------------------------------
 

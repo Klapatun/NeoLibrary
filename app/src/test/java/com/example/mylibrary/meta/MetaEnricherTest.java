@@ -693,6 +693,108 @@ public class MetaEnricherTest {
         assertArrayEquals(TestFixtures.coverBytes(), out.cover);
     }
 
+    /** FB3 single-pass: one ZipFile session yields metadata and cover together. */
+    @Test
+    public void parseFb3SinglePassReadsMetadataAndCoverTogether() throws Exception {
+        File fb3 = new File(folder.getRoot(), "single.fb3");
+        TestFixtures.writeMinimalFb3(fb3);
+
+        MetaEnricher.Parsed out = new MetaEnricher.Parsed();
+        MetaEnricher.parseFb3SinglePass(fb3, out);
+
+        assertNotNull(out.meta);
+        assertTrue(out.meta.found);
+        assertEquals("Война и мир", out.meta.title);
+        assertEquals("Лев Николаевич Толстой, Соавтор Имя", out.meta.author);
+        assertEquals("Эксмо", out.meta.publisher);
+        assertEquals("Первый абзац\nВторой абзац", out.meta.description);
+        assertEquals("Русская классика", out.meta.series);
+        assertNotNull(out.meta.genres);
+        assertEquals(2, out.meta.genres.size());
+        assertEquals("sf_fantasy", out.meta.genres.get(0));
+        assertEquals("prose", out.meta.genres.get(1));
+        assertNotNull("the cover must come from the same session", out.cover);
+        assertArrayEquals(TestFixtures.coverBytes(), out.cover);
+    }
+
+    @Test
+    public void enrichOneFillsFb3MetadataCachesCoverAndPreservesLastRead() throws Exception {
+        File fb3 = new File(folder.getRoot(), "war.fb3");
+        TestFixtures.writeMinimalFb3(fb3);
+        long id = seedStageOne(fb3, "FB3", "из имени");
+        db.markRead(id);
+
+        MetaEnricher.enrichOne(app, db, get(id));
+
+        Book b = get(id);
+        android.database.Cursor c = db.getReadableDatabase().rawQuery(
+                "SELECT last_read FROM works WHERE _id=?", new String[]{String.valueOf(id)});
+        try {
+            assertTrue(c.moveToFirst());
+            assertTrue("last_read must survive enrichment", c.getLong(0) > 0);
+        } finally {
+            c.close();
+        }
+        assertEquals("Война и мир", b.title);
+        assertEquals("Лев Николаевич Толстой, Соавтор Имя", b.author);
+        assertEquals("Эксмо", b.publisher);
+        assertEquals("Первый абзац\nВторой абзац", b.description);
+        assertEquals("Русская классика", b.series);
+        assertNotNull(b.genres);
+        assertEquals(2, b.genres.size());
+        assertEquals("sf_fantasy", b.genres.get(0));
+        assertEquals("prose", b.genres.get(1));
+        assertTrue(b.metaDone);
+
+        byte[] cached = CoverCache.load(app, fb3.getAbsolutePath());
+        assertNotNull("the cover bytes must land in CoverCache", cached);
+        assertArrayEquals(TestFixtures.coverBytes(), cached);
+    }
+
+    @Test
+    public void enrichOneNeverClobbersUserEditsOnFb3ButFillsEmptyFieldsAndKeepsGenres() throws Exception {
+        File fb3 = new File(folder.getRoot(), "edited.fb3");
+        TestFixtures.writeMinimalFb3(fb3);
+
+        Book b = new Book();
+        b.path = fb3.getAbsolutePath();
+        b.format = "FB3";
+        b.title = "User Title";
+        b.author = "User Author";
+        b.publisher = null;
+        b.description = null;
+        b.genres = new ArrayList<String>();
+        b.genres.add("user_genre");
+        long id = db.upsert(b);
+        db.markUserEdited(id);
+
+        MetaEnricher.enrichOne(app, db, get(id));
+
+        Book after = get(id);
+        assertEquals("User Title", after.title);
+        assertEquals("User Author", after.author);
+        assertEquals("Эксмо", after.publisher);
+        assertEquals("Первый абзац\nВторой абзац", after.description);
+        assertNotNull(after.genres);
+        assertEquals(1, after.genres.size());
+        assertEquals("user_genre", after.genres.get(0));
+        assertTrue(after.metaDone);
+    }
+
+    @Test
+    public void enrichOneWithoutEmbeddedFb3KeepsFileNameTitleAndMarksDone() throws Exception {
+        File fb3 = new File(folder.getRoot(), "plain.fb3");
+        TestFixtures.writeBytes(fb3, new byte[]{0x00, 0x01, 0x02, 0x03, 0x04});
+        long id = seedStageOne(fb3, "FB3", "из имени");
+
+        MetaEnricher.enrichOne(app, db, get(id));
+
+        Book b = get(id);
+        assertEquals("из имени", b.title);
+        assertNull(b.author);
+        assertTrue(b.metaDone);
+    }
+
     private static final String FB2_XML_HEAD = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
             + "<FictionBook xmlns=\"http://www.gribuser.ru/xml/fictionbook/2.0\" "
             + "xmlns:l=\"http://www.w3.org/1999/xlink\">\n";

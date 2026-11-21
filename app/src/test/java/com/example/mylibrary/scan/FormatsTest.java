@@ -106,19 +106,20 @@ public class FormatsTest {
     }
 
     /**
-     * The stage-2 enricher works its queue from the cheapest formats up: EPUB and
-     * FB2 (plain XML) first, then FB2ZIP (FB2 wrapped in an archive), then the heavy
-     * MOBI binary parse, and every remaining format last.
+     * The stage-2 enricher works its queue from the cheapest formats up: EPUB, FB2
+     * and FB3 (one ZIP session, small XML, optional cover) first, then FB2ZIP (FB2
+     * wrapped in an archive), then the heavy MOBI binary parse, and every remaining
+     * format last.
      */
     @Test
     public void enrichmentPriorityOrdersTheCheapFormatsFirstAndTheHeavyLast() {
         assertEquals(0, Formats.enrichmentPriority("EPUB"));
         assertEquals(0, Formats.enrichmentPriority("FB2"));
+        assertEquals(0, Formats.enrichmentPriority("FB3"));
         assertEquals(1, Formats.enrichmentPriority("FB2ZIP"));
         assertEquals(2, Formats.enrichmentPriority("MOBI"));
         // The formats without a fast in-file metadata path all land in the last tier.
         assertEquals(3, Formats.enrichmentPriority("CHM"));
-        assertEquals(3, Formats.enrichmentPriority("FB3"));
         assertEquals(3, Formats.enrichmentPriority("HTML"));
         assertEquals(3, Formats.enrichmentPriority("PDF"));
         assertEquals(3, Formats.enrichmentPriority("PDB"));
