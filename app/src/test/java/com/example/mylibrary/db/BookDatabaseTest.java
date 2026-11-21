@@ -2042,6 +2042,71 @@ public class BookDatabaseTest {
         }
     }
 
+  /**
+   * v10: eligible FB3 rows (deleted=0, user_edited=0) get meta_done/meta_failed
+   * cleared so stage 2 can re-enrich; user-edited, deleted and non-FB3 formats stay
+   * untouched. No new column.
+   */
+  @Test
+  public void upgradeFromV9ResetsMetaDoneForEligibleFb3Only() {
+    db.close();
+    java.io.File f = context.getDatabasePath("library.db");
+    if (f.getParentFile() != null) f.getParentFile().mkdirs();
+    SQLiteDatabase rawDb = SQLiteDatabase.openOrCreateDatabase(f.getAbsolutePath(), null);
+    try {
+      rawDb.execSQL(V7_WORKS_CREATE);
+      rawDb.execSQL(V8_FILES_CREATE);
+      rawDb.execSQL(V7_WORK_GENRES_CREATE);
+      rawDb.execSQL("INSERT INTO works (_id, title, last_read, user_edited,"
+              + " revision, deleted) VALUES"
+              + " (1, 'Fb3 Eligible', 2001, 0, 0, 0),"
+              + " (2, 'Fb3 User Edit', 2002, 1, 0, 0),"
+              + " (3, 'Fb3 Deleted', 2003, 0, 0, 1),"
+              + " (4, 'Epub Done', 2004, 0, 0, 0)");
+      rawDb.execSQL("INSERT INTO files (work_id, path, format, size_bytes, meta_done,"
+              + " meta_failed, availability, adopted_from) VALUES"
+              + " (1, '/x/a.fb3', 'FB3', 10, 1, 1, 'local', NULL),"
+              + " (2, '/x/b.fb3', 'FB3', 10, 1, 1, 'local', NULL),"
+              + " (3, '/x/c.fb3', 'FB3', 10, 1, 1, 'local', NULL),"
+              + " (4, '/x/d.epub', 'EPUB', 10, 1, 1, 'local', NULL)");
+      rawDb.execSQL("PRAGMA user_version = 9");
+    } finally {
+      rawDb.close();
+    }
+
+    BookDatabase upgraded = new BookDatabase(context);
+    SQLiteDatabase raw = upgraded.getReadableDatabase();
+
+    assertFileMetaFlags(raw, 1L, 0, 0);
+    assertFileMetaFlags(raw, 2L, 1, 1);
+    assertFileMetaFlags(raw, 3L, 1, 1);
+    assertFileMetaFlags(raw, 4L, 1, 1);
+
+    Cursor w = raw.rawQuery(
+            "SELECT _id, title, last_read FROM works ORDER BY _id", null);
+    try {
+      assertEquals(4, w.getCount());
+      while (w.moveToNext()) {
+        long wid = w.getLong(0);
+        if (wid == 1L) {
+          assertEquals("Fb3 Eligible", w.getString(1));
+          assertEquals(2001L, w.getLong(2));
+        } else if (wid == 2L) {
+          assertEquals("Fb3 User Edit", w.getString(1));
+          assertEquals(2002L, w.getLong(2));
+        } else if (wid == 3L) {
+          assertEquals("Fb3 Deleted", w.getString(1));
+          assertEquals(2003L, w.getLong(2));
+        } else if (wid == 4L) {
+          assertEquals("Epub Done", w.getString(1));
+          assertEquals(2004L, w.getLong(2));
+        }
+      }
+    } finally {
+      w.close();
+    }
+  }
+
     @Test
     public void upgradeFromV7AddsAdoptedFromKeepingRow() {
         db.close();
