@@ -53,6 +53,46 @@
 
 ---
 
+## [FEATURE] Серия в парсерах FB2 и EPUB (2026-11-21)
+
+**Создано:** 2026-11-21. **Приоритет:** средний. **Статус:** [ ] не начато.
+Плана нет. **Согласование:** не согласован. Не входит в ветку `feature/fb3-meta`
+(там серия читается только у FB3; этот тикет — отложенный хвост того плана).
+
+- **Где:** `MetaExtractor.parseFb2Xml` (`MetaExtractor.java`, разбор FB2) и
+  `MetaExtractor.parseOpf` (EPUB). FB2ZIP идёт тем же `parseFb2Xml`
+  (`extractFb2Zip`, `MetaEnricher.parseFb2ZipSinglePass`). Single-pass этапа 2
+  вызывает эти же методы (`parseEpubSinglePass` → `parseOpf`,
+  `parseFb2SinglePass` → `parseFb2Xml`), отдельного разбора серии у воркера нет.
+- **Уже есть:** колонка `works.series`, поля `MetaData.series` и `Book.series`.
+  `BookDatabase.applyUpdate` пишет `md.series`, если значение не `null` и поле
+  не занято правкой пользователя (пустое при `user_edited` заполняется).
+  Ни один текущий парсер `md.series` не заполняет: `parseFb2Xml` не смотрит
+  `<sequence>`, `parseOpf` читает только DC title/creator/publisher/description/
+  language/subject.
+- **Зачем:** после FB3 каталог будет хранить серию из файла только для одного
+  формата. FB2 и EPUB должны класть имя серии в тот же `md.series`. Номер тома
+  в схему не добавлять: колонки нет, как и в плане FB3.
+- **Что читать (один источник на формат, выбор фиксирует будущий план):**
+  - FB2: первый `<sequence>` внутри `title-info`, атрибут `name`. Не вложенный
+    `title`, не `sequence` из `src-title-info` и не `sequence` вне `title-info`.
+    Атрибут `number` не сохранять. Пустое `name` → `series` остаётся `null`,
+    не `""`.
+  - EPUB: один элемент OPF. Кандидаты, из которых план выбирает ровно один,
+    без запасного второго алгоритма: `meta name="calibre:series"` либо EPUB 3
+    `meta property="belongs-to-collection"` при `collection-type=series`.
+    `calibre:series_index` и `group-position` не писать.
+- **Вне скоупа:** MOBI (в EXTH-карте `MobiParser` записи серии нет), TXT, HTML,
+  PDF. Запись серии обратно в файл (`MetaWriter`). Показ и правка в
+  `DetailActivity` / `EditMetaActivity` — серию там сейчас не рисуют.
+  Повторное обогащение уже прогнанных FB2/EPUB (`meta_done=1`) этим тикетом
+  не делается: если оно нужно, апгрейд вроде сброса флагов решает план этой
+  фичи, не ветка `feature/fb3-meta`.
+- **Дальше:** план пишет аналитик, когда человек поставит задачу. До
+  согласования плана тестировщик и разработчик не стартуют.
+
+---
+
 ## [IMPROVE] Доработки и известные ограничения после фичи «сканер → метаданные фоном»
 
 **Создано:** 2026-10-01. **Статус:** закрытые пункты (1.1, 1.2, 2.1 — сделаны
