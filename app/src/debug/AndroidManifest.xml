@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <!-- Debug only. The local library server has no TLS. Release does not
+         merge this file, so cleartext stays off there. On API 24+ the network
+         security config allows cleartext solely for 10.0.2.2; usesCleartextTraffic
+         covers API 23, where that config does not exist yet. -->
+    <application
+        android:usesCleartextTraffic="true"
+        android:networkSecurityConfig="@xml/network_security_config"
+        tools:targetApi="24" />
+</manifest>

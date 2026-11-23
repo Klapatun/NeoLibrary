@@ -1,6 +1,10 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">Neo Library</string>
+    <string name="connection_checking">Connecting…</string>
+    <string name="connection_connected">Connected</string>
+    <string name="connection_failed">No connection</string>
+    <string name="connection_http">HTTP %1$d</string>
     <string name="navigate_back">Back</string>
 
     <string name="menu_refresh">Rescan</string>
