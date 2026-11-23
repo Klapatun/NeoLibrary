@@ -3,6 +3,8 @@
 
     <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" />
     <!-- For Android 4.4+ KitKat multi-select storage access (SAF) based library import. -->
+    <!-- LibraryClient. Debug talks to the local server; release has an empty base URL. -->
+    <uses-permission android:name="android.permission.INTERNET" />
 
     <application
         android:allowBackup="true"

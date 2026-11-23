@@ -8,15 +8,29 @@ android {
     // Modern SDK level required by AGP 8. minSdk stays at 19 for the Android 4.4.4 target.
     compileSdk 34
 
+    // LibraryClient reads these. Release stays empty: there is no production
+    // host to put here, and cleartext is not enabled for this build type.
     defaultConfig {
         applicationId 'com.example.mylibrary'
         minSdk 19
         targetSdk 34
         versionCode 1
         versionName '1.0'
+        buildConfigField "String", "API_BASE_URL", "\"\""
+        buildConfigField "String", "API_TOKEN", "\"\""
+    }
+
+    buildFeatures {
+        buildConfig true
     }
 
     buildTypes {
+        debug {
+            // Emulator loopback to the host machine. 127.0.0.1 from the emulator
+            // is the emulator itself; the host's forwarded port is 10.0.2.2:8080.
+            buildConfigField "String", "API_BASE_URL", "\"http://10.0.2.2:8080\""
+            buildConfigField "String", "API_TOKEN", "\"dev-library-token\""
+        }
         release {
             minifyEnabled false
             proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'

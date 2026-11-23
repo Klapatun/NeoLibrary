@@ -10,8 +10,10 @@
 | `neo-developer-low` | Продакшн (простые задачи) | `composer-2.5-fast` | `/neo-developer-low …` |
 | `neo-developer` | Продакшн (сложные задачи) | `grok-4.7-high` | `/neo-developer …` |
 | `neo-refactor` | [REFAC] | `grok-4.7-high` | `/neo-refactor …` |
+| `neo-reviewer` | Ревью написанного кода | `grok-4.7[reasoning_effort=xhigh,fast=false]` | `/neo-reviewer …` |
 
 Уровень и субагент D задаёт аналитик в плане (§2, скил `analytics` §2.1).
+Ревьюер в этот выбор не входит: его зовут, когда нужно проверить уже написанный код. Скилл — `.agents/skills/neo-reviewer/SKILL.md`. Модель — Grok 4.7 Extra High, без Fast.
 
 Рекомендация для **встроенного Explore** (Settings → Agents → Subagents): **Composer 2.5 (Fast)** или **Inherit**, если родитель уже на Composer/Grok.
 

@@ -36,6 +36,7 @@ import com.example.mylibrary.db.Catalog;
 import com.example.mylibrary.meta.MetaEnricher;
 import com.example.mylibrary.model.Book;
 import com.example.mylibrary.scan.Formats;
+import com.example.mylibrary.remote.LibraryClient;
 import com.example.mylibrary.util.FileLocator;
 import com.example.mylibrary.util.LocateResult;
 import com.example.mylibrary.util.Openers;
@@ -89,6 +90,8 @@ public class MainActivity extends Activity
     private PagedGridView grid;
     private ImageButton btnMenu;
     private ImageButton btnFilter;
+    /** Header line: library-server connection. Hidden when the build has no URL. */
+    private TextView connectionStatus;
     private ImageButton toggleView;
     private LinearLayout enrichBar;
     private TextView enrichStatus;
@@ -154,6 +157,14 @@ public class MainActivity extends Activity
      *  genres). */
     private FilterTab openFilterGenresTab;
 
+    /** Header connection line. Invoked on the main thread by LibraryClient. */
+    private final LibraryClient.Listener connectionListener = new LibraryClient.Listener() {
+        @Override public void onConnectionStatus(int status, int httpCode) {
+            if (isFinishing() || isDestroyed()) return;
+            showConnectionStatus(status, httpCode);
+        }
+    };
+
     /** Stage-2 progress strip; invoked on the main thread by MetaEnricher. */
     private final MetaEnricher.OnProgress enrichListener = new MetaEnricher.OnProgress() {
         @Override public void onProgress(int done, int total) {
@@ -218,6 +229,8 @@ public class MainActivity extends Activity
         list = (PagedListView) findViewById(R.id.book_list);
         grid = (PagedGridView) findViewById(R.id.book_grid);
         btnMenu = (ImageButton) findViewById(R.id.btn_menu);
+        connectionStatus = (TextView) findViewById(R.id.connection_status);
+        LibraryClient.bind(connectionListener);
         btnFilter = (ImageButton) findViewById(R.id.btn_filter);
         toggleView = (ImageButton) findViewById(R.id.toggle_view);
         paginationBar = (LinearLayout) findViewById(R.id.pagination_bar);
@@ -366,6 +379,17 @@ public class MainActivity extends Activity
             // DELIVERED after the scan's rebind — blanking the fresh catalog and
             // leaving the list empty. The loader starts in ScanTask.onPostExecute,
             // after the rebind, so its first query always sees post-scan data.
+            // Debug reaches the local library server. The host is BuildConfig,
+            // not this screen. Release is not configured and does not connect.
+            // The prefetch does not write the catalog. The header line shows
+            // the outcome.
+            if (LibraryClient.isConfigured()) {
+                int known = LibraryClient.lastStatus();
+                showConnectionStatus(known == LibraryClient.STATUS_IDLE
+                        ? LibraryClient.STATUS_CONNECTING : known,
+                        LibraryClient.lastHttpCode());
+            }
+            LibraryClient.prefetchIndex();
             startScan();
         } else {
             // Recreation (rotation / configuration change): the catalog already
@@ -378,6 +402,28 @@ public class MainActivity extends Activity
             // own — go through the LoaderManager explicitly.
             getLoaderManager().initLoader(LOADER_BOOKS, null, this);
             startEnrichment();
+            if (LibraryClient.isConfigured()
+                    && LibraryClient.lastStatus() != LibraryClient.STATUS_IDLE) {
+                showConnectionStatus(LibraryClient.lastStatus(), LibraryClient.lastHttpCode());
+            }
+        }
+    }
+
+    /** The header line. Stays hidden when this build has no server. */
+    private void showConnectionStatus(int status, int httpCode) {
+        if (!LibraryClient.isConfigured()) {
+            connectionStatus.setVisibility(View.GONE);
+            return;
+        }
+        connectionStatus.setVisibility(View.VISIBLE);
+        if (status == LibraryClient.STATUS_CONNECTED) {
+            connectionStatus.setText(R.string.connection_connected);
+        } else if (status == LibraryClient.STATUS_FAILED) {
+            connectionStatus.setText(R.string.connection_failed);
+        } else if (status == LibraryClient.STATUS_HTTP) {
+            connectionStatus.setText(getString(R.string.connection_http, httpCode));
+        } else {
+            connectionStatus.setText(R.string.connection_checking);
         }
     }
 
